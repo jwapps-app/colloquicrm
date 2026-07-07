@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import QRCode from 'qrcode';
 import { del, get, patch, post } from '../api';
 import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
@@ -101,14 +102,21 @@ function SecuritySection() {
   const { user, setUser } = useAuth();
   const toast = useToast();
   const [setup, setSetup] = useState(null); // {secret, otpauth_url}
+  const [qr, setQr] = useState(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function begin() {
     setBusy(true);
     try {
-      setSetup(await post('/auth/totp/setup'));
+      const s = await post('/auth/totp/setup');
+      setSetup(s);
       setCode('');
+      try {
+        setQr(await QRCode.toDataURL(s.otpauth_url, { width: 220, margin: 1 }));
+      } catch {
+        setQr(null); // secret + URL below still work
+      }
     } catch (e) {
       toast.error(e.message);
     }
@@ -187,7 +195,15 @@ function SecuritySection() {
         </>
       ) : (
         <form onSubmit={enable} className="form">
-          <p className="muted">Add this secret to your authenticator app, then enter the 6-digit code it shows.</p>
+          <p className="muted">
+            Scan the QR code with your authenticator app (1Password, Google Authenticator, …), then enter
+            the 6-digit code it shows. Or add the secret manually.
+          </p>
+          {qr && (
+            <div className="qr-wrap">
+              <img src={qr} alt="TOTP QR code" width={220} height={220} />
+            </div>
+          )}
           <div className="secret-row">
             <code>{setup.secret}</code>
             <button type="button" className="btn btn-small" onClick={() => copy(setup.secret, 'Secret')}>
