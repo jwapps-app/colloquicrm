@@ -140,7 +140,15 @@ async def _get_json(url: str, access_token: str, params: dict | None = None) -> 
     except httpx.HTTPError as exc:
         raise GoogleError(f"Cannot reach Google: {exc}") from exc
     if resp.status_code >= 400:
-        raise GoogleError(f"Google GET {url.split('?')[0]} failed ({resp.status_code})")
+        detail = ""
+        try:
+            detail = (resp.json().get("error") or {}).get("message", "")[:200]
+        except Exception:
+            pass
+        raise GoogleError(
+            f"Google GET {url.split('?')[0]} failed ({resp.status_code})"
+            + (f": {detail}" if detail else "")
+        )
     return resp.json()
 
 
