@@ -15,7 +15,6 @@ from app.models import (
     Company,
     EmailMessage,
     EmailParticipant,
-    EmailParticipant,
     GoogleAccount,
     GoogleIntegration,
     Lead,
