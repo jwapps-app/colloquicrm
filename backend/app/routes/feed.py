@@ -15,11 +15,13 @@ from app.models import (
     Note,
     Opportunity,
     Person,
+    PhoneEvent,
     Task,
     User,
 )
 from app.services.common import display_name_map, row_to_dict
 from app.services.google import normalize_email
+from app.services.ringcentral import normalize_phone
 
 router = APIRouter()
 
@@ -146,6 +148,63 @@ async def feed(
                     "owner_user_id": str(e.owner_user_id) if e.owner_user_id else None,
                     "gmail_id": e.gmail_id,
                     "related": related.get(e.id, []),
+                }
+            )
+
+    if kind in ("all", "phone"):
+        events = (
+            (
+                await db.execute(
+                    select(PhoneEvent)
+                    .where(PhoneEvent.org_id == user.org_id)
+                    .order_by(PhoneEvent.happened_at.desc())
+                    .limit(need)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        phone_map: dict[str, tuple[str, uuid.UUID, str]] = {}
+        if events:
+            people = await db.execute(
+                select(Person.id, Person.first_name, Person.last_name, Person.work_phone,
+                       Person.mobile_phone).where(Person.org_id == user.org_id)
+            )
+            for pid, first, last, work, mobile in people:
+                label = " ".join(filter(None, [first, last]))
+                for p in (work, mobile):
+                    n = normalize_phone(p)
+                    if n:
+                        phone_map.setdefault(n, ("person", pid, label))
+            leads = await db.execute(
+                select(Lead.id, Lead.first_name, Lead.last_name, Lead.work_phone,
+                       Lead.mobile_phone).where(Lead.org_id == user.org_id)
+            )
+            for lid, first, last, work, mobile in leads:
+                label = " ".join(filter(None, [first, last]))
+                for p in (work, mobile):
+                    n = normalize_phone(p)
+                    if n:
+                        phone_map.setdefault(n, ("lead", lid, label))
+        for e in events:
+            hit = phone_map.get(e.other_number)
+            items.append(
+                {
+                    "type": e.kind,  # call | sms
+                    "at": (e.happened_at or e.created_at).isoformat(),
+                    "id": str(e.id),
+                    "direction": e.direction,
+                    "other_number": e.other_number,
+                    "other_name": e.other_name,
+                    "duration_seconds": e.duration_seconds,
+                    "result": e.result,
+                    "text": e.text,
+                    "recording_id": e.recording_id,
+                    "related": [
+                        {"entity_type": hit[0], "entity_id": str(hit[1]), "label": hit[2]}
+                    ]
+                    if hit
+                    else [],
                 }
             )
 

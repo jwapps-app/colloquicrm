@@ -271,6 +271,23 @@ async def sync_org(db, cfg: RingCentralIntegration) -> dict:
         return {"calls_synced": 0, "sms_synced": 0}
     calls = await sync_calls(db, cfg, access, phone_map)
     sms = await sync_sms(db, cfg, access, phone_map)
+    # Recompute relationship metrics for every person with stored phone
+    # history — self-healing, covers events stored before this feature too.
+    stored_numbers = {
+        n
+        for (n,) in await db.execute(
+            select(PhoneEvent.other_number).where(PhoneEvent.org_id == cfg.org_id).distinct()
+        )
+    }
+    person_ids = {
+        pid
+        for number, (etype, pid) in phone_map.items()
+        if etype == "person" and number in stored_numbers
+    }
+    if person_ids:
+        from app.services.interactions import update_person_aggregates
+
+        await update_person_aggregates(db, cfg.org_id, person_ids)
     cfg.last_synced_at = utcnow()
     cfg.sync_error = None
     return {"calls_synced": calls, "sms_synced": sms}

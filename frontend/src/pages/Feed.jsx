@@ -10,6 +10,7 @@ const PAGE_SIZE = 40;
 const TABS = [
   { id: 'all', label: 'All' },
   { id: 'email', label: 'Emails' },
+  { id: 'phone', label: 'Calls & Texts' },
   { id: 'note', label: 'Notes' },
   { id: 'activity', label: 'Activity' },
 ];
@@ -133,6 +134,32 @@ export default function Feed() {
               <div className="feed-day">{g.label}</div>
               <div className="card feed-card">
                 {g.items.map((it) => {
+                  if (it.type === 'call' || it.type === 'sms') {
+                    const isCall = it.type === 'call';
+                    return (
+                      <div key={`p-${it.id}`} className="feed-item feed-phone">
+                        <span className="phone-icon">{isCall ? '☎' : '💬'}</span>
+                        <div className="feed-body">
+                          <span>
+                            <strong>
+                              {isCall
+                                ? (it.direction === 'outbound' ? 'Outgoing call' : 'Incoming call')
+                                : (it.direction === 'outbound' ? 'Text sent' : 'Text received')}
+                              {isCall && it.result && it.result !== 'Call connected' && it.result !== 'Accepted' ? ` — ${it.result}` : ''}
+                            </strong>
+                            <RelatedChips related={it.related} />
+                          </span>
+                          <div className="muted">
+                            {isCall
+                              ? `${it.duration_seconds ? `${Math.floor(it.duration_seconds / 60)}m ${it.duration_seconds % 60}s · ` : ''}${it.other_number}${it.recording_id ? ' · recorded' : ''}`
+                              : null}
+                          </div>
+                          {!isCall && it.text && <div className="sms-body">{it.text}</div>}
+                        </div>
+                        <span className="muted feed-time">{timeOfDay(it.at)}</span>
+                      </div>
+                    );
+                  }
                   if (it.type === 'email') {
                     const b = bodies[it.id];
                     const open = openEmail === it.id;
