@@ -539,7 +539,7 @@ async def _update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.
             person.last_contacted_at = latest
 
 
-ADDRESSES_PER_QUERY = 15
+ADDRESSES_PER_QUERY = 10
 
 
 async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
@@ -558,7 +558,10 @@ async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
     addresses = expanded
     for i in range(0, len(addresses), ADDRESSES_PER_QUERY):
         chunk = addresses[i : i + ADDRESSES_PER_QUERY]
-        clause = " OR ".join(f"from:{a} OR to:{a} OR cc:{a}" for a in chunk)
+        # Header operators match literal addresses; the quoted free-text term
+        # catches variants the operators miss (e.g. dotted gmail headers).
+        # Over-fetching is fine: the metadata matcher filters on real headers.
+        clause = " OR ".join(f'from:{a} OR to:{a} OR cc:{a} OR "{a}"' for a in chunk)
         window = (
             f"newer_than:{settings.gmail_backfill_days}d "
             if settings.gmail_backfill_days > 0
