@@ -9,21 +9,33 @@ export function money(value, currency) {
   }
 }
 
+/** Parse a server timestamp. Naive datetimes (no zone suffix) are UTC —
+ * SQLite dev returns them that way; Postgres sends +00:00. Date-only
+ * strings are calendar dates and stay local. */
+export function parseWhen(iso) {
+  if (!iso) return null;
+  if (typeof iso === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return new Date(iso + 'T00:00:00');
+    if (!/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(iso)) return new Date(iso + 'Z');
+  }
+  return new Date(iso);
+}
+
 export function fmtDate(iso) {
   if (!iso) return '—';
-  const d = new Date(iso.length === 10 ? iso + 'T00:00:00' : iso);
+  const d = parseWhen(iso);
   return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString();
 }
 
 export function fmtDateTime(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
+  const d = parseWhen(iso);
   return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 export function timeOfDay(iso) {
   if (!iso) return '';
-  return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return parseWhen(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 export function fullName(o) {

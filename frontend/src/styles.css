@@ -1794,3 +1794,25 @@ textarea {
 .linklike:hover {
   text-decoration: underline;
 }
+
+/* Profile: show-empty toggle */
+.profile-toggle {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+/* Reminder when-picker */
+.when-row {
+  margin-top: 8px;
+}
+.when-inputs {
+  display: flex;
+  gap: 6px;
+}
+.when-inputs input[type='date'] {
+  flex: 1;
+  min-width: 0;
+}
+.when-row .composer-actions {
+  margin-top: 8px;
+}

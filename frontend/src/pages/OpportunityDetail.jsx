@@ -5,7 +5,6 @@ import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
 import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
-import CustomFieldsPanel from '../components/CustomFieldsPanel';
 import TasksPanel from '../components/TasksPanel';
 import { Empty, Loading } from '../components/ui';
 import { humanize, money } from '../format';
@@ -100,12 +99,11 @@ export default function OpportunityDetail() {
       entityId={id}
       left={
         <>
-          <ProfilePanel entity={opp} fields={OPPORTUNITY_FIELDS} users={users} onSave={save} />
+          <ProfilePanel entity={opp} entityType="opportunity" fields={OPPORTUNITY_FIELDS} users={users} onSave={save} />
           <div className="card">
             <h4 className="panel-title">Tags</h4>
             <TagEditor tags={opp.tags || []} onChange={(tags) => save({ tags })} />
           </div>
-          <CustomFieldsPanel entityType="opportunity" entity={opp} onSave={save} />
         </>
       }
       right={

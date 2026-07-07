@@ -4,7 +4,7 @@ import { get } from '../api';
 import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';
-import { entityPath, humanize, timeOfDay } from '../format';
+import { entityPath, humanize, timeOfDay, parseWhen } from '../format';
 
 const PAGE_SIZE = 40;
 const TABS = [
@@ -103,7 +103,7 @@ export default function Feed() {
     if (!items) return [];
     const map = new Map();
     items.forEach((it) => {
-      const d = new Date(it.at);
+      const d = parseWhen(it.at);
       const key = d.toDateString();
       if (!map.has(key)) map.set(key, { key, label: dayLabel(d), items: [] });
       map.get(key).items.push(it);

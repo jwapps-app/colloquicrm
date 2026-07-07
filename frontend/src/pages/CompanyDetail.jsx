@@ -6,7 +6,6 @@ import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
 import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
-import CustomFieldsPanel from '../components/CustomFieldsPanel';
 import TasksPanel from '../components/TasksPanel';
 import CalendarPanel from '../components/CalendarPanel';
 import RelatedPanel from '../components/RelatedPanel';
@@ -68,12 +67,11 @@ export default function CompanyDetail() {
       entityId={id}
       left={
         <>
-          <ProfilePanel entity={company} fields={COMPANY_FIELDS} users={users} onSave={save} />
+          <ProfilePanel entity={company} entityType="company" fields={COMPANY_FIELDS} users={users} onSave={save} />
           <div className="card">
             <h4 className="panel-title">Tags</h4>
             <TagEditor tags={company.tags || []} onChange={(tags) => save({ tags })} />
           </div>
-          <CustomFieldsPanel entityType="company" entity={company} onSave={save} />
         </>
       }
       right={

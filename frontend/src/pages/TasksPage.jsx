@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { del, get, post } from '../api';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';
-import { entityPath, fmtDate, humanize } from '../format';
+import { entityPath, fmtDate, humanize, parseWhen } from '../format';
 import { PRIORITIES } from '../constants/options';
 
 const PAGE_SIZE = 50;
@@ -131,7 +131,7 @@ export default function TasksPage() {
         ) : (
           <div className="task-list">
             {items.map((t) => {
-              const overdue = t.status === 'open' && t.due_at && new Date(t.due_at) < now;
+              const overdue = t.status === 'open' && t.due_at && parseWhen(t.due_at) < now;
               const link = entityPath(t.entity_type, t.entity_id);
               return (
                 <div key={t.id} className={'task-row' + (t.status === 'done' ? ' done' : '')}>

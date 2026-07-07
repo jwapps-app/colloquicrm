@@ -525,6 +525,54 @@ async def _update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.
     await update_person_aggregates(db, org_id, person_ids)
 
 
+ADDRESSES_PER_QUERY = 10
+
+
+async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
+    """Ask Gmail for mail exchanged with the given addresses, rather than
+    crawling the whole mailbox — one search per few contacts, so it is fast
+    and quota-cheap even on large accounts."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    expanded: list[str] = []
+    seen_addr: set[str] = set()
+    for a in addresses:
+        for variant in (a.lower().strip(), normalize_email(a)):
+            if variant and variant not in seen_addr:
+                seen_addr.add(variant)
+                expanded.append(variant)
+    addresses = expanded
+    for i in range(0, len(addresses), ADDRESSES_PER_QUERY):
+        chunk = addresses[i : i + ADDRESSES_PER_QUERY]
+        # Header operators match literal addresses; the quoted free-text term
+        # catches variants the operators miss (e.g. dotted gmail headers).
+        # Over-fetching is fine: the metadata matcher filters on real headers.
+        clause = " OR ".join(f'from:{a} OR to:{a} OR cc:{a} OR "{a}"' for a in chunk)
+        window = (
+            f"newer_than:{settings.gmail_backfill_days}d "
+            if settings.gmail_backfill_days > 0
+            else ""
+        )
+        q = f"{window}-in:spam -in:trash ({clause})"
+        page_token = None
+        while True:
+            params = {"q": q, "maxResults": 500}
+            if page_token:
+                params["pageToken"] = page_token
+            data = await _get_json(
+                f"{settings.google_gmail_base}/users/me/messages", access, params
+            )
+            for m in data.get("messages", []):
+                mid = m.get("id")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    ids.append(mid)
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+    return ids
+
+
 async def sync_gmail(
     db, cfg: GoogleIntegration, account: GoogleAccount, force_backfill: bool = False
 ) -> int:

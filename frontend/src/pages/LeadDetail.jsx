@@ -6,7 +6,6 @@ import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
 import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
-import CustomFieldsPanel from '../components/CustomFieldsPanel';
 import TasksPanel from '../components/TasksPanel';
 import CalendarPanel from '../components/CalendarPanel';
 import Modal from '../components/Modal';
@@ -140,12 +139,11 @@ export default function LeadDetail() {
         entityId={id}
         left={
           <>
-            <ProfilePanel entity={lead} fields={LEAD_FIELDS} users={users} onSave={save} />
+            <ProfilePanel entity={lead} entityType="lead" fields={LEAD_FIELDS} users={users} onSave={save} />
             <div className="card">
               <h4 className="panel-title">Tags</h4>
               <TagEditor tags={lead.tags || []} onChange={(tags) => save({ tags })} />
             </div>
-            <CustomFieldsPanel entityType="lead" entity={lead} onSave={save} />
           </>
         }
         right={

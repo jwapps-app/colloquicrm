@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { del, get, patch, post } from '../api';
 import { useToast } from './Toast';
 import { useAuth } from '../auth';
-import { fmtDateTime, humanize } from '../format';
+import { fmtDateTime, humanize, parseWhen } from '../format';
 import { Loading, Empty } from './ui';
 
 function payloadSummary(payload) {
@@ -83,7 +83,7 @@ export default function NotesTimeline({ entityType, entityId }) {
         .map((a) => ({ ...a, _type: 'activity', _at: a.created_at })),
       ...emails.map((e) => ({ ...e, _type: 'email', _at: e.sent_at || e.created_at })),
       ...phoneEvents.map((p) => ({ ...p, _type: p.kind, _at: p.happened_at })),
-    ].sort((x, y) => new Date(y._at) - new Date(x._at));
+    ].sort((x, y) => parseWhen(y._at) - parseWhen(x._at));
   }, [notes, activities, emails, phoneEvents]);
 
   const unattachedNotes = useMemo(
