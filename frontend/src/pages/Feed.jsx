@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { get } from '../api';
+import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';
 import { entityPath, humanize, timeOfDay } from '../format';
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 40;
+const TABS = [
+  { id: 'all', label: 'All' },
+  { id: 'email', label: 'Emails' },
+  { id: 'note', label: 'Notes' },
+  { id: 'activity', label: 'Activity' },
+];
 
 function dayLabel(d) {
   const today = new Date();
@@ -15,21 +22,43 @@ function dayLabel(d) {
   return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 }
 
+function RelatedChips({ related }) {
+  if (!related?.length) return null;
+  return (
+    <span className="feed-related">
+      {related.map((r) => {
+        const link = entityPath(r.entity_type, r.entity_id);
+        return link ? (
+          <Link key={`${r.entity_type}-${r.entity_id}`} className="chip chip-filter" to={link}>
+            {r.label}
+          </Link>
+        ) : (
+          <span key={`${r.entity_type}-${r.entity_id}`} className="chip">{r.label}</span>
+        );
+      })}
+    </span>
+  );
+}
+
 export default function Feed() {
   const toast = useToast();
+  const { user } = useAuth();
+  const [tab, setTab] = useState('all');
   const [items, setItems] = useState(null);
-  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [openEmail, setOpenEmail] = useState(null);
+  const [bodies, setBodies] = useState({});
 
   useEffect(() => {
     let on = true;
     setLoadingMore(true);
-    get('/activities', { page, page_size: PAGE_SIZE })
+    get('/feed', { page, page_size: PAGE_SIZE, kind: tab })
       .then((d) => {
         if (!on) return;
         setItems((prev) => (page === 1 ? d.items || [] : [...(prev || []), ...(d.items || [])]));
-        setTotal(d.total || 0);
+        setHasMore(!!d.has_more);
       })
       .catch((e) => {
         toast.error(e.message);
@@ -42,16 +71,41 @@ export default function Feed() {
       on = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
+  }, [page, tab]);
+
+  function switchTab(id) {
+    if (id === tab) return;
+    setTab(id);
+    setItems(null);
+    setPage(1);
+    setOpenEmail(null);
+  }
+
+  async function toggleEmail(id) {
+    if (openEmail === id) {
+      setOpenEmail(null);
+      return;
+    }
+    setOpenEmail(id);
+    if (!bodies[id]) {
+      setBodies((b) => ({ ...b, [id]: { loading: true } }));
+      try {
+        const body = await get(`/emails/${id}/body`);
+        setBodies((b) => ({ ...b, [id]: { ...body, loading: false } }));
+      } catch (e) {
+        setBodies((b) => ({ ...b, [id]: { loading: false, error: e.message } }));
+      }
+    }
+  }
 
   const groups = useMemo(() => {
     if (!items) return [];
     const map = new Map();
-    items.forEach((a) => {
-      const d = new Date(a.created_at);
+    items.forEach((it) => {
+      const d = new Date(it.at);
       const key = d.toDateString();
       if (!map.has(key)) map.set(key, { key, label: dayLabel(d), items: [] });
-      map.get(key).items.push(a);
+      map.get(key).items.push(it);
     });
     return [...map.values()];
   }, [items]);
@@ -61,42 +115,99 @@ export default function Feed() {
       <div className="page-head">
         <h1>Feed</h1>
       </div>
+      <div className="tabs settings-tabs">
+        {TABS.map((t) => (
+          <button key={t.id} className={'tab' + (tab === t.id ? ' active' : '')} onClick={() => switchTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
       {items === null ? (
-        <Loading label="Loading activity…" />
+        <Loading label="Loading the feed…" />
       ) : items.length === 0 ? (
-        <Empty label="No activity yet." hint="Create a person, lead, or company to get things moving." />
+        <Empty label="Nothing here yet." hint="Emails, notes, and record activity will show up here." />
       ) : (
         <>
           {groups.map((g) => (
             <div key={g.key} className="feed-group">
               <div className="feed-day">{g.label}</div>
               <div className="card feed-card">
-                {g.items.map((a) => {
-                  const link = entityPath(a.entity_type, a.entity_id);
-                  const label = a.payload?.name || a.payload?.display_name || humanize(a.entity_type);
+                {g.items.map((it) => {
+                  if (it.type === 'email') {
+                    const b = bodies[it.id];
+                    const open = openEmail === it.id;
+                    return (
+                      <div key={`e-${it.id}`} className={'feed-item feed-email' + (open ? ' open' : '')}>
+                        <span className="email-dir">{it.is_outgoing ? '↗' : '↘'}</span>
+                        <div className="feed-body">
+                          <div className="email-toggle" onClick={() => toggleEmail(it.id)} role="button" tabIndex={0}>
+                            <strong>
+                              {it.is_outgoing ? 'Email sent' : `Email from ${it.from_name || it.from_email || 'unknown'}`}
+                            </strong>
+                            {' — '}
+                            <span className="feed-subject">{it.subject || '(no subject)'}</span>
+                            <RelatedChips related={it.related} />
+                          </div>
+                          {!open && it.snippet && <div className="muted email-snippet">{it.snippet}</div>}
+                          {open && (
+                            <div className="email-body-wrap">
+                              {b?.loading && <div className="muted">Loading message…</div>}
+                              {b?.error && <div className="form-error">{b.error}</div>}
+                              {b?.body_text && <div className="email-body">{b.body_text}</div>}
+                              {!b?.body_text && b?.body_html && (
+                                <iframe title="email" className="email-frame" sandbox="" srcDoc={b.body_html} />
+                              )}
+                              {user?.id === it.owner_user_id && it.gmail_id && (
+                                <a
+                                  className="muted email-open"
+                                  href={`https://mail.google.com/mail/u/0/#all/${it.gmail_id}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Open in Gmail ↗
+                                </a>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <span className="muted feed-time">{timeOfDay(it.at)}</span>
+                      </div>
+                    );
+                  }
+                  if (it.type === 'note') {
+                    return (
+                      <div key={`n-${it.id}`} className="feed-item">
+                        <span className="feed-dot note-dot" />
+                        <div className="feed-body">
+                          <span>
+                            <strong>{it.author_name || 'Someone'}</strong>{' '}
+                            <span className="muted">added a note</span>
+                            <RelatedChips related={it.related} />
+                          </span>
+                          <div className="feed-note-body">{it.body}</div>
+                        </div>
+                        <span className="muted feed-time">{timeOfDay(it.at)}</span>
+                      </div>
+                    );
+                  }
                   return (
-                    <div key={a.id} className="feed-item">
+                    <div key={`a-${it.id}`} className="feed-item">
                       <span className="feed-dot" />
                       <div className="feed-body">
                         <span>
-                          <strong>{a.actor_name || 'System'}</strong>{' '}
-                          <span className="muted">{humanize(a.kind).toLowerCase()}</span>
-                          {link && (
-                            <>
-                              {' — '}
-                              <Link to={link}>{label}</Link>
-                            </>
-                          )}
+                          <strong>{it.actor_name || 'System'}</strong>{' '}
+                          <span className="muted">{humanize(it.kind).toLowerCase()}</span>
+                          <RelatedChips related={it.related} />
                         </span>
                       </div>
-                      <span className="muted feed-time">{timeOfDay(a.created_at)}</span>
+                      <span className="muted feed-time">{timeOfDay(it.at)}</span>
                     </div>
                   );
                 })}
               </div>
             </div>
           ))}
-          {items.length < total && (
+          {hasMore && (
             <div className="feed-more">
               <button className="btn" disabled={loadingMore} onClick={() => setPage((p) => p + 1)}>
                 {loadingMore ? 'Loading…' : 'Load more'}

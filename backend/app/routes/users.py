@@ -20,6 +20,7 @@ def user_row(u: User) -> dict:
         "display_name": u.display_name,
         "is_admin": u.is_admin,
         "is_active": u.is_active,
+        "totp_enabled": u.totp_enabled,
     }
 
 
@@ -93,4 +94,21 @@ async def update_user(
         u.is_admin = body.is_admin
     if body.is_active is not None:
         u.is_active = body.is_active
+    return user_row(u)
+
+
+@router.post("/{user_id}/reset-totp")
+async def reset_totp(
+    user_id: uuid.UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin recovery for a user locked out of their authenticator."""
+    u = (
+        await db.execute(select(User).where(User.id == user_id, User.org_id == admin.org_id))
+    ).scalar_one_or_none()
+    if u is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    u.totp_enabled = False
+    u.totp_secret = None
     return user_row(u)

@@ -14,6 +14,7 @@ from app.models import Org, Pipeline, Stage
 from app.routes import (
     activities,
     auth,
+    feed,
     colloqui as colloqui_routes,
     companies,
     google as google_routes,
@@ -133,6 +134,7 @@ app.include_router(
     google_routes.calendar_router, prefix=f"{API}/calendar-events", tags=["integrations"]
 )
 app.include_router(google_routes.emails_router, prefix=f"{API}/emails", tags=["integrations"])
+app.include_router(feed.router, prefix=f"{API}/feed", tags=["feed"])
 
 # Serve the built frontend when present (single-process deployment). API routes
 # above always win; anything else falls back to the SPA's index.html.

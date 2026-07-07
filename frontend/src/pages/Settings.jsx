@@ -409,6 +409,17 @@ function UsersSection() {
     }
   }
 
+  async function resetTotp(u) {
+    if (!window.confirm(`Reset two-factor authentication for ${u.display_name}? They can sign in with just their password until they set it up again.`)) return;
+    try {
+      await post(`/users/${u.id}/reset-totp`);
+      setVersion((v) => v + 1);
+      toast.success(`2FA reset for ${u.display_name}`);
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
   return (
     <div className="card settings-card">
       <div className="panel-head">
@@ -445,6 +456,11 @@ function UsersSection() {
                     {u.id !== me?.id && (
                       <button className="btn btn-small" onClick={() => toggleAdmin(u)}>
                         {u.is_admin ? 'Remove admin' : 'Make admin'}
+                      </button>
+                    )}{' '}
+                    {u.totp_enabled && (
+                      <button className="btn btn-small" onClick={() => resetTotp(u)} title="Clears their authenticator so they can sign in with password only">
+                        Reset 2FA
                       </button>
                     )}
                   </td>

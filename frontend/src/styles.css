@@ -1696,3 +1696,33 @@ textarea {
   border-radius: 8px;
   background: #fff;
 }
+
+/* Feed enhancements */
+.feed-related {
+  margin-left: 8px;
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  vertical-align: middle;
+}
+.feed-related .chip {
+  font-size: 12px;
+  padding: 1px 8px;
+}
+.feed-email .email-dir {
+  margin-top: 2px;
+}
+.feed-email.open {
+  background: #fbfaff;
+}
+.feed-subject {
+  font-weight: 600;
+}
+.feed-note-body {
+  margin-top: 2px;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+.note-dot {
+  background: var(--warn);
+}
