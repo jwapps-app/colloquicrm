@@ -18,7 +18,7 @@ services:
       retries: 12
 
   api:
-    image: ghcr.io/jwapps-app/crm-app:latest
+    image: ghcr.io/jwapps-app/colloquicrm:latest
     restart: unless-stopped
     ports:
       - "${APP_PORT:-3310}:8000"

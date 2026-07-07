@@ -1,4 +1,4 @@
-# crm-app
+# colloquicrm
 
 Self-hosted CRM. Companies, people, leads, opportunities across multiple
 pipelines, tasks, notes, tags, custom fields, saved filters, and CSV import
@@ -63,7 +63,7 @@ applies per-row create/skip/merge decisions.
 ## Deployment
 
 One image serves API + web app; `alembic upgrade head` runs at container
-start. CI builds and publishes `ghcr.io/jwapps-app/crm-app` on every push to
+start. CI builds and publishes `ghcr.io/jwapps-app/colloquicrm` on every push to
 main.
 
 NAS/Portainer: use `docker-compose.portainer.yml` (postgres + api + nightly
