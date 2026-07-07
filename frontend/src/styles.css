@@ -1726,3 +1726,16 @@ textarea {
 .note-dot {
   background: var(--warn);
 }
+
+/* Calls & texts in the timeline */
+.phone-item {
+  border-left: 3px solid var(--success);
+}
+.phone-icon {
+  margin-right: 6px;
+}
+.sms-body {
+  margin-top: 2px;
+  font-size: 13px;
+  white-space: pre-wrap;
+}

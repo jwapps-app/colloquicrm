@@ -20,6 +20,7 @@ export default function NotesTimeline({ entityType, entityId }) {
   const [notes, setNotes] = useState(null);
   const [activities, setActivities] = useState(null);
   const [emails, setEmails] = useState(null);
+  const [phoneEvents, setPhoneEvents] = useState(null);
   const [openEmail, setOpenEmail] = useState(null); // id currently expanded
   const [bodies, setBodies] = useState({}); // id -> {loading, body_text, body_html, error}
   const [body, setBody] = useState('');
@@ -27,21 +28,27 @@ export default function NotesTimeline({ entityType, entityId }) {
 
   async function load() {
     try {
-      const [n, a, em] = await Promise.all([
+      const phoneable = entityType === 'person' || entityType === 'lead';
+      const [n, a, em, ph] = await Promise.all([
         get('/notes', { entity_type: entityType, entity_id: entityId }),
         get('/activities', { entity_type: entityType, entity_id: entityId, page: 1, page_size: 50 }),
         entityType === 'opportunity'
           ? Promise.resolve({ items: [] })
           : get('/emails', { entity_type: entityType, entity_id: entityId }).catch(() => ({ items: [] })),
+        phoneable
+          ? get('/integrations/ringcentral/events', { entity_type: entityType, entity_id: entityId }).catch(() => ({ items: [] }))
+          : Promise.resolve({ items: [] }),
       ]);
       setNotes(n?.items || []);
       setActivities(a?.items || []);
       setEmails(em?.items || []);
+      setPhoneEvents(ph?.items || []);
     } catch (e) {
       toast.error(e.message);
       setNotes((v) => v || []);
       setActivities((v) => v || []);
       setEmails((v) => v || []);
+      setPhoneEvents((v) => v || []);
     }
   }
 
@@ -49,18 +56,20 @@ export default function NotesTimeline({ entityType, entityId }) {
     setNotes(null);
     setActivities(null);
     setEmails(null);
+    setPhoneEvents(null);
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, entityId]);
 
   const merged = useMemo(() => {
-    if (!notes || !activities || !emails) return null;
+    if (!notes || !activities || !emails || !phoneEvents) return null;
     return [
       ...notes.map((n) => ({ ...n, _type: 'note', _at: n.created_at })),
       ...activities.map((a) => ({ ...a, _type: 'activity', _at: a.created_at })),
       ...emails.map((e) => ({ ...e, _type: 'email', _at: e.sent_at || e.created_at })),
+      ...phoneEvents.map((p) => ({ ...p, _type: p.kind, _at: p.happened_at })),
     ].sort((x, y) => new Date(y._at) - new Date(x._at));
-  }, [notes, activities, emails]);
+  }, [notes, activities, emails, phoneEvents]);
 
   async function addNote(e) {
     e.preventDefault();
@@ -128,7 +137,34 @@ export default function NotesTimeline({ entityType, entityId }) {
       ) : (
         <div className="timeline">
           {merged.map((item) =>
-            item._type === 'email' ? (
+            item._type === 'call' ? (
+              <div key={`c-${item.id}`} className="timeline-item phone-item">
+                <div className="timeline-head">
+                  <span className="phone-icon">☎</span>
+                  <strong>
+                    {item.direction === 'outbound' ? 'Outgoing call' : 'Incoming call'}
+                    {item.result && item.result !== 'Call connected' && item.result !== 'Accepted' ? ` — ${item.result}` : ''}
+                  </strong>
+                  <span className="muted"> · {fmtDateTime(item._at)}</span>
+                </div>
+                <div className="muted">
+                  {item.duration_seconds != null && item.duration_seconds > 0
+                    ? `${Math.floor(item.duration_seconds / 60)}m ${item.duration_seconds % 60}s · `
+                    : ''}
+                  {item.other_number}
+                  {item.recording_id ? ' · recorded' : ''}
+                </div>
+              </div>
+            ) : item._type === 'sms' ? (
+              <div key={`s-${item.id}`} className="timeline-item phone-item sms-item">
+                <div className="timeline-head">
+                  <span className="phone-icon">💬</span>
+                  <strong>{item.direction === 'outbound' ? 'Text sent' : 'Text received'}</strong>
+                  <span className="muted"> · {fmtDateTime(item._at)}</span>
+                </div>
+                {item.text && <div className="sms-body">{item.text}</div>}
+              </div>
+            ) : item._type === 'email' ? (
               <div key={`e-${item.id}`} className={'timeline-item email-item' + (openEmail === item.id ? ' open' : '')}>
                 <div className="timeline-head email-toggle" onClick={() => toggleEmail(item.id)} role="button" tabIndex={0}>
                   <span className="email-dir">{item.is_outgoing ? '↗' : '↘'}</span>

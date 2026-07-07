@@ -15,6 +15,7 @@ from app.routes import (
     activities,
     auth,
     feed,
+    ringcentral as ringcentral_routes,
     colloqui as colloqui_routes,
     companies,
     google as google_routes,
@@ -30,6 +31,7 @@ from app.routes import (
 )
 from app.services.colloqui import reminder_loop
 from app.services.google import sync_loop as google_sync_loop
+from app.services.ringcentral import sync_loop as ringcentral_sync_loop
 
 DEFAULT_PIPELINES = [
     ("Sales", [("Lead", 10), ("Qualified", 25), ("Proposal", 50), ("Negotiation", 75)]),
@@ -76,6 +78,7 @@ async def lifespan(app: FastAPI):
     background = [
         asyncio.create_task(reminder_loop()),
         asyncio.create_task(google_sync_loop()),
+        asyncio.create_task(ringcentral_sync_loop()),
     ]
     yield
     for task in background:
@@ -135,6 +138,9 @@ app.include_router(
 )
 app.include_router(google_routes.emails_router, prefix=f"{API}/emails", tags=["integrations"])
 app.include_router(feed.router, prefix=f"{API}/feed", tags=["feed"])
+app.include_router(
+    ringcentral_routes.router, prefix=f"{API}/integrations/ringcentral", tags=["integrations"]
+)
 
 # Serve the built frontend when present (single-process deployment). API routes
 # above always win; anything else falls back to the SPA's index.html.

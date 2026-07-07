@@ -451,6 +451,51 @@ class CustomFieldValue(Base):
     value: Mapped[str | None] = mapped_column(Text)
 
 
+class RingCentralIntegration(Base):
+    """Org-level RingCentral app credentials (JWT auth flow)."""
+
+    __tablename__ = "ringcentral_integration"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("orgs.id", ondelete="CASCADE"), primary_key=True
+    )
+    client_id: Mapped[str] = mapped_column(String(255))
+    client_secret: Mapped[str] = mapped_column(String(255))
+    jwt: Mapped[str] = mapped_column(Text)
+    access_token: Mapped[str | None] = mapped_column(Text)
+    access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    own_numbers: Mapped[list | None] = mapped_column(JSON)  # E.164 numbers of the account
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sync_error: Mapped[str | None] = mapped_column(String(500))
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PhoneEvent(Base):
+    """A call or text that involves a known Person or Lead, matched by
+    normalized phone number. kind: call | sms."""
+
+    __tablename__ = "phone_events"
+    __table_args__ = (
+        UniqueConstraint("org_id", "rc_id"),
+        Index("ix_phone_events_org_at", "org_id", "happened_at"),
+        Index("ix_phone_events_number", "other_number"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    rc_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(8))  # call | sms
+    direction: Mapped[str] = mapped_column(String(10))  # inbound | outbound
+    other_number: Mapped[str] = mapped_column(String(24))  # E.164 of the contact side
+    other_name: Mapped[str | None] = mapped_column(String(255))
+    happened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    result: Mapped[str | None] = mapped_column(String(60))  # Answered, Missed, Voicemail…
+    text: Mapped[str | None] = mapped_column(Text)  # SMS body
+    recording_id: Mapped[str | None] = mapped_column(String(64))  # future playback
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class SavedFilter(Base):
     __tablename__ = "saved_filters"
 

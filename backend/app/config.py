@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     google_people_base: str = "https://people.googleapis.com"
     google_calendar_base: str = "https://www.googleapis.com/calendar/v3"
     google_gmail_base: str = "https://gmail.googleapis.com/gmail/v1"
+    ringcentral_base: str = "https://platform.ringcentral.com"
+    # 0 = as far back as RingCentral retains call/message history.
+    ringcentral_backfill_days: int = 0
     # 0 = no window: sync all history with known contacts. Set a day count to
     # bound the initial backfill on very large installs.
     gmail_backfill_days: int = 0

@@ -1,0 +1,148 @@
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_db
+from app.deps import get_current_user, require_admin
+from app.models import Lead, Person, PhoneEvent, RingCentralIntegration, User, utcnow
+from app.schemas import RingCentralConnectIn
+from app.services import ringcentral as rc
+
+router = APIRouter()
+
+
+async def _cfg(db: AsyncSession, org_id: uuid.UUID) -> RingCentralIntegration | None:
+    return (
+        await db.execute(
+            select(RingCentralIntegration).where(RingCentralIntegration.org_id == org_id)
+        )
+    ).scalar_one_or_none()
+
+
+def _status(cfg: RingCentralIntegration | None) -> dict:
+    return {
+        "configured": cfg is not None,
+        "own_numbers": cfg.own_numbers if cfg else [],
+        "last_synced_at": cfg.last_synced_at.isoformat() if cfg and cfg.last_synced_at else None,
+        "sync_error": cfg.sync_error if cfg else None,
+        "connected_at": cfg.connected_at.isoformat() if cfg and cfg.connected_at else None,
+    }
+
+
+@router.get("/status")
+async def status(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    return _status(await _cfg(db, user.org_id))
+
+
+@router.post("/connect")
+async def connect(
+    body: RingCentralConnectIn,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    cfg = await _cfg(db, admin.org_id)
+    if cfg is None:
+        cfg = RingCentralIntegration(
+            org_id=admin.org_id,
+            client_id=body.client_id.strip(),
+            client_secret=body.client_secret.strip(),
+            jwt=body.jwt.strip(),
+        )
+        db.add(cfg)
+    else:
+        cfg.client_id = body.client_id.strip()
+        cfg.client_secret = body.client_secret.strip()
+        cfg.jwt = body.jwt.strip()
+        cfg.access_token = None
+        cfg.access_expires_at = None
+        cfg.own_numbers = None
+    try:
+        access = await rc.ensure_access_token(db, cfg)
+        cfg.own_numbers = await rc.fetch_own_numbers(access)
+    except rc.RingCentralError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc))
+    cfg.connected_at = utcnow()
+    cfg.sync_error = None
+    return _status(cfg)
+
+
+@router.delete("/connect", status_code=204)
+async def disconnect(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    await db.execute(
+        delete(RingCentralIntegration).where(RingCentralIntegration.org_id == admin.org_id)
+    )
+
+
+@router.post("/sync")
+async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    cfg = await _cfg(db, user.org_id)
+    if cfg is None:
+        raise HTTPException(status_code=400, detail="RingCentral is not connected")
+    try:
+        result = await rc.sync_org(db, cfg)
+    except rc.RingCentralError as exc:
+        cfg.sync_error = str(exc)[:500]
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {**result, "last_synced_at": cfg.last_synced_at.isoformat()}
+
+
+PHONE_ENTITY_MODELS = {"person": Person, "lead": Lead}
+
+
+@router.get("/events")
+async def phone_events(
+    entity_type: str,
+    entity_id: uuid.UUID,
+    limit: int = 50,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    model = PHONE_ENTITY_MODELS.get(entity_type)
+    if model is None:
+        raise HTTPException(status_code=422, detail="entity_type must be person or lead")
+    obj = (
+        await db.execute(select(model).where(model.id == entity_id, model.org_id == user.org_id))
+    ).scalar_one_or_none()
+    if obj is None:
+        raise HTTPException(status_code=404, detail=f"{entity_type} not found")
+    numbers = [
+        n
+        for n in (rc.normalize_phone(obj.work_phone), rc.normalize_phone(obj.mobile_phone))
+        if n
+    ]
+    if not numbers:
+        return {"items": []}
+    events = (
+        (
+            await db.execute(
+                select(PhoneEvent)
+                .where(
+                    PhoneEvent.org_id == user.org_id, PhoneEvent.other_number.in_(numbers)
+                )
+                .order_by(PhoneEvent.happened_at.desc())
+                .limit(min(max(limit, 1), 200))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": str(e.id),
+                "kind": e.kind,
+                "direction": e.direction,
+                "other_number": e.other_number,
+                "other_name": e.other_name,
+                "happened_at": e.happened_at.isoformat() if e.happened_at else None,
+                "duration_seconds": e.duration_seconds,
+                "result": e.result,
+                "text": e.text,
+                "recording_id": e.recording_id,
+            }
+            for e in events
+        ]
+    }

@@ -223,6 +223,12 @@ class GoogleConfigIn(BaseModel):
     client_secret: str
 
 
+class RingCentralConnectIn(BaseModel):
+    client_id: str
+    client_secret: str
+    jwt: str
+
+
 class ColloquiConnectIn(BaseModel):
     base_url: str
     api_key: str
