@@ -80,9 +80,8 @@ export default function Login() {
                 className="totp-input"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                maxLength={6}
                 value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 required
                 autoFocus
                 autoComplete="one-time-code"

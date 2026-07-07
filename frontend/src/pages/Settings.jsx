@@ -172,9 +172,8 @@ function SecuritySection() {
             <input
               className="totp-input"
               inputMode="numeric"
-              maxLength={6}
               value={code}
-              onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
               required
             />
           </label>
@@ -221,9 +220,8 @@ function SecuritySection() {
             <input
               className="totp-input"
               inputMode="numeric"
-              maxLength={6}
               value={code}
-              onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
               required
               autoFocus
             />
