@@ -2,7 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -146,6 +146,9 @@ if _dist.is_dir():
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
+        if path.startswith("api/") or path == "api":
+            # Unknown API route: a JSON 404 beats silently serving the SPA.
+            raise HTTPException(status_code=404, detail="Not found")
         candidate = (_dist / path).resolve()
         if path and candidate.is_file() and candidate.is_relative_to(_dist):
             return FileResponse(candidate)
