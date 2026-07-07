@@ -52,9 +52,18 @@ class ColloquiClient:
             raise ColloquiError(f"Cannot reach Colloqui at {self.base_url}: {exc}") from exc
         if resp.status_code >= 400:
             try:
-                detail = resp.json().get("detail", resp.text)
+                detail = str(resp.json().get("detail", ""))
             except Exception:
-                detail = resp.text
+                detail = ""
+            if not detail:
+                snippet = resp.text.lstrip()[:120]
+                # Proxies (e.g. Cloudflare) answer errors with HTML pages;
+                # surface the status, not the soup.
+                detail = (
+                    "upstream returned an HTML error page (proxy/tunnel hiccup?)"
+                    if snippet.startswith("<")
+                    else snippet
+                )
             raise ColloquiError(f"Colloqui {method} {path} failed ({resp.status_code}): {detail}")
         return resp
 

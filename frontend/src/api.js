@@ -72,6 +72,10 @@ async function request(method, path, { params, body, formData } = {}) {
     } else if (typeof data === 'string' && data) {
       msg = data.slice(0, 200);
     }
+    // Proxy/CDN error pages are HTML; show the status instead of markup soup.
+    if (msg.trimStart().startsWith('<')) {
+      msg = `The server returned an error page (${res.status}) — likely a temporary proxy or tunnel hiccup. Try again.`;
+    }
     throw new Error(msg);
   }
   return data;
