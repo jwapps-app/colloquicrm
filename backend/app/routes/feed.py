@@ -241,7 +241,10 @@ async def feed(
             (
                 await db.execute(
                     select(Activity)
-                    .where(Activity.org_id == user.org_id)
+                    .where(
+                        Activity.org_id == user.org_id,
+                        Activity.kind != "note_added",  # the note shows directly
+                    )
                     .order_by(Activity.created_at.desc())
                     .limit(need)
                 )

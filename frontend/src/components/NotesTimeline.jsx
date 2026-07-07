@@ -77,7 +77,10 @@ export default function NotesTimeline({ entityType, entityId }) {
     return [
       // Notes attached to a call render under that call, not standalone.
       ...notes.filter((n) => !n.phone_event_id).map((n) => ({ ...n, _type: 'note', _at: n.created_at })),
-      ...activities.map((a) => ({ ...a, _type: 'activity', _at: a.created_at })),
+      // 'note_added' duplicates the note itself — the note is shown directly.
+      ...activities
+        .filter((a) => a.kind !== 'note_added')
+        .map((a) => ({ ...a, _type: 'activity', _at: a.created_at })),
       ...emails.map((e) => ({ ...e, _type: 'email', _at: e.sent_at || e.created_at })),
       ...phoneEvents.map((p) => ({ ...p, _type: p.kind, _at: p.happened_at })),
     ].sort((x, y) => new Date(y._at) - new Date(x._at));

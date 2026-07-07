@@ -8,7 +8,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import Note, PhoneEvent, User
 from app.schemas import NoteAttachIn, NoteIn
-from app.services.common import display_name_map, log_activity, row_to_dict
+from app.services.common import display_name_map, row_to_dict
 
 
 async def _valid_phone_event(db, org_id, phone_event_id):
@@ -79,10 +79,6 @@ async def create_note(
     )
     db.add(note)
     await db.flush()
-    await log_activity(
-        db, user.org_id, body.entity_type, body.entity_id, "note_added", user.id,
-        {"note_id": str(note.id)},
-    )
     return (await _serialize(db, [note]))[0]
 
 

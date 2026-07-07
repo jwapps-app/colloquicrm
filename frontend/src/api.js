@@ -30,7 +30,7 @@ async function request(method, path, { params, body, formData } = {}) {
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const opts = { method, headers };
+  const opts = { method, headers, cache: 'no-store' };
   if (formData) {
     opts.body = formData; // browser sets multipart content-type + boundary
   } else if (body !== undefined) {
