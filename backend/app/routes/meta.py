@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import CustomField, EntityTag, SavedFilter, Tag, User
+from app.models import CustomField, CustomFieldValue, EntityTag, SavedFilter, Tag, User
 from app.schemas import (
     CustomFieldIn,
     CustomFieldUpdateIn,
@@ -116,6 +116,24 @@ async def update_custom_field(
         value = getattr(body, key)
         if value is not None:
             setattr(field, key, value)
+    if body.field_type == "date":
+        # Convert existing values (e.g. Copper's 7/6/2026) so date pickers
+        # can read them.
+        from app.services.importer import _parse_date
+
+        values = (
+            (
+                await db.execute(
+                    select(CustomFieldValue).where(CustomFieldValue.field_id == field.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for v in values:
+            parsed = _parse_date(v.value or "")
+            if parsed:
+                v.value = parsed
     return row_to_dict(field)
 
 

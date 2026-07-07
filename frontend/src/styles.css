@@ -1836,3 +1836,11 @@ textarea {
   display: flex;
   gap: 6px;
 }
+
+.cf-type {
+  font-size: 12px;
+}
+.cf-options {
+  flex: 1;
+  min-width: 120px;
+}

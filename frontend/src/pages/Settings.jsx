@@ -296,6 +296,26 @@ function CustomFieldsSection() {
     }
   }
 
+  async function changeType(f, field_type) {
+    try {
+      await patch(`/custom-fields/${f.id}`, { field_type });
+      setVersion((v) => v + 1);
+      toast.success(field_type === 'date' ? 'Type changed — existing values converted to dates' : 'Type changed');
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function changeOptions(f, raw) {
+    const options = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+    try {
+      await patch(`/custom-fields/${f.id}`, { options });
+      setVersion((v) => v + 1);
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
   async function remove(f) {
     if (!window.confirm(`Delete custom field "${f.name}"? Values on records will be lost.`)) return;
     try {
@@ -332,8 +352,26 @@ function CustomFieldsSection() {
               <div className="cf-name">
                 <InlineField value={f.name} onSave={(v) => v && rename(f, v)} />
               </div>
-              <span className="badge badge-muted">{humanize(f.field_type)}</span>
-              {f.field_type === 'select' && <span className="muted cf-options">{(f.options || []).join(', ')}</span>}
+              <select
+                className="inline-select cf-type"
+                value={f.field_type}
+                onChange={(e) => changeType(f, e.target.value)}
+                title="Field type"
+              >
+                {CUSTOM_FIELD_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+              {f.field_type === 'select' && (
+                <span className="cf-options">
+                  <InlineField
+                    value={(f.options || []).join(', ')}
+                    onSave={(v) => changeOptions(f, v)}
+                  />
+                </span>
+              )}
               <button className="icon-btn tiny" onClick={() => remove(f)} title="Delete field">
                 ×
               </button>

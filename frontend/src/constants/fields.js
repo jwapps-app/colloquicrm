@@ -1,4 +1,4 @@
-import { CONTACT_TYPES, LEAD_STATUSES, PRIORITIES, CURRENCIES } from './options';
+import { CONTACT_TYPES, LEAD_STATUSES, PRIORITIES, CURRENCIES, PREFIXES } from './options';
 import { money } from '../format';
 
 const ADDRESS = [
@@ -10,7 +10,7 @@ const ADDRESS = [
 ];
 
 export const PERSON_FIELDS = [
-  { key: 'prefix', label: 'Prefix' },
+  { key: 'prefix', label: 'Prefix', type: 'select', options: PREFIXES },
   { key: 'first_name', label: 'First name' },
   { key: 'middle_name', label: 'Middle name' },
   { key: 'last_name', label: 'Last name' },
@@ -31,7 +31,7 @@ export const PERSON_FIELDS = [
 ];
 
 export const LEAD_FIELDS = [
-  { key: 'prefix', label: 'Prefix' },
+  { key: 'prefix', label: 'Prefix', type: 'select', options: PREFIXES },
   { key: 'first_name', label: 'First name' },
   { key: 'middle_name', label: 'Middle name' },
   { key: 'last_name', label: 'Last name' },

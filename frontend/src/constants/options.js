@@ -15,6 +15,8 @@ export const PRIORITIES = ['none', 'low', 'medium', 'high'].map(opt);
 
 export const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY'].map((v) => ({ value: v, label: v }));
 
+export const PREFIXES = ['Mr.', 'Mrs.', 'Miss', 'Ms.', 'Dr.'].map((v) => ({ value: v, label: v }));
+
 export const CUSTOM_FIELD_TYPES = ['text', 'number', 'date', 'select', 'checkbox', 'url', 'currency'].map(opt);
 
 export const IMPORT_TYPES = [

@@ -375,6 +375,7 @@ class _CommitContext:
         self.pipelines: dict[str, uuid.UUID] = {}
         self.stages: dict[tuple[uuid.UUID, str], uuid.UUID] = {}
         self.fields: dict[str, uuid.UUID] = {}
+        self.field_types: dict[uuid.UUID, str] = {}
         self.fields_created: list[str] = []
 
 
@@ -481,7 +482,8 @@ async def _resolve_person(db: AsyncSession, org_id: uuid.UUID, name: str) -> uui
 
 
 async def _ensure_field(
-    db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext, entity_type: str, name: str
+    db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext, entity_type: str, name: str,
+    sample_value: str | None = None,
 ) -> uuid.UUID:
     key = f"{entity_type}:{name.lower()}"
     if key in ctx.fields:
@@ -503,13 +505,16 @@ async def _ensure_field(
                 )
             )
         ).scalar_one()
+        field_type = "date" if sample_value and _parse_date(str(sample_value)) else "text"
         field = CustomField(
-            org_id=org_id, entity_type=entity_type, name=name, position=max_pos + 1
+            org_id=org_id, entity_type=entity_type, name=name, position=max_pos + 1,
+            field_type=field_type,
         )
         db.add(field)
         await db.flush()
         ctx.fields_created.append(name)
     ctx.fields[key] = field.id
+    ctx.field_types[field.id] = field.field_type
     return field.id
 
 
@@ -525,7 +530,12 @@ async def _set_cf_values(
     for name, value in cfs.items():
         if value in (None, ""):
             continue
-        field_id = await _ensure_field(db, org_id, ctx, entity_type, name)
+        field_id = await _ensure_field(db, org_id, ctx, entity_type, name, sample_value=value)
+        field_type = ctx.field_types.get(field_id)
+        if field_type == "date":
+            parsed = _parse_date(str(value))
+            if parsed:
+                value = parsed
         existing = (
             await db.execute(
                 select(CustomFieldValue).where(
