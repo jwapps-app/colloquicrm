@@ -25,6 +25,8 @@ export default function NotesTimeline({ entityType, entityId }) {
   const [bodies, setBodies] = useState({}); // id -> {loading, body_text, body_html, error}
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
+  const [logCall, setLogCall] = useState(false);
+  const [callDir, setCallDir] = useState('outbound');
   const [composerFor, setComposerFor] = useState(null); // call id with open note composer
   const [callDraft, setCallDraft] = useState('');
   const [attachFor, setAttachFor] = useState(null); // call id with open attach picker
@@ -91,16 +93,24 @@ export default function NotesTimeline({ entityType, entityId }) {
     [notes]
   );
 
+  const canLogCall = entityType === 'person' || entityType === 'lead';
+
   async function addNote(e) {
     e.preventDefault();
     const text = body.trim();
     if (!text) return;
     setBusy(true);
     try {
-      await post('/notes', { entity_type: entityType, entity_id: entityId, body: text });
+      const payload = { entity_type: entityType, entity_id: entityId, body: text };
+      if (canLogCall && logCall) {
+        payload.log_call = true;
+        payload.call_direction = callDir;
+      }
+      await post('/notes', payload);
       setBody('');
+      setLogCall(false);
       await load();
-      toast.success('Note added');
+      toast.success(logCall ? 'Call logged' : 'Note added');
     } catch (err) {
       toast.error(err.message);
     }
@@ -183,8 +193,34 @@ export default function NotesTimeline({ entityType, entityId }) {
           onChange={(e) => setBody(e.target.value)}
         />
         <div className="composer-actions">
+          {canLogCall && (
+            <div className="call-log-toggle">
+              <label className="call-log-check">
+                <input type="checkbox" checked={logCall} onChange={(e) => setLogCall(e.target.checked)} />
+                ☎ This was a call
+              </label>
+              {logCall && (
+                <div className="call-dir">
+                  <button
+                    type="button"
+                    className={'btn btn-small' + (callDir === 'outbound' ? ' btn-primary' : '')}
+                    onClick={() => setCallDir('outbound')}
+                  >
+                    ↗ Outgoing
+                  </button>
+                  <button
+                    type="button"
+                    className={'btn btn-small' + (callDir === 'inbound' ? ' btn-primary' : '')}
+                    onClick={() => setCallDir('inbound')}
+                  >
+                    ↘ Incoming
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           <button type="submit" className="btn btn-primary" disabled={busy || !body.trim()}>
-            {busy ? 'Saving…' : 'Save note'}
+            {busy ? 'Saving…' : logCall ? 'Log call' : 'Save note'}
           </button>
         </div>
       </form>

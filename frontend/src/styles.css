@@ -1816,3 +1816,23 @@ textarea {
 .when-row .composer-actions {
   margin-top: 8px;
 }
+
+/* Log-a-call toggle in the note composer */
+.call-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: auto;
+}
+.call-log-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.call-dir {
+  display: flex;
+  gap: 6px;
+}

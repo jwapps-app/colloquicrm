@@ -187,7 +187,11 @@ async def feed(
                     if n:
                         phone_map.setdefault(n, ("lead", lid, label))
         for e in events:
-            hit = phone_map.get(e.other_number)
+            if e.entity_type and e.entity_id:
+                label = None  # resolved below with the other entity labels
+                hit = None
+            else:
+                hit = phone_map.get(e.other_number)
             items.append(
                 {
                     "type": e.kind,  # call | sms
@@ -200,6 +204,8 @@ async def feed(
                     "result": e.result,
                     "text": e.text,
                     "recording_id": e.recording_id,
+                    "entity_type": e.entity_type,
+                    "entity_id": str(e.entity_id) if e.entity_id else None,
                     "related": [
                         {"entity_type": hit[0], "entity_id": str(hit[1]), "label": hit[2]}
                     ]
@@ -276,10 +282,16 @@ async def feed(
     refs = {
         (i.get("entity_type"), i.get("entity_id"))
         for i in page_items
-        if i["type"] in ("note", "activity")
+        if i["type"] in ("note", "activity", "call", "sms")
     }
     labels = await _entity_labels(db, user.org_id, refs)
     for i in page_items:
+        if i["type"] in ("call", "sms") and i.get("entity_type") and i.get("entity_id") and not i["related"]:
+            label = labels.get((i["entity_type"], i["entity_id"]))
+            if label:
+                i["related"] = [
+                    {"entity_type": i["entity_type"], "entity_id": i["entity_id"], "label": label}
+                ]
         if i["type"] in ("note", "activity") and i.get("entity_type") and i.get("entity_id"):
             label = labels.get((i["entity_type"], i["entity_id"]))
             i["related"] = (

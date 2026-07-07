@@ -41,15 +41,20 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
                 )
             ).one()
 
-        phone_count, phone_latest = 0, None
+        from sqlalchemy import or_
+
+        phone_conditions = [
+            (PhoneEvent.entity_type == "person") & (PhoneEvent.entity_id == pid)
+        ]
         if numbers:
-            phone_count, phone_latest = (
-                await db.execute(
-                    select(func.count(PhoneEvent.id), func.max(PhoneEvent.happened_at)).where(
-                        PhoneEvent.org_id == org_id, PhoneEvent.other_number.in_(numbers)
-                    )
+            phone_conditions.append(PhoneEvent.other_number.in_(numbers))
+        phone_count, phone_latest = (
+            await db.execute(
+                select(func.count(func.distinct(PhoneEvent.id)), func.max(PhoneEvent.happened_at)).where(
+                    PhoneEvent.org_id == org_id, or_(*phone_conditions)
                 )
-            ).one()
+            )
+        ).one()
 
         person.interaction_count = (email_count or 0) + (phone_count or 0)
         latest = max((d for d in (email_latest, phone_latest) if d is not None), default=None)

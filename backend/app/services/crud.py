@@ -165,6 +165,8 @@ def register_crud(
         obj = model(org_id=user.org_id, **data)
         if hasattr(obj, "created_by") and obj.created_by is None:
             obj.created_by = user.id
+        if hasattr(obj, "owner_id") and obj.owner_id is None:
+            obj.owner_id = user.id
         db.add(obj)
         await db.flush()
         await apply_extras(db, user, obj, tags, cfs)

@@ -164,6 +164,9 @@ class NoteIn(BaseModel):
     entity_id: uuid.UUID
     body: str
     phone_event_id: uuid.UUID | None = None
+    # Log this note as a manual call (calls that didn't go through RingCentral).
+    log_call: bool = False
+    call_direction: str | None = None  # inbound | outbound
 
 
 class ConvertIn(BaseModel):

@@ -175,15 +175,18 @@ async def phone_events(
         for n in (rc.normalize_phone(obj.work_phone), rc.normalize_phone(obj.mobile_phone))
         if n
     ]
-    if not numbers:
-        return {"items": []}
+    conditions = [
+        (PhoneEvent.entity_type == entity_type) & (PhoneEvent.entity_id == entity_id)
+    ]
+    if numbers:
+        conditions.append(PhoneEvent.other_number.in_(numbers))
+    from sqlalchemy import or_
+
     events = (
         (
             await db.execute(
                 select(PhoneEvent)
-                .where(
-                    PhoneEvent.org_id == user.org_id, PhoneEvent.other_number.in_(numbers)
-                )
+                .where(PhoneEvent.org_id == user.org_id, or_(*conditions))
                 .order_by(PhoneEvent.happened_at.desc())
                 .limit(min(max(limit, 1), 200))
             )

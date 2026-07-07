@@ -487,8 +487,11 @@ class PhoneEvent(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
-    rc_id: Mapped[str] = mapped_column(String(64))
+    rc_id: Mapped[str] = mapped_column(String(64))  # RingCentral id, or manual:<uuid>
     kind: Mapped[str] = mapped_column(String(8))  # call | sms
+    # Manually logged events carry a direct record link (no phone matching).
+    entity_type: Mapped[str | None] = mapped_column(String(30))
+    entity_id: Mapped[uuid.UUID | None] = mapped_column()
     direction: Mapped[str] = mapped_column(String(10))  # inbound | outbound
     other_number: Mapped[str] = mapped_column(String(24))  # E.164 of the contact side
     other_name: Mapped[str | None] = mapped_column(String(255))
