@@ -12,6 +12,7 @@ local table matched to CRM records by attendee email.
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import logging
@@ -585,6 +586,30 @@ async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
             if not page_token:
                 break
     return ids
+
+
+def _decode_body(data: str) -> str:
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)).decode("utf-8", errors="replace")
+
+
+def _walk_parts(payload: dict, found: dict) -> None:
+    mime = payload.get("mimeType", "")
+    data = (payload.get("body") or {}).get("data")
+    if data and mime in ("text/plain", "text/html"):
+        key = "text" if mime == "text/plain" else "html"
+        found.setdefault(key, _decode_body(data))
+    for part in payload.get("parts") or []:
+        _walk_parts(part, found)
+
+
+async def fetch_message_body(access: str, gmail_id: str) -> dict:
+    """Full message content: first text/plain and text/html parts."""
+    item = await _get_json(
+        f"{settings.google_gmail_base}/users/me/messages/{gmail_id}", access, {"format": "full"}
+    )
+    found: dict = {}
+    _walk_parts(item.get("payload") or {}, found)
+    return {"text": found.get("text"), "html": found.get("html")}
 
 
 async def sync_gmail(

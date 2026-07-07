@@ -340,6 +340,10 @@ class EmailMessage(Base):
     from_name: Mapped[str | None] = mapped_column(String(255))
     is_outgoing: Mapped[bool] = mapped_column(Boolean, default=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Full content is fetched lazily on first view and cached here.
+    body_text: Mapped[str | None] = mapped_column(Text)
+    body_html: Mapped[str | None] = mapped_column(Text)
+    body_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

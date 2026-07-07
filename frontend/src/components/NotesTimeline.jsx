@@ -20,6 +20,8 @@ export default function NotesTimeline({ entityType, entityId }) {
   const [notes, setNotes] = useState(null);
   const [activities, setActivities] = useState(null);
   const [emails, setEmails] = useState(null);
+  const [openEmail, setOpenEmail] = useState(null); // id currently expanded
+  const [bodies, setBodies] = useState({}); // id -> {loading, body_text, body_html, error}
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -76,6 +78,23 @@ export default function NotesTimeline({ entityType, entityId }) {
     setBusy(false);
   }
 
+  async function toggleEmail(id) {
+    if (openEmail === id) {
+      setOpenEmail(null);
+      return;
+    }
+    setOpenEmail(id);
+    if (!bodies[id]) {
+      setBodies((b) => ({ ...b, [id]: { loading: true } }));
+      try {
+        const body = await get(`/emails/${id}/body`);
+        setBodies((b) => ({ ...b, [id]: { ...body, loading: false } }));
+      } catch (e) {
+        setBodies((b) => ({ ...b, [id]: { loading: false, error: e.message } }));
+      }
+    }
+  }
+
   async function deleteNote(id) {
     if (!window.confirm('Delete this note?')) return;
     try {
@@ -110,8 +129,8 @@ export default function NotesTimeline({ entityType, entityId }) {
         <div className="timeline">
           {merged.map((item) =>
             item._type === 'email' ? (
-              <div key={`e-${item.id}`} className="timeline-item email-item">
-                <div className="timeline-head">
+              <div key={`e-${item.id}`} className={'timeline-item email-item' + (openEmail === item.id ? ' open' : '')}>
+                <div className="timeline-head email-toggle" onClick={() => toggleEmail(item.id)} role="button" tabIndex={0}>
                   <span className="email-dir">{item.is_outgoing ? '↗' : '↘'}</span>
                   <strong>{item.is_outgoing ? 'Email sent' : `Email from ${item.from_name || item.from_email || 'unknown'}`}</strong>
                   <span className="muted"> · {fmtDateTime(item._at)}</span>
@@ -127,8 +146,33 @@ export default function NotesTimeline({ entityType, entityId }) {
                     </a>
                   )}
                 </div>
-                <div className="email-subject">{item.subject || '(no subject)'}</div>
-                {item.snippet && <div className="muted email-snippet">{item.snippet}</div>}
+                <div className="email-subject email-toggle" onClick={() => toggleEmail(item.id)}>
+                  {item.subject || '(no subject)'}
+                </div>
+                {openEmail !== item.id && item.snippet && (
+                  <div className="muted email-snippet">{item.snippet}</div>
+                )}
+                {openEmail === item.id && (
+                  <div className="email-body-wrap">
+                    {bodies[item.id]?.loading && <div className="muted">Loading message…</div>}
+                    {bodies[item.id]?.error && <div className="form-error">{bodies[item.id].error}</div>}
+                    {bodies[item.id]?.body_text && (
+                      <div className="email-body">{bodies[item.id].body_text}</div>
+                    )}
+                    {!bodies[item.id]?.body_text && bodies[item.id]?.body_html && (
+                      <iframe
+                        title="email"
+                        className="email-frame"
+                        sandbox=""
+                        srcDoc={bodies[item.id].body_html}
+                      />
+                    )}
+                    {bodies[item.id] && !bodies[item.id].loading && !bodies[item.id].error
+                      && !bodies[item.id].body_text && !bodies[item.id].body_html && (
+                      <div className="muted">No readable content in this message.</div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : item._type === 'note' ? (
               <div key={`n-${item.id}`} className="timeline-item note-item">

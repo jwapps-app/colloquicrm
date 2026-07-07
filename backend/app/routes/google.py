@@ -411,3 +411,48 @@ async def emails_for_entity(
             for m in messages
         ]
     }
+
+
+@emails_router.get("/{email_id}/body")
+async def email_body(
+    email_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    msg = (
+        await db.execute(
+            select(EmailMessage).where(
+                EmailMessage.id == email_id, EmailMessage.org_id == user.org_id
+            )
+        )
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Email not found")
+    if msg.body_fetched_at is None:
+        if msg.owner_user_id is None:
+            raise HTTPException(status_code=409, detail="The mailbox this email came from is gone")
+        owner_account = (
+            await db.execute(
+                select(GoogleAccount).where(GoogleAccount.user_id == msg.owner_user_id)
+            )
+        ).scalar_one_or_none()
+        cfg = await _cfg(db, user.org_id)
+        if owner_account is None or cfg is None:
+            raise HTTPException(
+                status_code=409,
+                detail="The mailbox owner is no longer connected to Google",
+            )
+        try:
+            access = await g.ensure_access_token(db, cfg, owner_account)
+            body = await g.fetch_message_body(access, msg.gmail_id)
+        except g.GoogleError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        msg.body_text = body.get("text")
+        msg.body_html = body.get("html")
+        msg.body_fetched_at = utcnow()
+    return {
+        "id": str(msg.id),
+        "subject": msg.subject,
+        "body_text": msg.body_text,
+        "body_html": msg.body_html,
+    }
