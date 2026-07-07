@@ -15,6 +15,7 @@ from app.models import (
     Company,
     EmailMessage,
     EmailParticipant,
+    EmailParticipant,
     GoogleAccount,
     GoogleIntegration,
     Lead,
@@ -173,6 +174,67 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
         account.sync_error = str(exc)[:500]
         raise HTTPException(status_code=502, detail=str(exc))
     return {**result, "last_synced_at": account.last_synced_at.isoformat()}
+
+
+@router.get("/diagnose")
+async def diagnose_address(
+    email: str,
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trace one address through the whole email-sync pipeline: is it a CRM
+    contact, what does the Gmail search return, how do the messages parse,
+    and what is already stored. Admin-only troubleshooting."""
+    account = await _account(db, user.id)
+    cfg = await _cfg(db, user.org_id)
+    if account is None or cfg is None:
+        raise HTTPException(status_code=400, detail="Google is not connected")
+    addr = email.lower().strip()
+    try:
+        access = await g.ensure_access_token(db, cfg, account)
+        ids = await g._search_contact_mail(access, [addr])
+        contact_map = await g._crm_email_map(db, user.org_id)
+        samples = []
+        for gid in ids[:5]:
+            item = await g._fetch_message_meta(access, gid)
+            if item is None:
+                continue
+            parsed = g._parse_message(item, (account.email or "").lower().strip())
+            if parsed is None:
+                samples.append({"gmail_id": gid, "parse": "no participants"})
+                continue
+            participants = parsed["participants"]
+            samples.append(
+                {
+                    "gmail_id": gid,
+                    "subject": parsed["subject"],
+                    "participants": [f"{k}:{e}" for k, e, _ in participants],
+                    "would_match": [
+                        f"{contact_map[e][0]}:{e}"
+                        for _, e, _ in participants
+                        if e != (account.email or "").lower().strip() and e in contact_map
+                    ],
+                }
+            )
+    except g.GoogleError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    stored = (
+        await db.execute(
+            select(func.count(func.distinct(EmailMessage.id)))
+            .select_from(EmailMessage)
+            .join(EmailParticipant, EmailParticipant.email_id == EmailMessage.id)
+            .where(EmailMessage.org_id == user.org_id, EmailParticipant.email == addr)
+        )
+    ).scalar_one()
+    return {
+        "address": addr,
+        "is_crm_contact": addr in contact_map,
+        "crm_contacts_total": len(contact_map),
+        "gmail_search_hits": len(ids),
+        "mailbox": account.email,
+        "samples": samples,
+        "already_stored": stored,
+    }
 
 
 @router.get("/contacts/preview")
