@@ -19,13 +19,15 @@ export default function ImportWizard() {
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(1);
   const [result, setResult] = useState(null);
+  const [dupsOnly, setDupsOnly] = useState(false);
 
   function applyPreview(p) {
     setPreview(p);
     setRows(
       (p.rows || []).map((r) => ({
         ...r,
-        action: 'create',
+        // second occurrence inside the same file is almost never wanted twice
+        action: r.intra_file_duplicate_of != null ? 'skip' : 'create',
         merge_id: r.duplicates?.[0]?.id || '',
       }))
     );
@@ -113,10 +115,10 @@ export default function ImportWizard() {
     },
     { create: 0, skip: 0, merge: 0 }
   );
-  const totalPages = Math.max(1, Math.ceil(rows.length / PREVIEW_PAGE));
-  const pageRows = rows
-    .map((r, i) => ({ row: r, index: i }))
-    .slice((page - 1) * PREVIEW_PAGE, page * PREVIEW_PAGE);
+  const isDup = (r) => r.duplicates?.length > 0 || r.intra_file_duplicate_of != null;
+  const visible = rows.map((r, i) => ({ row: r, index: i })).filter(({ row }) => !dupsOnly || isDup(row));
+  const totalPages = Math.max(1, Math.ceil(visible.length / PREVIEW_PAGE));
+  const pageRows = visible.slice((page - 1) * PREVIEW_PAGE, page * PREVIEW_PAGE);
 
   return (
     <div className="page">
@@ -177,12 +179,15 @@ export default function ImportWizard() {
         <>
           <div className="card import-summary">
             <div>
-              <strong>{preview.total}</strong> rows parsed · <strong>{dupCount}</strong> match existing records
-              {intraCount > 0 && (
-                <>
-                  {' '}
-                  · <strong>{intraCount}</strong> duplicated within the file
-                </>
+              <strong>{preview.total}</strong> rows parsed
+              {dupCount + intraCount > 0 ? (
+                <span className="badge badge-warn dup-headline">
+                  ⚠ {dupCount + intraCount} possible duplicate{dupCount + intraCount === 1 ? '' : 's'}
+                  {dupCount > 0 && ` — ${dupCount} match existing records`}
+                  {intraCount > 0 && ` — ${intraCount} repeated within the file (defaulted to Skip)`}
+                </span>
+              ) : (
+                <span className="muted"> · no duplicates detected</span>
               )}
             </div>
             {preview.unmapped_headers?.length > 0 && (
@@ -206,6 +211,17 @@ export default function ImportWizard() {
                   Skip in-file duplicates
                 </button>
               )}
+              {dupCount + intraCount > 0 && (
+                <button
+                  className={'btn btn-small' + (dupsOnly ? ' btn-primary' : '')}
+                  onClick={() => {
+                    setDupsOnly((v) => !v);
+                    setPage(1);
+                  }}
+                >
+                  {dupsOnly ? 'Show all rows' : `Show only duplicates (${rows.filter(isDup).length})`}
+                </button>
+              )}
             </div>
           </div>
 
@@ -227,7 +243,7 @@ export default function ImportWizard() {
                 </thead>
                 <tbody>
                   {pageRows.map(({ row: r, index: i }) => (
-                    <tr key={i} className="import-row">
+                    <tr key={i} className={'import-row' + (isDup(r) ? ' dup-row' : '')}>
                       <td className="muted">{i + 1}</td>
                       {dataCols.map((c) => (
                         <td key={c}>{r.data?.[c] ?? ''}</td>
