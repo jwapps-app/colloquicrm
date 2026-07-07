@@ -47,10 +47,18 @@ async function request(method, path, { params, body, formData } = {}) {
 
   if (res.status === 401 && !NO_REDIRECT_PATHS.includes(path)) {
     clearToken();
+    try {
+      // Breadcrumb for the login page: which request ended the session.
+      sessionStorage.setItem('crm_signout_reason', `${method} ${path}`);
+    } catch {
+      // storage unavailable — the redirect still happens
+    }
     if (!window.location.pathname.startsWith('/login')) {
       window.location.assign('/login');
     }
-    throw new Error('Session expired. Please sign in again.');
+    const err = new Error('Session expired. Please sign in again.');
+    err.status = 401;
+    throw err;
   }
 
   if (res.status === 204) return null;
@@ -76,7 +84,9 @@ async function request(method, path, { params, body, formData } = {}) {
     if (msg.trimStart().startsWith('<')) {
       msg = `The server returned an error page (${res.status}) — likely a temporary proxy or tunnel hiccup. Try again.`;
     }
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
   return data;
 }

@@ -51,8 +51,10 @@ export default function App() {
       if (!b.needs_setup && getToken()) {
         try {
           setUser(await get('/auth/me'));
-        } catch {
-          clearToken();
+        } catch (err) {
+          // Only a real rejection invalidates the token — a network blip or
+          // tunnel hiccup at boot must not log the user out.
+          if (err.status === 401) clearToken();
         }
       }
       setReady(true);

@@ -12,6 +12,13 @@ export default function Login() {
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [signoutReason] = useState(() => {
+    try {
+      return sessionStorage.getItem('crm_signout_reason');
+    } catch {
+      return null;
+    }
+  });
 
   if (user) return <Navigate to="/" replace />;
 
@@ -24,6 +31,11 @@ export default function Login() {
       if (res.totp_required) {
         setPendingToken(res.pending_token);
       } else {
+        try {
+          sessionStorage.removeItem('crm_signout_reason');
+        } catch {
+          // best-effort
+        }
         login(res.token, res.user);
         nav('/', { replace: true });
       }
@@ -39,6 +51,11 @@ export default function Login() {
     setError('');
     try {
       const res = await post('/auth/totp', { pending_token: pendingToken, code: code.trim() });
+      try {
+        sessionStorage.removeItem('crm_signout_reason');
+      } catch {
+        // best-effort
+      }
       login(res.token, res.user);
       nav('/', { replace: true });
     } catch (err) {
@@ -57,6 +74,9 @@ export default function Login() {
         {!pendingToken ? (
           <form className="form" onSubmit={submit}>
             <h2>Sign in</h2>
+            {signoutReason && (
+              <p className="muted">Your session ended unexpectedly ({signoutReason}).</p>
+            )}
             <label className="field">
               <span>Email</span>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus autoComplete="username" />

@@ -39,6 +39,12 @@ async def _create_session(db: AsyncSession, user: User, pending: bool = False) -
     return token
 
 
+# Auth endpoints commit explicitly before returning. The framework's commit
+# (get_db teardown) runs only after the response is sent, and the client
+# fires authenticated requests the instant it has a token — on a slow-commit
+# database those requests would still see the old session state and 401.
+
+
 @router.get("/bootstrap")
 async def bootstrap(db: AsyncSession = Depends(get_db)):
     count = (await db.execute(select(func.count()).select_from(User))).scalar_one()
@@ -67,6 +73,7 @@ async def setup(body: SetupIn, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.flush()
     token = await _create_session(db, user)
+    await db.commit()
     return {"token": token, "user": user_out(user)}
 
 
@@ -81,8 +88,10 @@ async def login(body: LoginIn, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Account disabled")
     if user.totp_enabled:
         pending = await _create_session(db, user, pending=True)
+        await db.commit()
         return {"totp_required": True, "pending_token": pending}
     token = await _create_session(db, user)
+    await db.commit()
     return {"token": token, "user": user_out(user)}
 
 
@@ -106,6 +115,7 @@ async def totp_verify(body: TotpVerifyIn, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid code")
     sess.pending_totp = False
     sess.expires_at = utcnow() + timedelta(days=settings.session_ttl_days)
+    await db.commit()
     return {"token": body.pending_token, "user": user_out(user)}
 
 
@@ -113,6 +123,7 @@ async def totp_verify(body: TotpVerifyIn, db: AsyncSession = Depends(get_db)):
 async def logout(request: Request, db: AsyncSession = Depends(get_db)):
     token = bearer_token(request)
     await db.execute(delete(DbSession).where(DbSession.token_hash == hash_token(token)))
+    await db.commit()
 
 
 @router.get("/me")
@@ -132,6 +143,7 @@ async def totp_setup(
     uri = pyotp.totp.TOTP(secret).provisioning_uri(
         name=user.email, issuer_name=settings.app_name
     )
+    await db.commit()
     return {"secret": secret, "otpauth_url": uri}
 
 
@@ -147,6 +159,7 @@ async def totp_enable(
     if not pyotp.TOTP(user.totp_secret).verify(body.code.strip(), valid_window=1):
         raise HTTPException(status_code=401, detail="Invalid code")
     user.totp_enabled = True
+    await db.commit()
     return {"totp_enabled": True}
 
 
@@ -163,4 +176,5 @@ async def totp_disable(
         raise HTTPException(status_code=401, detail="Invalid code")
     user.totp_enabled = False
     user.totp_secret = None
+    await db.commit()
     return {"totp_enabled": False}
