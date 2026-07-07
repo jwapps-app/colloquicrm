@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { del, get, post } from '../api';
+import { del, get, patch, post } from '../api';
 import { useToast } from './Toast';
 import { useAuth } from '../auth';
 import { fmtDateTime, humanize } from '../format';
@@ -25,6 +25,9 @@ export default function NotesTimeline({ entityType, entityId }) {
   const [bodies, setBodies] = useState({}); // id -> {loading, body_text, body_html, error}
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
+  const [composerFor, setComposerFor] = useState(null); // call id with open note composer
+  const [callDraft, setCallDraft] = useState('');
+  const [attachFor, setAttachFor] = useState(null); // call id with open attach picker
 
   async function load() {
     try {
@@ -61,15 +64,29 @@ export default function NotesTimeline({ entityType, entityId }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, entityId]);
 
+  const notesByCall = useMemo(() => {
+    const map = {};
+    (notes || []).forEach((n) => {
+      if (n.phone_event_id) (map[n.phone_event_id] ||= []).push(n);
+    });
+    return map;
+  }, [notes]);
+
   const merged = useMemo(() => {
     if (!notes || !activities || !emails || !phoneEvents) return null;
     return [
-      ...notes.map((n) => ({ ...n, _type: 'note', _at: n.created_at })),
+      // Notes attached to a call render under that call, not standalone.
+      ...notes.filter((n) => !n.phone_event_id).map((n) => ({ ...n, _type: 'note', _at: n.created_at })),
       ...activities.map((a) => ({ ...a, _type: 'activity', _at: a.created_at })),
       ...emails.map((e) => ({ ...e, _type: 'email', _at: e.sent_at || e.created_at })),
       ...phoneEvents.map((p) => ({ ...p, _type: p.kind, _at: p.happened_at })),
     ].sort((x, y) => new Date(y._at) - new Date(x._at));
   }, [notes, activities, emails, phoneEvents]);
+
+  const unattachedNotes = useMemo(
+    () => (notes || []).filter((n) => !n.phone_event_id),
+    [notes]
+  );
 
   async function addNote(e) {
     e.preventDefault();
@@ -85,6 +102,45 @@ export default function NotesTimeline({ entityType, entityId }) {
       toast.error(err.message);
     }
     setBusy(false);
+  }
+
+  async function addCallNote(phoneEventId, text) {
+    const t = (text || '').trim();
+    if (!t) return;
+    try {
+      await post('/notes', {
+        entity_type: entityType,
+        entity_id: entityId,
+        body: t,
+        phone_event_id: phoneEventId,
+      });
+      setCallDraft('');
+      setComposerFor(null);
+      await load();
+      toast.success('Note added to call');
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  async function attachNote(noteId, phoneEventId) {
+    try {
+      await patch(`/notes/${noteId}`, { phone_event_id: phoneEventId });
+      setAttachFor(null);
+      await load();
+      toast.success('Note linked to call');
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  async function detachNote(noteId) {
+    try {
+      await patch(`/notes/${noteId}`, { phone_event_id: null });
+      await load();
+    } catch (err) {
+      toast.error(err.message);
+    }
   }
 
   async function toggleEmail(id) {
@@ -154,6 +210,74 @@ export default function NotesTimeline({ entityType, entityId }) {
                   {item.other_number}
                   {item.recording_id ? ' · recorded' : ''}
                 </div>
+
+                {(notesByCall[item.id] || []).map((n) => (
+                  <div key={n.id} className="call-note">
+                    <div className="call-note-body">{n.body}</div>
+                    <div className="call-note-meta muted">
+                      {n.author_name || 'Someone'} · {fmtDateTime(n.created_at)}
+                      {(user?.is_admin || user?.id === n.author_id) && (
+                        <>
+                          {' · '}
+                          <button className="linklike" onClick={() => detachNote(n.id)}>unlink</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {composerFor === item.id ? (
+                  <div className="call-note-composer">
+                    <textarea
+                      rows={2}
+                      autoFocus
+                      placeholder="Note about this call…"
+                      value={callDraft}
+                      onChange={(e) => setCallDraft(e.target.value)}
+                    />
+                    <div className="composer-actions">
+                      <button className="btn btn-small" onClick={() => { setComposerFor(null); setCallDraft(''); }}>
+                        Cancel
+                      </button>
+                      <button
+                        className="btn btn-small btn-primary"
+                        disabled={!callDraft.trim()}
+                        onClick={() => addCallNote(item.id, callDraft)}
+                      >
+                        Save note
+                      </button>
+                    </div>
+                  </div>
+                ) : attachFor === item.id ? (
+                  <div className="call-note-composer">
+                    {unattachedNotes.length === 0 ? (
+                      <div className="muted">No unlinked notes to attach.</div>
+                    ) : (
+                      unattachedNotes.map((n) => (
+                        <div key={n.id} className="attach-option">
+                          <div className="attach-preview">{n.body.slice(0, 120)}</div>
+                          <button className="btn btn-small" onClick={() => attachNote(n.id, item.id)}>
+                            Attach
+                          </button>
+                        </div>
+                      ))
+                    )}
+                    <div className="composer-actions">
+                      <button className="btn btn-small" onClick={() => setAttachFor(null)}>Done</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="call-note-actions">
+                    <button className="linklike" onClick={() => { setComposerFor(item.id); setAttachFor(null); }}>
+                      + Add note
+                    </button>
+                    {unattachedNotes.length > 0 && (
+                      <button className="linklike" onClick={() => { setAttachFor(item.id); setComposerFor(null); }}>
+                        Attach existing note
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ) : item._type === 'sms' ? (
               <div key={`s-${item.id}`} className="timeline-item phone-item sms-item">

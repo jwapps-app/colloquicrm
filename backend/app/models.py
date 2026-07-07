@@ -381,6 +381,10 @@ class Note(Base):
     entity_type: Mapped[str] = mapped_column(String(30))
     entity_id: Mapped[uuid.UUID] = mapped_column()
     body: Mapped[str] = mapped_column(Text)
+    # Optional link to a synced call/text this note documents.
+    phone_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("phone_events.id", ondelete="SET NULL"), index=True
+    )
     author_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

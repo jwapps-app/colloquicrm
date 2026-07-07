@@ -155,10 +155,15 @@ class TaskIn(BaseModel):
     assignee_id: uuid.UUID | None = None
 
 
+class NoteAttachIn(BaseModel):
+    phone_event_id: uuid.UUID | None = None
+
+
 class NoteIn(BaseModel):
     entity_type: str
     entity_id: uuid.UUID
     body: str
+    phone_event_id: uuid.UUID | None = None
 
 
 class ConvertIn(BaseModel):

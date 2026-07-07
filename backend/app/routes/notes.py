@@ -6,9 +6,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import Note, User
-from app.schemas import NoteIn
+from app.models import Note, PhoneEvent, User
+from app.schemas import NoteAttachIn, NoteIn
 from app.services.common import display_name_map, log_activity, row_to_dict
+
+
+async def _valid_phone_event(db, org_id, phone_event_id):
+    if phone_event_id is None:
+        return
+    ev = (
+        await db.execute(
+            select(PhoneEvent).where(
+                PhoneEvent.id == phone_event_id, PhoneEvent.org_id == org_id
+            )
+        )
+    ).scalar_one_or_none()
+    if ev is None:
+        raise HTTPException(status_code=404, detail="Call or text not found")
 
 router = APIRouter()
 
@@ -54,11 +68,13 @@ async def create_note(
 ):
     if not body.body.strip():
         raise HTTPException(status_code=422, detail="Note body is required")
+    await _valid_phone_event(db, user.org_id, body.phone_event_id)
     note = Note(
         org_id=user.org_id,
         entity_type=body.entity_type,
         entity_id=body.entity_id,
         body=body.body,
+        phone_event_id=body.phone_event_id,
         author_id=user.id,
     )
     db.add(note)
@@ -67,6 +83,25 @@ async def create_note(
         db, user.org_id, body.entity_type, body.entity_id, "note_added", user.id,
         {"note_id": str(note.id)},
     )
+    return (await _serialize(db, [note]))[0]
+
+
+@router.patch("/{note_id}")
+async def attach_note(
+    note_id: uuid.UUID,
+    body: NoteAttachIn,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Link (or unlink) a note to a logged call/text — the 'merge after the
+    fact' path for notes jotted during a call."""
+    note = (
+        await db.execute(select(Note).where(Note.id == note_id, Note.org_id == user.org_id))
+    ).scalar_one_or_none()
+    if note is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+    await _valid_phone_event(db, user.org_id, body.phone_event_id)
+    note.phone_event_id = body.phone_event_id
     return (await _serialize(db, [note]))[0]
 
 

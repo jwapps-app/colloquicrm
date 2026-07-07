@@ -1739,3 +1739,58 @@ textarea {
   font-size: 13px;
   white-space: pre-wrap;
 }
+
+/* Notes attached to calls */
+.call-note {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fbfaff;
+  border-left: 2px solid var(--accent);
+  border-radius: 6px;
+}
+.call-note-body {
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+.call-note-meta {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.call-note-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 14px;
+}
+.call-note-composer {
+  margin-top: 8px;
+}
+.call-note-composer textarea {
+  width: 100%;
+}
+.attach-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.attach-preview {
+  flex: 1;
+  font-size: 13px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.linklike {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.linklike:hover {
+  text-decoration: underline;
+}
