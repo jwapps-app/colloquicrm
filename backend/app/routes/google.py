@@ -375,7 +375,7 @@ async def emails_for_entity(
     stmt = (
         select(EmailMessage)
         .join(EmailParticipant, EmailParticipant.email_id == EmailMessage.id)
-        .where(EmailMessage.org_id == user.org_id)
+        .where(EmailMessage.org_id == user.org_id, EmailParticipant.direct.is_(True))
         .distinct()
     )
     if entity_type == "company":

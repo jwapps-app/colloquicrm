@@ -472,10 +472,16 @@ async def _store_messages(
             if parsed is None:
                 continue
             participants = parsed.pop("participants")
+            # An interaction requires engagement: the contact wrote it, or the
+            # mailbox owner sent it to them. A contact who is merely a fellow
+            # recipient of a third party's blast does not count — and a
+            # message with no engaged contact at all is not stored.
             matches = {
                 contact_map[email]
-                for _, email, _ in participants
-                if email != owner_email and email in contact_map
+                for kind, email, _ in participants
+                if email != owner_email
+                and email in contact_map
+                and (kind == "from" or parsed["is_outgoing"])
             }
             if not matches:
                 continue
@@ -504,6 +510,7 @@ async def _store_messages(
                 db.add(
                     EmailParticipant(
                         email_id=msg.id, email=email, kind=kind,
+                        direct=kind == "from" or bool(parsed["is_outgoing"]),
                         display_name=(name or "")[:255] or None,
                     )
                 )
@@ -532,7 +539,11 @@ async def _update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.
             await db.execute(
                 select(func.count(func.distinct(EmailMessage.id)), func.max(EmailMessage.sent_at))
                 .join(EmailParticipant, EmailParticipant.email_id == EmailMessage.id)
-                .where(EmailMessage.org_id == org_id, EmailParticipant.email.in_(emails))
+                .where(
+                    EmailMessage.org_id == org_id,
+                    EmailParticipant.email.in_(emails),
+                    EmailParticipant.direct.is_(True),
+                )
             )
         ).one()
         person.interaction_count = count or 0

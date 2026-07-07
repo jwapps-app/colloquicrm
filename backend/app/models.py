@@ -355,6 +355,10 @@ class EmailParticipant(Base):
     )
     email: Mapped[str] = mapped_column(String(255), primary_key=True, index=True)
     kind: Mapped[str] = mapped_column(String(8), default="to")
+    # True when this participant actually engaged: they authored the message,
+    # or the mailbox owner sent it to them. Passive co-recipients of a third
+    # party's mail stay False and never surface as interactions.
+    direct: Mapped[bool] = mapped_column(Boolean, default=False)
     display_name: Mapped[str | None] = mapped_column(String(255))
 
 
