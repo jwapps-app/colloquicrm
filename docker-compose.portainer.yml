@@ -1,5 +1,5 @@
 # NAS stack (Portainer). Image-only; all env values are set in Portainer's UI.
-# Bind-mount dirs to create once: /volume1/docker/crm/postgres, /volume1/docker/crm/backups
+# Bind-mount dirs to create once: /volume1/docker/colloquicrm/postgres, /volume1/docker/colloquicrm/backups
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: app
     volumes:
-      - /volume1/docker/crm/postgres:/var/lib/postgresql/data
+      - /volume1/docker/colloquicrm/postgres:/var/lib/postgresql/data
     mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app"]
@@ -44,7 +44,7 @@ services:
       PGDATABASE: app
       RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
     volumes:
-      - /volume1/docker/crm/backups:/backups
+      - /volume1/docker/colloquicrm/backups:/backups
     mem_limit: 128m
     entrypoint:
       - sh

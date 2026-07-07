@@ -67,7 +67,7 @@ start. CI builds and publishes `ghcr.io/jwapps-app/crm-app` on every push to
 main.
 
 NAS/Portainer: use `docker-compose.portainer.yml` (postgres + api + nightly
-pg_dump sidecar with retention). Create `/volume1/docker/crm/{postgres,backups}`
+pg_dump sidecar with retention). Create `/volume1/docker/colloquicrm/{postgres,backups}`
 first, then set the stack env:
 
 | Variable | Example |
