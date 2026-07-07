@@ -6,7 +6,26 @@ on:
     tags: ["v*"]
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Catches undefined names (e.g. a function lost in a refactor) before
+      # anything ships.
+      - run: pip install ruff && ruff check backend/app --select E9,F821
+
+      - run: pip install -r backend/requirements.txt
+      - name: App import smoke test
+        working-directory: backend
+        run: DATABASE_URL="sqlite+aiosqlite:///./ci.db" python -c "from app.main import app; print('app loads')"
+
   image:
+    needs: checks
     runs-on: ubuntu-latest
     permissions:
       contents: read
