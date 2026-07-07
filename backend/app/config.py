@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     google_calendar_base: str = "https://www.googleapis.com/calendar/v3"
     google_gmail_base: str = "https://gmail.googleapis.com/gmail/v1"
     ringcentral_base: str = "https://platform.ringcentral.com"
+    gravatar_base: str = "https://en.gravatar.com"
     # RingCentral defaults to ~1 week when no dateFrom is sent, so always send
     # an explicit window. A year is their typical retention.
     ringcentral_backfill_days: int = 365

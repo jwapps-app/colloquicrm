@@ -1844,3 +1844,22 @@ textarea {
   flex: 1;
   min-width: 120px;
 }
+
+/* Social profile finder */
+.social-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.social-suggestion:last-child {
+  border-bottom: none;
+}
+.social-url {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

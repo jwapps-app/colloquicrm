@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { del, get } from '../api';
+import { del, get, post } from '../api';
 import { useEntity, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
@@ -48,6 +48,70 @@ function PersonOpportunities({ personId }) {
   );
 }
 
+
+function SocialFinder({ person, onSave }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const missing = ['linkedin', 'facebook'].filter((k) => !person[k]);
+  if (missing.length === 0 && !result) return null;
+  if (!person.work_email && !person.personal_email) return null;
+
+  async function run() {
+    setBusy(true);
+    try {
+      const res = await post(`/people/${person.id}/find-socials`);
+      setResult(res);
+      const total = (res.linkedin?.length || 0) + (res.facebook?.length || 0);
+      if (total === 0) toast.info('No profiles found in their emails or Gravatar.');
+    } catch (e) {
+      toast.error(e.message);
+    }
+    setBusy(false);
+  }
+
+  const suggestions = [];
+  if (result) {
+    for (const network of ['linkedin', 'facebook']) {
+      if (person[network]) continue; // already filled (maybe just applied)
+      for (const url of result[network] || []) {
+        suggestions.push({ network, url });
+      }
+    }
+  }
+
+  return (
+    <div className="card social-finder">
+      <div className="panel-head">
+        <h4 className="panel-title">Social profiles</h4>
+        <button className="btn btn-small" onClick={run} disabled={busy}>
+          {busy ? 'Searching…' : result ? 'Search again' : 'Find profiles'}
+        </button>
+      </div>
+      {!result && (
+        <div className="muted panel-empty">
+          Searches their email signatures and Gravatar — nothing leaves your server.
+        </div>
+      )}
+      {result && suggestions.length === 0 && (
+        <div className="muted panel-empty">Nothing new found.</div>
+      )}
+      {suggestions.map((s) => (
+        <div key={s.url} className="social-suggestion">
+          <span className="badge badge-muted">{s.network === 'linkedin' ? 'LinkedIn' : 'Facebook'}</span>
+          <a href={s.url} target="_blank" rel="noreferrer" className="social-url">
+            {s.url.replace(/^https?:\/\/(www\.)?/, '')}
+          </a>
+          <button className="btn btn-small btn-primary" onClick={() => onSave({ [s.network]: s.url })}>
+            Use
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function PersonDetail() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -85,6 +149,7 @@ export default function PersonDetail() {
             <h4 className="panel-title">Tags</h4>
             <TagEditor tags={person.tags || []} onChange={(tags) => save({ tags })} />
           </div>
+          <SocialFinder person={person} onSave={save} />
         </>
       }
       right={
