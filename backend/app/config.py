@@ -27,7 +27,9 @@ class Settings(BaseSettings):
     google_people_base: str = "https://people.googleapis.com"
     google_calendar_base: str = "https://www.googleapis.com/calendar/v3"
     google_gmail_base: str = "https://gmail.googleapis.com/gmail/v1"
-    gmail_backfill_days: int = 90
+    # 0 = no window: sync all history with known contacts. Set a day count to
+    # bound the initial backfill on very large installs.
+    gmail_backfill_days: int = 0
 
     @property
     def cors_origins(self) -> list[str]:

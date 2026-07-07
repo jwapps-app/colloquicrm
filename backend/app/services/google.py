@@ -559,7 +559,12 @@ async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
     for i in range(0, len(addresses), ADDRESSES_PER_QUERY):
         chunk = addresses[i : i + ADDRESSES_PER_QUERY]
         clause = " OR ".join(f"from:{a} OR to:{a} OR cc:{a}" for a in chunk)
-        q = f"newer_than:{settings.gmail_backfill_days}d -in:spam -in:trash ({clause})"
+        window = (
+            f"newer_than:{settings.gmail_backfill_days}d "
+            if settings.gmail_backfill_days > 0
+            else ""
+        )
+        q = f"{window}-in:spam -in:trash ({clause})"
         page_token = None
         while True:
             params = {"q": q, "maxResults": 500}
@@ -582,8 +587,8 @@ async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
 async def sync_gmail(
     db, cfg: GoogleIntegration, account: GoogleAccount, force_backfill: bool = False
 ) -> int:
-    """Targeted backfill (searches the window for known contacts), then the
-    history feed for new mail. Only mail involving known People/Leads is
+    """Targeted backfill (searches all history with known contacts, or the
+    configured window), then the history feed for new mail. Only mail involving known People/Leads is
     stored. force_backfill re-runs the search — how newly added contacts get
     their history pulled."""
     access = await ensure_access_token(db, cfg, account)
