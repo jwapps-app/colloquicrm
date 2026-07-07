@@ -192,6 +192,9 @@ async def diagnose_address(
     addr = g.normalize_email(email)
     try:
         access = await g.ensure_access_token(db, cfg, account)
+        # Ask Gmail directly whose mailbox this token opens — the stored email
+        # can lie if the consent screen picked a different account.
+        profile = await g._get_json(f"{settings.google_gmail_base}/users/me/profile", access)
         if q:
             # Raw Gmail query passthrough for troubleshooting.
             data = await g._get_json(
@@ -240,7 +243,9 @@ async def diagnose_address(
         "is_crm_contact": addr in contact_map,
         "crm_contacts_total": len(contact_map),
         "gmail_search_hits": len(ids),
-        "mailbox": account.email,
+        "mailbox_stored": account.email,
+        "mailbox_actual": profile.get("emailAddress"),
+        "mailbox_total_messages": profile.get("messagesTotal"),
         "samples": samples,
         "already_stored": stored,
     }
