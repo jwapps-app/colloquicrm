@@ -167,15 +167,11 @@ async def _known_rc_ids(db, org_id: uuid.UUID, ids: list[str]) -> set[str]:
 
 
 async def sync_calls(db, cfg: RingCentralIntegration, access: str, phone_map: dict) -> int:
-    date_from = None
-    if settings.ringcentral_backfill_days > 0:
-        date_from = (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
+    date_from = (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
     stored = 0
     page = 1
     while True:
-        params = {"view": "Simple", "perPage": 250, "page": page}
-        if date_from:
-            params["dateFrom"] = date_from
+        params = {"view": "Simple", "perPage": 250, "page": page, "dateFrom": date_from}
         data = await _get_json(
             f"{settings.ringcentral_base}/restapi/v1.0/account/~/call-log", access, params
         )
@@ -216,15 +212,11 @@ async def sync_calls(db, cfg: RingCentralIntegration, access: str, phone_map: di
 
 
 async def sync_sms(db, cfg: RingCentralIntegration, access: str, phone_map: dict) -> int:
-    date_from = None
-    if settings.ringcentral_backfill_days > 0:
-        date_from = (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
+    date_from = (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
     stored = 0
     page = 1
     while True:
-        params = {"messageType": "SMS", "perPage": 250, "page": page}
-        if date_from:
-            params["dateFrom"] = date_from
+        params = {"messageType": "SMS", "perPage": 250, "page": page, "dateFrom": date_from}
         data = await _get_json(
             f"{settings.ringcentral_base}/restapi/v1.0/account/~/extension/~/message-store",
             access,

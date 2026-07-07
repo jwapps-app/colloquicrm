@@ -89,6 +89,68 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
     return {**result, "last_synced_at": cfg.last_synced_at.isoformat()}
 
 
+@router.get("/diagnose")
+async def diagnose_number(
+    number: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trace one phone number through the pipeline: normalization, CRM match,
+    what RingCentral's call log holds for it, and what is stored."""
+    cfg = await _cfg(db, admin.org_id)
+    if cfg is None:
+        raise HTTPException(status_code=400, detail="RingCentral is not connected")
+    normalized = rc.normalize_phone(number)
+    if not normalized:
+        return {"input": number, "normalized": None, "note": "could not normalize"}
+    phone_map = await rc._crm_phone_map(db, admin.org_id)
+    match = phone_map.get(normalized)
+    from datetime import timedelta
+
+    from app.config import settings as _settings
+
+    live_hits = []
+    try:
+        access = await rc.ensure_access_token(db, cfg)
+        data = await rc._get_json(
+            f"{_settings.ringcentral_base}/restapi/v1.0/account/~/call-log",
+            access,
+            {
+                "view": "Simple",
+                "perPage": 25,
+                "phoneNumber": normalized,
+                "dateFrom": (utcnow() - timedelta(days=_settings.ringcentral_backfill_days)).isoformat(),
+            },
+        )
+        for r in data.get("records", []):
+            live_hits.append(
+                {
+                    "direction": r.get("direction"),
+                    "start": r.get("startTime"),
+                    "duration": r.get("duration"),
+                    "result": r.get("result"),
+                }
+            )
+    except rc.RingCentralError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    stored = (
+        await db.execute(
+            select(PhoneEvent).where(
+                PhoneEvent.org_id == admin.org_id, PhoneEvent.other_number == normalized
+            )
+        )
+    ).scalars().all()
+    return {
+        "input": number,
+        "normalized": normalized,
+        "crm_match": {"entity_type": match[0], "entity_id": str(match[1])} if match else None,
+        "ringcentral_call_hits": len(live_hits),
+        "samples": live_hits[:5],
+        "stored_events": len(stored),
+        "own_numbers": cfg.own_numbers,
+    }
+
+
 PHONE_ENTITY_MODELS = {"person": Person, "lead": Lead}
 
 

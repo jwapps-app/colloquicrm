@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     google_calendar_base: str = "https://www.googleapis.com/calendar/v3"
     google_gmail_base: str = "https://gmail.googleapis.com/gmail/v1"
     ringcentral_base: str = "https://platform.ringcentral.com"
-    # 0 = as far back as RingCentral retains call/message history.
-    ringcentral_backfill_days: int = 0
+    # RingCentral defaults to ~1 week when no dateFrom is sent, so always send
+    # an explicit window. A year is their typical retention.
+    ringcentral_backfill_days: int = 365
     # 0 = no window: sync all history with known contacts. Set a day count to
     # bound the initial backfill on very large installs.
     gmail_backfill_days: int = 0
