@@ -352,6 +352,18 @@ def has_gmail_scope(account: GoogleAccount) -> bool:
     return GMAIL_SCOPE in (account.scopes or "")
 
 
+def normalize_email(addr: str) -> str:
+    """Canonical form for matching. Gmail ignores dots and +suffixes in the
+    local part, so `m.r.w+x@gmail.com` and `mrw@googlemail.com` are the same
+    inbox — match them as one."""
+    addr = (addr or "").lower().strip()
+    local, _, domain = addr.partition("@")
+    if domain in ("gmail.com", "googlemail.com"):
+        local = local.split("+", 1)[0].replace(".", "")
+        return f"{local}@gmail.com"
+    return addr
+
+
 async def _crm_email_map(db, org_id: uuid.UUID) -> dict[str, tuple[str, uuid.UUID]]:
     """Every known contact email in the org -> (entity_type, id)."""
     out: dict[str, tuple[str, uuid.UUID]] = {}
@@ -361,12 +373,12 @@ async def _crm_email_map(db, org_id: uuid.UUID) -> dict[str, tuple[str, uuid.UUI
     for pid, work, personal in rows:
         for e in (work, personal):
             if e:
-                out[e.lower().strip()] = ("person", pid)
+                out[normalize_email(e)] = ("person", pid)
     rows = await db.execute(
         select(Lead.id, Lead.email).where(Lead.org_id == org_id, Lead.email.is_not(None))
     )
     for lid, e in rows:
-        out.setdefault(e.lower().strip(), ("lead", lid))
+        out.setdefault(normalize_email(e), ("lead", lid))
     return out
 
 
@@ -379,11 +391,11 @@ def _parse_message(item: dict, owner_email: str) -> dict | None:
     participants: list[tuple[str, str, str | None]] = []  # (kind, email, name)
     from_name, from_email = parseaddr(headers.get("from", ""))
     if from_email:
-        participants.append(("from", from_email.lower().strip(), from_name or None))
+        participants.append(("from", normalize_email(from_email), from_name or None))
     for kind, header in (("to", "to"), ("cc", "cc")):
         for name, addr in getaddresses([headers.get(header, "")]):
             if addr:
-                participants.append((kind, addr.lower().strip(), name or None))
+                participants.append((kind, normalize_email(addr), name or None))
     if not participants:
         return None
     sent_at = None
@@ -401,7 +413,7 @@ def _parse_message(item: dict, owner_email: str) -> dict | None:
         "from_email": from_email.lower().strip() if from_email else None,
         "from_name": from_name or None,
         "is_outgoing": "SENT" in (item.get("labelIds") or [])
-        or (from_email or "").lower().strip() == owner_email,
+        or normalize_email(from_email or "") == owner_email,
         "sent_at": sent_at,
         "participants": participants,
     }
@@ -440,7 +452,7 @@ async def _store_messages(
 ) -> tuple[int, set[uuid.UUID]]:
     """Fetch metadata for unseen ids, keep only CRM-matching mail.
     Returns (stored_count, matched_person_ids)."""
-    owner_email = account.email.lower().strip()
+    owner_email = normalize_email(account.email)
     stored = 0
     matched_people: set[uuid.UUID] = set()
 
@@ -512,7 +524,7 @@ async def _update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.
         ).scalar_one_or_none()
         if person is None:
             continue
-        emails = [e.lower() for e in (person.work_email, person.personal_email) if e]
+        emails = [normalize_email(e) for e in (person.work_email, person.personal_email) if e]
         if not emails:
             continue
         count, latest = (
@@ -536,6 +548,14 @@ async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
     quota-cheap even on large accounts."""
     ids: list[str] = []
     seen: set[str] = set()
+    expanded: list[str] = []
+    seen_addr: set[str] = set()
+    for a in addresses:
+        for variant in (a.lower().strip(), normalize_email(a)):
+            if variant and variant not in seen_addr:
+                seen_addr.add(variant)
+                expanded.append(variant)
+    addresses = expanded
     for i in range(0, len(addresses), ADDRESSES_PER_QUERY):
         chunk = addresses[i : i + ADDRESSES_PER_QUERY]
         clause = " OR ".join(f"from:{a} OR to:{a} OR cc:{a}" for a in chunk)

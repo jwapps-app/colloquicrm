@@ -188,7 +188,7 @@ async def diagnose_address(
     cfg = await _cfg(db, user.org_id)
     if account is None or cfg is None:
         raise HTTPException(status_code=400, detail="Google is not connected")
-    addr = email.lower().strip()
+    addr = g.normalize_email(email)
     try:
         access = await g.ensure_access_token(db, cfg, account)
         ids = await g._search_contact_mail(access, [addr])
@@ -301,9 +301,9 @@ async def calendar_events(
     else:
         emails = []
         if entity_type == "person":
-            emails = [e.lower() for e in (obj.work_email, obj.personal_email) if e]
+            emails = [g.normalize_email(e) for e in (obj.work_email, obj.personal_email) if e]
         elif entity_type == "lead":
-            emails = [obj.email.lower()] if obj.email else []
+            emails = [g.normalize_email(obj.email)] if obj.email else []
         if not emails:
             return {"items": []}
         stmt = stmt.where(CalendarEventAttendee.email.in_(emails))
@@ -371,9 +371,9 @@ async def emails_for_entity(
     else:
         emails = []
         if entity_type == "person":
-            emails = [e.lower() for e in (obj.work_email, obj.personal_email) if e]
+            emails = [g.normalize_email(e) for e in (obj.work_email, obj.personal_email) if e]
         elif entity_type == "lead":
-            emails = [obj.email.lower()] if obj.email else []
+            emails = [g.normalize_email(obj.email)] if obj.email else []
         if not emails:
             return {"items": []}
         stmt = stmt.where(EmailParticipant.email.in_(emails))
