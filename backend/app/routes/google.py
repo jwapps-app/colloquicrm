@@ -13,6 +13,8 @@ from app.models import (
     CalendarEvent,
     CalendarEventAttendee,
     Company,
+    EmailMessage,
+    EmailParticipant,
     GoogleAccount,
     GoogleIntegration,
     Lead,
@@ -54,6 +56,7 @@ async def status(user: User = Depends(get_current_user), db: AsyncSession = Depe
             if account and account.last_synced_at
             else None,
             "sync_error": account.sync_error if account else None,
+            "gmail_enabled": g.has_gmail_scope(account) if account else False,
         },
     }
 
@@ -155,11 +158,11 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
     if account is None:
         raise HTTPException(status_code=400, detail="No Google account connected")
     try:
-        events = await g.sync_account(db, account)
+        result = await g.sync_account(db, account)
     except g.GoogleError as exc:
         account.sync_error = str(exc)[:500]
         raise HTTPException(status_code=502, detail=str(exc))
-    return {"events_synced": events, "last_synced_at": account.last_synced_at.isoformat()}
+    return {**result, "last_synced_at": account.last_synced_at.isoformat()}
 
 
 @router.get("/contacts/preview")
@@ -259,5 +262,66 @@ async def calendar_events(
                 "attendees": attendee_map.get(e.id, []),
             }
             for e in events
+        ]
+    }
+
+
+emails_router = APIRouter()
+
+
+@emails_router.get("")
+async def emails_for_entity(
+    entity_type: str,
+    entity_id: uuid.UUID,
+    limit: int = 50,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    model = CALENDAR_ENTITY_MODELS.get(entity_type)
+    if model is None:
+        raise HTTPException(status_code=422, detail="entity_type must be person, lead or company")
+    obj = (
+        await db.execute(select(model).where(model.id == entity_id, model.org_id == user.org_id))
+    ).scalar_one_or_none()
+    if obj is None:
+        raise HTTPException(status_code=404, detail=f"{entity_type} not found")
+
+    stmt = (
+        select(EmailMessage)
+        .join(EmailParticipant, EmailParticipant.email_id == EmailMessage.id)
+        .where(EmailMessage.org_id == user.org_id)
+        .distinct()
+    )
+    if entity_type == "company":
+        domain = (obj.email_domain or "").lower().strip()
+        if not domain:
+            return {"items": []}
+        stmt = stmt.where(EmailParticipant.email.like(f"%@{domain}"))
+    else:
+        emails = []
+        if entity_type == "person":
+            emails = [e.lower() for e in (obj.work_email, obj.personal_email) if e]
+        elif entity_type == "lead":
+            emails = [obj.email.lower()] if obj.email else []
+        if not emails:
+            return {"items": []}
+        stmt = stmt.where(EmailParticipant.email.in_(emails))
+
+    stmt = stmt.order_by(EmailMessage.sent_at.desc()).limit(min(max(limit, 1), 200))
+    messages = (await db.execute(stmt)).scalars().all()
+    return {
+        "items": [
+            {
+                "id": str(m.id),
+                "subject": m.subject,
+                "snippet": m.snippet,
+                "from_email": m.from_email,
+                "from_name": m.from_name,
+                "is_outgoing": m.is_outgoing,
+                "sent_at": m.sent_at.isoformat() if m.sent_at else None,
+                "gmail_id": m.gmail_id,
+                "owner_user_id": str(m.owner_user_id) if m.owner_user_id else None,
+            }
+            for m in messages
         ]
     }

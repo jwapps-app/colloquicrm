@@ -1638,3 +1638,36 @@ textarea {
   border-radius: 8px;
   background: #fff;
 }
+
+/* Email timeline items */
+.email-item {
+  border-left: 3px solid var(--accent);
+}
+.email-dir {
+  margin-right: 6px;
+  color: var(--accent);
+  font-weight: 700;
+}
+.email-subject {
+  font-weight: 600;
+  margin-top: 2px;
+}
+.email-snippet {
+  margin-top: 2px;
+  font-size: 13px;
+}
+.email-open {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.gmail-hint {
+  background: var(--warn-soft);
+  border: 1px solid #f2d9a4;
+  color: var(--warn);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

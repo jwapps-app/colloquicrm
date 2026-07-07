@@ -858,8 +858,18 @@ function GoogleSection() {
             <>
               <p>
                 Connected as <strong>{status.me.email}</strong>
-                {status.me.last_synced_at ? ` — calendar synced ${new Date(status.me.last_synced_at).toLocaleString()}` : ' — not synced yet'}
+                {status.me.last_synced_at ? ` — synced ${new Date(status.me.last_synced_at).toLocaleString()}` : ' — not synced yet'}
               </p>
+              {status.me.gmail_enabled ? (
+                <p className="muted">✉ Email sync is on — mail involving your People and Leads shows on their timelines.</p>
+              ) : (
+                <p className="gmail-hint">
+                  ✉ Email sync is available but needs a fresh Google consent.{' '}
+                  <button type="button" className="btn btn-small" onClick={connect}>
+                    Reconnect Google
+                  </button>
+                </p>
+              )}
               {status.me.sync_error && <p className="form-error">Sync error: {status.me.sync_error}</p>}
               <div className="form-actions">
                 <button className="btn btn-small" onClick={syncNow} disabled={busy}>

@@ -292,6 +292,8 @@ class GoogleAccount(Base):
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sync_error: Mapped[str | None] = mapped_column(String(500))
+    gmail_history_id: Mapped[str | None] = mapped_column(String(40))
+    gmail_backfill_done: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class CalendarEvent(Base):
@@ -311,6 +313,45 @@ class CalendarEvent(Base):
     all_day: Mapped[bool] = mapped_column(Boolean, default=False)
     html_link: Mapped[str | None] = mapped_column(String(1000))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class EmailMessage(Base):
+    """A synced email that involves at least one known Person or Lead.
+    Non-matching mail is never stored. Deduped org-wide on the RFC Message-ID
+    header so a thread synced from two mailboxes lands once."""
+
+    __tablename__ = "email_messages"
+    __table_args__ = (
+        UniqueConstraint("org_id", "rfc_message_id"),
+        Index("ix_email_messages_org_sent", "org_id", "sent_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    gmail_id: Mapped[str] = mapped_column(String(32))
+    gmail_thread_id: Mapped[str | None] = mapped_column(String(32))
+    rfc_message_id: Mapped[str] = mapped_column(String(255))
+    subject: Mapped[str | None] = mapped_column(String(500))
+    snippet: Mapped[str | None] = mapped_column(String(500))
+    from_email: Mapped[str | None] = mapped_column(String(255))
+    from_name: Mapped[str | None] = mapped_column(String(255))
+    is_outgoing: Mapped[bool] = mapped_column(Boolean, default=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EmailParticipant(Base):
+    __tablename__ = "email_participants"
+
+    email_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("email_messages.id", ondelete="CASCADE"), primary_key=True
+    )
+    email: Mapped[str] = mapped_column(String(255), primary_key=True, index=True)
+    kind: Mapped[str] = mapped_column(String(8), default="to")
+    display_name: Mapped[str | None] = mapped_column(String(255))
 
 
 class CalendarEventAttendee(Base):

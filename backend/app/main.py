@@ -132,6 +132,7 @@ app.include_router(
 app.include_router(
     google_routes.calendar_router, prefix=f"{API}/calendar-events", tags=["integrations"]
 )
+app.include_router(google_routes.emails_router, prefix=f"{API}/emails", tags=["integrations"])
 
 # Serve the built frontend when present (single-process deployment). API routes
 # above always win; anything else falls back to the SPA's index.html.

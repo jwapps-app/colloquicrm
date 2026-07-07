@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     google_userinfo_url: str = "https://openidconnect.googleapis.com/v1/userinfo"
     google_people_base: str = "https://people.googleapis.com"
     google_calendar_base: str = "https://www.googleapis.com/calendar/v3"
+    google_gmail_base: str = "https://gmail.googleapis.com/gmail/v1"
+    gmail_backfill_days: int = 90
 
     @property
     def cors_origins(self) -> list[str]:

@@ -19,38 +19,46 @@ export default function NotesTimeline({ entityType, entityId }) {
   const { user } = useAuth();
   const [notes, setNotes] = useState(null);
   const [activities, setActivities] = useState(null);
+  const [emails, setEmails] = useState(null);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function load() {
     try {
-      const [n, a] = await Promise.all([
+      const [n, a, em] = await Promise.all([
         get('/notes', { entity_type: entityType, entity_id: entityId }),
         get('/activities', { entity_type: entityType, entity_id: entityId, page: 1, page_size: 50 }),
+        entityType === 'opportunity'
+          ? Promise.resolve({ items: [] })
+          : get('/emails', { entity_type: entityType, entity_id: entityId }).catch(() => ({ items: [] })),
       ]);
       setNotes(n?.items || []);
       setActivities(a?.items || []);
+      setEmails(em?.items || []);
     } catch (e) {
       toast.error(e.message);
       setNotes((v) => v || []);
       setActivities((v) => v || []);
+      setEmails((v) => v || []);
     }
   }
 
   useEffect(() => {
     setNotes(null);
     setActivities(null);
+    setEmails(null);
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, entityId]);
 
   const merged = useMemo(() => {
-    if (!notes || !activities) return null;
+    if (!notes || !activities || !emails) return null;
     return [
-      ...notes.map((n) => ({ ...n, _type: 'note' })),
-      ...activities.map((a) => ({ ...a, _type: 'activity' })),
-    ].sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
-  }, [notes, activities]);
+      ...notes.map((n) => ({ ...n, _type: 'note', _at: n.created_at })),
+      ...activities.map((a) => ({ ...a, _type: 'activity', _at: a.created_at })),
+      ...emails.map((e) => ({ ...e, _type: 'email', _at: e.sent_at || e.created_at })),
+    ].sort((x, y) => new Date(y._at) - new Date(x._at));
+  }, [notes, activities, emails]);
 
   async function addNote(e) {
     e.preventDefault();
@@ -101,7 +109,28 @@ export default function NotesTimeline({ entityType, entityId }) {
       ) : (
         <div className="timeline">
           {merged.map((item) =>
-            item._type === 'note' ? (
+            item._type === 'email' ? (
+              <div key={`e-${item.id}`} className="timeline-item email-item">
+                <div className="timeline-head">
+                  <span className="email-dir">{item.is_outgoing ? '↗' : '↘'}</span>
+                  <strong>{item.is_outgoing ? 'Email sent' : `Email from ${item.from_name || item.from_email || 'unknown'}`}</strong>
+                  <span className="muted"> · {fmtDateTime(item._at)}</span>
+                  {user?.id === item.owner_user_id && item.gmail_id && (
+                    <a
+                      className="email-open muted"
+                      href={`https://mail.google.com/mail/u/0/#all/${item.gmail_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open in Gmail"
+                    >
+                      Gmail ↗
+                    </a>
+                  )}
+                </div>
+                <div className="email-subject">{item.subject || '(no subject)'}</div>
+                {item.snippet && <div className="muted email-snippet">{item.snippet}</div>}
+              </div>
+            ) : item._type === 'note' ? (
               <div key={`n-${item.id}`} className="timeline-item note-item">
                 <div className="timeline-head">
                   <strong>{item.author_name || 'Someone'}</strong>

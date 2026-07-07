@@ -17,6 +17,7 @@ import hmac
 import logging
 import time
 import uuid
+from email.utils import getaddresses, parseaddr
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -28,18 +29,24 @@ from app.db import SessionLocal
 from app.models import (
     CalendarEvent,
     CalendarEventAttendee,
+    EmailMessage,
+    EmailParticipant,
     GoogleAccount,
     GoogleIntegration,
+    Lead,
+    Person,
     utcnow,
 )
 
 log = logging.getLogger("google")
 
+GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPES = [
     "openid",
     "email",
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
+    GMAIL_SCOPE,
 ]
 SYNC_INTERVAL_SECONDS = 1800
 STATE_TTL_SECONDS = 600
@@ -329,7 +336,264 @@ async def sync_calendar(db, cfg: GoogleIntegration, account: GoogleAccount) -> i
     return count
 
 
-async def sync_account(db, account: GoogleAccount) -> int:
+
+
+# ---- Gmail ----
+
+def has_gmail_scope(account: GoogleAccount) -> bool:
+    return GMAIL_SCOPE in (account.scopes or "")
+
+
+async def _crm_email_map(db, org_id: uuid.UUID) -> dict[str, tuple[str, uuid.UUID]]:
+    """Every known contact email in the org -> (entity_type, id)."""
+    out: dict[str, tuple[str, uuid.UUID]] = {}
+    rows = await db.execute(
+        select(Person.id, Person.work_email, Person.personal_email).where(Person.org_id == org_id)
+    )
+    for pid, work, personal in rows:
+        for e in (work, personal):
+            if e:
+                out[e.lower().strip()] = ("person", pid)
+    rows = await db.execute(
+        select(Lead.id, Lead.email).where(Lead.org_id == org_id, Lead.email.is_not(None))
+    )
+    for lid, e in rows:
+        out.setdefault(e.lower().strip(), ("lead", lid))
+    return out
+
+
+def _parse_message(item: dict, owner_email: str) -> dict | None:
+    """Gmail metadata payload -> storable fields + participant list."""
+    headers = {
+        h.get("name", "").lower(): h.get("value", "")
+        for h in (item.get("payload", {}).get("headers") or [])
+    }
+    participants: list[tuple[str, str, str | None]] = []  # (kind, email, name)
+    from_name, from_email = parseaddr(headers.get("from", ""))
+    if from_email:
+        participants.append(("from", from_email.lower().strip(), from_name or None))
+    for kind, header in (("to", "to"), ("cc", "cc")):
+        for name, addr in getaddresses([headers.get(header, "")]):
+            if addr:
+                participants.append((kind, addr.lower().strip(), name or None))
+    if not participants:
+        return None
+    sent_at = None
+    if item.get("internalDate"):
+        try:
+            sent_at = datetime.fromtimestamp(int(item["internalDate"]) / 1000, tz=timezone.utc)
+        except (ValueError, OSError):
+            pass
+    return {
+        "gmail_id": item.get("id"),
+        "gmail_thread_id": item.get("threadId"),
+        "rfc_message_id": (headers.get("message-id") or "").strip()[:255],
+        "subject": (headers.get("subject") or "")[:500] or None,
+        "snippet": (item.get("snippet") or "")[:500] or None,
+        "from_email": from_email.lower().strip() if from_email else None,
+        "from_name": from_name or None,
+        "is_outgoing": "SENT" in (item.get("labelIds") or [])
+        or (from_email or "").lower().strip() == owner_email,
+        "sent_at": sent_at,
+        "participants": participants,
+    }
+
+
+async def _fetch_message_meta(access: str, gmail_id: str) -> dict | None:
+    try:
+        return await _get_json(
+            f"{settings.google_gmail_base}/users/me/messages/{gmail_id}",
+            access,
+            {
+                "format": "metadata",
+                "metadataHeaders": ["From", "To", "Cc", "Subject", "Message-ID"],
+            },
+        )
+    except GoogleError as exc:
+        if "(404)" in str(exc):
+            return None  # message deleted between list and get
+        raise
+
+
+async def _known_gmail_ids(db, owner_user_id: uuid.UUID, ids: list[str]) -> set[str]:
+    if not ids:
+        return set()
+    rows = await db.execute(
+        select(EmailMessage.gmail_id).where(
+            EmailMessage.owner_user_id == owner_user_id, EmailMessage.gmail_id.in_(ids)
+        )
+    )
+    return {gid for (gid,) in rows}
+
+
+async def _store_messages(
+    db, account: GoogleAccount, access: str, gmail_ids: list[str],
+    contact_map: dict[str, tuple[str, uuid.UUID]],
+) -> tuple[int, set[uuid.UUID]]:
+    """Fetch metadata for unseen ids, keep only CRM-matching mail.
+    Returns (stored_count, matched_person_ids)."""
+    owner_email = account.email.lower().strip()
+    stored = 0
+    matched_people: set[uuid.UUID] = set()
+
+    unseen = [g for g in gmail_ids if g]
+    known = await _known_gmail_ids(db, account.user_id, unseen)
+    unseen = [g for g in unseen if g not in known]
+
+    CHUNK = 10
+    for i in range(0, len(unseen), CHUNK):
+        chunk = unseen[i : i + CHUNK]
+        items = await asyncio.gather(*[_fetch_message_meta(access, g) for g in chunk])
+        for item in items:
+            if item is None:
+                continue
+            parsed = _parse_message(item, owner_email)
+            if parsed is None:
+                continue
+            participants = parsed.pop("participants")
+            matches = {
+                contact_map[email]
+                for _, email, _ in participants
+                if email != owner_email and email in contact_map
+            }
+            if not matches:
+                continue
+            rfc = parsed["rfc_message_id"] or f"gmail:{account.user_id}:{parsed['gmail_id']}"
+            duplicate = (
+                await db.execute(
+                    select(EmailMessage.id).where(
+                        EmailMessage.org_id == account.org_id,
+                        EmailMessage.rfc_message_id == rfc,
+                    )
+                )
+            ).scalar_one_or_none()
+            if duplicate is not None:
+                continue
+            msg = EmailMessage(
+                org_id=account.org_id, owner_user_id=account.user_id,
+                **{**parsed, "rfc_message_id": rfc},
+            )
+            db.add(msg)
+            await db.flush()
+            seen_emails: set[str] = set()
+            for kind, email, name in participants:
+                if email in seen_emails:
+                    continue
+                seen_emails.add(email)
+                db.add(
+                    EmailParticipant(
+                        email_id=msg.id, email=email, kind=kind,
+                        display_name=(name or "")[:255] or None,
+                    )
+                )
+            stored += 1
+            matched_people.update(pid for etype, pid in matches if etype == "person")
+    return stored, matched_people
+
+
+async def _update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.UUID]) -> None:
+    """Copper-style columns: interactions = matched emails, last contacted =
+    most recent one."""
+    from sqlalchemy import func
+
+    await db.flush()  # participant rows may still be pending (autoflush is off)
+
+    for pid in person_ids:
+        person = (
+            await db.execute(select(Person).where(Person.id == pid, Person.org_id == org_id))
+        ).scalar_one_or_none()
+        if person is None:
+            continue
+        emails = [e.lower() for e in (person.work_email, person.personal_email) if e]
+        if not emails:
+            continue
+        count, latest = (
+            await db.execute(
+                select(func.count(func.distinct(EmailMessage.id)), func.max(EmailMessage.sent_at))
+                .join(EmailParticipant, EmailParticipant.email_id == EmailMessage.id)
+                .where(EmailMessage.org_id == org_id, EmailParticipant.email.in_(emails))
+            )
+        ).one()
+        person.interaction_count = count or 0
+        if latest is not None:
+            person.last_contacted_at = latest
+
+
+async def sync_gmail(db, cfg: GoogleIntegration, account: GoogleAccount) -> int:
+    """Backfill once (settings.gmail_backfill_days window), then follow the
+    history feed. Only mail involving known People/Leads is stored."""
+    access = await ensure_access_token(db, cfg, account)
+    contact_map = await _crm_email_map(db, account.org_id)
+    if not contact_map:
+        return 0
+    stored_total = 0
+    matched_people: set[uuid.UUID] = set()
+
+    if not account.gmail_backfill_done:
+        # Snapshot the cursor FIRST so mail arriving mid-backfill isn't missed.
+        profile = await _get_json(f"{settings.google_gmail_base}/users/me/profile", access)
+        ids: list[str] = []
+        page_token = None
+        while True:
+            params = {
+                "q": f"newer_than:{settings.gmail_backfill_days}d -in:spam -in:trash",
+                "maxResults": 500,
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            data = await _get_json(f"{settings.google_gmail_base}/users/me/messages", access, params)
+            ids.extend(m["id"] for m in data.get("messages", []) if m.get("id"))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+        stored, people = await _store_messages(db, account, access, ids, contact_map)
+        stored_total += stored
+        matched_people |= people
+        account.gmail_history_id = str(profile.get("historyId") or "")
+        account.gmail_backfill_done = True
+    elif account.gmail_history_id:
+        ids = []
+        page_token = None
+        newest_history = account.gmail_history_id
+        try:
+            while True:
+                params = {
+                    "startHistoryId": account.gmail_history_id,
+                    "historyTypes": "messageAdded",
+                    "maxResults": 500,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                data = await _get_json(
+                    f"{settings.google_gmail_base}/users/me/history", access, params
+                )
+                for h in data.get("history", []):
+                    for added in h.get("messagesAdded", []):
+                        mid = (added.get("message") or {}).get("id")
+                        if mid:
+                            ids.append(mid)
+                newest_history = str(data.get("historyId") or newest_history)
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+        except GoogleError as exc:
+            if "(404)" in str(exc):
+                # Cursor expired — re-run the backfill window; dedupe makes it cheap.
+                account.gmail_backfill_done = False
+                account.gmail_history_id = None
+                return stored_total
+            raise
+        stored, people = await _store_messages(db, account, access, ids, contact_map)
+        stored_total += stored
+        matched_people |= people
+        account.gmail_history_id = newest_history
+
+    if matched_people:
+        await _update_person_aggregates(db, account.org_id, matched_people)
+    return stored_total
+
+
+async def sync_account(db, account: GoogleAccount) -> dict:
     cfg = (
         await db.execute(
             select(GoogleIntegration).where(GoogleIntegration.org_id == account.org_id)
@@ -337,7 +601,9 @@ async def sync_account(db, account: GoogleAccount) -> int:
     ).scalar_one_or_none()
     if cfg is None:
         raise GoogleError("Google integration is not configured")
-    return await sync_calendar(db, cfg, account)
+    events = await sync_calendar(db, cfg, account)
+    emails = await sync_gmail(db, cfg, account) if has_gmail_scope(account) else 0
+    return {"events_synced": events, "emails_synced": emails}
 
 
 async def run_sync_pass() -> None:
