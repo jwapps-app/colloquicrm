@@ -767,7 +767,7 @@ function GoogleSection() {
     setBusy(true);
     try {
       const res = await post('/integrations/google/sync');
-      toast.success(`Synced ${res.events_synced} calendar events`);
+      toast.success(`Synced ${res.events_synced} calendar events, matched ${res.emails_synced} new emails`);
       setVersion((v) => v + 1);
     } catch (e) {
       toast.error(e.message);
@@ -861,7 +861,12 @@ function GoogleSection() {
                 {status.me.last_synced_at ? ` — synced ${new Date(status.me.last_synced_at).toLocaleString()}` : ' — not synced yet'}
               </p>
               {status.me.gmail_enabled ? (
-                <p className="muted">✉ Email sync is on — mail involving your People and Leads shows on their timelines.</p>
+                <p className="muted">
+                  ✉ Email sync is on — {status.emails_matched ?? 0} matched email
+                  {(status.emails_matched ?? 0) === 1 ? '' : 's'} so far. Mail involving your People and
+                  Leads shows on their timelines. After adding new people, hit "Sync now" to pull
+                  their email history.
+                </p>
               ) : (
                 <p className="gmail-hint">
                   ✉ Email sync is available but needs a fresh Google consent.{' '}
@@ -873,7 +878,7 @@ function GoogleSection() {
               {status.me.sync_error && <p className="form-error">Sync error: {status.me.sync_error}</p>}
               <div className="form-actions">
                 <button className="btn btn-small" onClick={syncNow} disabled={busy}>
-                  Sync calendar now
+                  Sync now
                 </button>
                 <a className="btn btn-small" href="/import?source=google">
                   Import contacts

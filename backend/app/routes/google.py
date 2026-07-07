@@ -22,6 +22,8 @@ from app.models import (
     User,
     utcnow,
 )
+from sqlalchemy import func
+
 from app.schemas import GoogleConfigIn
 from app.services import google as g
 from app.services.importer import find_duplicates
@@ -57,7 +59,15 @@ async def status(user: User = Depends(get_current_user), db: AsyncSession = Depe
             else None,
             "sync_error": account.sync_error if account else None,
             "gmail_enabled": g.has_gmail_scope(account) if account else False,
+            "gmail_backfill_done": bool(account.gmail_backfill_done) if account else False,
         },
+        "emails_matched": (
+            await db.execute(
+                select(func.count()).select_from(EmailMessage).where(
+                    EmailMessage.org_id == user.org_id
+                )
+            )
+        ).scalar_one(),
     }
 
 
@@ -158,7 +168,7 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
     if account is None:
         raise HTTPException(status_code=400, detail="No Google account connected")
     try:
-        result = await g.sync_account(db, account)
+        result = await g.sync_account(db, account, force_backfill=True)
     except g.GoogleError as exc:
         account.sync_error = str(exc)[:500]
         raise HTTPException(status_code=502, detail=str(exc))

@@ -519,9 +519,45 @@ async def _update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.
             person.last_contacted_at = latest
 
 
-async def sync_gmail(db, cfg: GoogleIntegration, account: GoogleAccount) -> int:
-    """Backfill once (settings.gmail_backfill_days window), then follow the
-    history feed. Only mail involving known People/Leads is stored."""
+ADDRESSES_PER_QUERY = 15
+
+
+async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
+    """Ask Gmail for mail exchanged with the given addresses, rather than
+    crawling the whole mailbox — one search per 15 contacts, so it is fast and
+    quota-cheap even on large accounts."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for i in range(0, len(addresses), ADDRESSES_PER_QUERY):
+        chunk = addresses[i : i + ADDRESSES_PER_QUERY]
+        clause = " OR ".join(f"from:{a} OR to:{a} OR cc:{a}" for a in chunk)
+        q = f"newer_than:{settings.gmail_backfill_days}d -in:spam -in:trash ({clause})"
+        page_token = None
+        while True:
+            params = {"q": q, "maxResults": 500}
+            if page_token:
+                params["pageToken"] = page_token
+            data = await _get_json(
+                f"{settings.google_gmail_base}/users/me/messages", access, params
+            )
+            for m in data.get("messages", []):
+                mid = m.get("id")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    ids.append(mid)
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+    return ids
+
+
+async def sync_gmail(
+    db, cfg: GoogleIntegration, account: GoogleAccount, force_backfill: bool = False
+) -> int:
+    """Targeted backfill (searches the window for known contacts), then the
+    history feed for new mail. Only mail involving known People/Leads is
+    stored. force_backfill re-runs the search — how newly added contacts get
+    their history pulled."""
     access = await ensure_access_token(db, cfg, account)
     contact_map = await _crm_email_map(db, account.org_id)
     if not contact_map:
@@ -529,27 +565,15 @@ async def sync_gmail(db, cfg: GoogleIntegration, account: GoogleAccount) -> int:
     stored_total = 0
     matched_people: set[uuid.UUID] = set()
 
-    if not account.gmail_backfill_done:
+    if force_backfill or not account.gmail_backfill_done:
         # Snapshot the cursor FIRST so mail arriving mid-backfill isn't missed.
         profile = await _get_json(f"{settings.google_gmail_base}/users/me/profile", access)
-        ids: list[str] = []
-        page_token = None
-        while True:
-            params = {
-                "q": f"newer_than:{settings.gmail_backfill_days}d -in:spam -in:trash",
-                "maxResults": 500,
-            }
-            if page_token:
-                params["pageToken"] = page_token
-            data = await _get_json(f"{settings.google_gmail_base}/users/me/messages", access, params)
-            ids.extend(m["id"] for m in data.get("messages", []) if m.get("id"))
-            page_token = data.get("nextPageToken")
-            if not page_token:
-                break
+        ids = await _search_contact_mail(access, list(contact_map.keys()))
         stored, people = await _store_messages(db, account, access, ids, contact_map)
         stored_total += stored
         matched_people |= people
-        account.gmail_history_id = str(profile.get("historyId") or "")
+        if not account.gmail_history_id:
+            account.gmail_history_id = str(profile.get("historyId") or "")
         account.gmail_backfill_done = True
     elif account.gmail_history_id:
         ids = []
@@ -593,7 +617,7 @@ async def sync_gmail(db, cfg: GoogleIntegration, account: GoogleAccount) -> int:
     return stored_total
 
 
-async def sync_account(db, account: GoogleAccount) -> dict:
+async def sync_account(db, account: GoogleAccount, force_backfill: bool = False) -> dict:
     cfg = (
         await db.execute(
             select(GoogleIntegration).where(GoogleIntegration.org_id == account.org_id)
@@ -602,7 +626,11 @@ async def sync_account(db, account: GoogleAccount) -> dict:
     if cfg is None:
         raise GoogleError("Google integration is not configured")
     events = await sync_calendar(db, cfg, account)
-    emails = await sync_gmail(db, cfg, account) if has_gmail_scope(account) else 0
+    emails = (
+        await sync_gmail(db, cfg, account, force_backfill=force_backfill)
+        if has_gmail_scope(account)
+        else 0
+    )
     return {"events_synced": events, "emails_synced": emails}
 
 
