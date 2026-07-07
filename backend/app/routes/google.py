@@ -178,6 +178,7 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
 @router.get("/diagnose")
 async def diagnose_address(
     email: str,
+    q: str | None = None,
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -191,7 +192,16 @@ async def diagnose_address(
     addr = g.normalize_email(email)
     try:
         access = await g.ensure_access_token(db, cfg, account)
-        ids = await g._search_contact_mail(access, [addr])
+        if q:
+            # Raw Gmail query passthrough for troubleshooting.
+            data = await g._get_json(
+                f"{settings.google_gmail_base}/users/me/messages",
+                access,
+                {"q": q, "maxResults": 100},
+            )
+            ids = [m["id"] for m in data.get("messages", []) if m.get("id")]
+        else:
+            ids = await g._search_contact_mail(access, [addr])
         contact_map = await g._crm_email_map(db, user.org_id)
         samples = []
         for gid in ids[:5]:
