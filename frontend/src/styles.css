@@ -707,6 +707,23 @@ th.col-check {
   border-color: var(--accent);
 }
 
+.import-progress {
+  padding: 8px 4px;
+}
+.progress-track {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 6px;
+  transition: width 0.6s ease;
+}
+
 .table-card {
   padding: 0;
   overflow: hidden;

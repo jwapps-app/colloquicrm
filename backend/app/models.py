@@ -59,6 +59,7 @@ class Session(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     pending_totp: Mapped[bool] = mapped_column(Boolean, default=False)
+    totp_attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -294,6 +295,8 @@ class GoogleAccount(Base):
     sync_error: Mapped[str | None] = mapped_column(String(500))
     gmail_history_id: Mapped[str | None] = mapped_column(String(40))
     gmail_backfill_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    # index into the sorted backfill address list — survives restarts/429s
+    gmail_backfill_cursor: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class CalendarEvent(Base):
@@ -324,6 +327,7 @@ class EmailMessage(Base):
     __table_args__ = (
         UniqueConstraint("org_id", "rfc_message_id"),
         Index("ix_email_messages_org_sent", "org_id", "sent_at"),
+        Index("ix_email_messages_owner_gmail", "owner_user_id", "gmail_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -417,6 +421,7 @@ class Tag(Base):
 
 class EntityTag(Base):
     __tablename__ = "entity_tags"
+    __table_args__ = (Index("ix_entity_tags_entity", "entity_type", "entity_id"),)
 
     tag_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
@@ -501,6 +506,30 @@ class PhoneEvent(Base):
     text: Mapped[str | None] = mapped_column(Text)  # SMS body
     recording_id: Mapped[str | None] = mapped_column(String(64))  # future playback
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ImportJob(Base):
+    """A committed import, processed in the background in chunks. The parsed
+    rows live in payload so a restart can resume from the processed offset
+    instead of losing minutes of work (or duplicating it)."""
+
+    __tablename__ = "import_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    import_type: Mapped[str] = mapped_column(String(30))
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)
+    payload: Mapped[list] = mapped_column(JSON, default=list)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    processed: Mapped[int] = mapped_column(Integer, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    merged_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    fields_created: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class SavedFilter(Base):

@@ -551,6 +551,8 @@ async def fetch_message_body(access: str, gmail_id: str) -> dict:
 
 
 ADDRESSES_PER_QUERY = 10
+# How many addresses to fully process between checkpoints (5 searches' worth).
+BACKFILL_ADDRESSES_PER_CHECKPOINT = 50
 
 
 async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
@@ -612,16 +614,47 @@ async def sync_gmail(
     stored_total = 0
     matched_people: set[uuid.UUID] = set()
 
-    if force_backfill or not account.gmail_backfill_done:
-        # Snapshot the cursor FIRST so mail arriving mid-backfill isn't missed.
-        profile = await _get_json(f"{settings.google_gmail_base}/users/me/profile", access)
-        ids = await _search_contact_mail(access, list(contact_map.keys()))
-        stored, people = await _store_messages(db, account, access, ids, contact_map)
-        stored_total += stored
-        matched_people |= people
+    if force_backfill and account.gmail_backfill_done:
+        # Restart the walk — how newly added contacts get their history.
+        account.gmail_backfill_done = False
+        account.gmail_backfill_cursor = 0
+
+    if not account.gmail_backfill_done:
+        # Snapshot the history cursor FIRST so mail arriving mid-backfill
+        # isn't missed once the incremental feed takes over.
         if not account.gmail_history_id:
+            profile = await _get_json(f"{settings.google_gmail_base}/users/me/profile", access)
             account.gmail_history_id = str(profile.get("historyId") or "")
+            await db.commit()
+        # People only by default: a 19k-lead book would mean thousands of
+        # Gmail searches. Sorted so the checkpoint survives restarts.
+        addresses = sorted(
+            a
+            for a, (etype, _) in contact_map.items()
+            if etype == "person" or settings.gmail_backfill_leads
+        )
+        cursor = account.gmail_backfill_cursor or 0
+        while cursor < len(addresses):
+            chunk = addresses[cursor : cursor + BACKFILL_ADDRESSES_PER_CHECKPOINT]
+            try:
+                ids = await _search_contact_mail(access, chunk)
+                stored, people = await _store_messages(db, account, access, ids, contact_map)
+            except GoogleError as exc:
+                if "(429)" in str(exc) or "(403)" in str(exc):
+                    # Quota pressure: keep the checkpoint, resume next pass.
+                    account.sync_error = "Gmail rate limited — backfill resumes automatically"
+                    await db.commit()
+                    log.warning("gmail backfill rate limited at %s/%s", cursor, len(addresses))
+                    return stored_total
+                raise
+            stored_total += stored
+            matched_people |= people
+            cursor += len(chunk)
+            account.gmail_backfill_cursor = cursor
+            account.sync_error = None
+            await db.commit()  # checkpoint: finished work survives anything
         account.gmail_backfill_done = True
+        account.gmail_backfill_cursor = 0
     elif account.gmail_history_id:
         ids = []
         page_token = None
@@ -692,6 +725,26 @@ async def run_sync_pass() -> None:
                 account.sync_error = str(exc)[:500]
                 log.warning("Google sync failed for %s: %s", account.email, exc)
                 await db.commit()
+
+
+async def sync_account_background(user_id: uuid.UUID, force_backfill: bool = False) -> None:
+    """A user-triggered sync, detached from its request — a full backfill can
+    run for many minutes, far past any request timeout."""
+    async with SessionLocal() as db:
+        account = (
+            await db.execute(select(GoogleAccount).where(GoogleAccount.user_id == user_id))
+        ).scalar_one_or_none()
+        if account is None:
+            return
+        try:
+            await sync_account(db, account, force_backfill=force_backfill)
+            account.last_synced_at = utcnow()
+            account.sync_error = None
+            await db.commit()
+        except GoogleError as exc:
+            account.sync_error = str(exc)[:500]
+            log.warning("background sync failed for %s: %s", account.email, exc)
+            await db.commit()
 
 
 async def sync_loop() -> None:

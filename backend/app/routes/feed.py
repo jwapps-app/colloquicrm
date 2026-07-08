@@ -1,7 +1,8 @@
+import time
 import uuid
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -24,6 +25,58 @@ from app.services.google import normalize_email
 from app.services.ringcentral import normalize_phone
 
 router = APIRouter()
+
+# The feed labels emails/calls with matching people and leads. Participant
+# emails are stored normalized (gmail dots and +suffixes stripped), so the
+# match must run through normalize_email on the record side too — that can't
+# be pushed into SQL against the raw columns. Instead of loading the whole
+# contact book on every request (43k rows post-import), build the lookup maps
+# once and reuse them briefly; slightly stale chips are invisible, a full
+# table scan per page view is not.
+_MAPS_TTL_SECONDS = 120
+_maps_cache: dict[uuid.UUID, tuple[float, dict, dict]] = {}
+
+
+async def _org_contact_maps(db: AsyncSession, org_id: uuid.UUID) -> tuple[dict, dict]:
+    """(addr_map, phone_map): normalized email/number -> (type, id, label)."""
+    cached = _maps_cache.get(org_id)
+    if cached and time.monotonic() - cached[0] < _MAPS_TTL_SECONDS:
+        return cached[1], cached[2]
+
+    addr_map: dict[str, tuple[str, uuid.UUID, str]] = {}
+    phone_map: dict[str, tuple[str, uuid.UUID, str]] = {}
+
+    people = await db.execute(
+        select(Person.id, Person.first_name, Person.last_name, Person.work_email,
+               Person.personal_email, Person.work_phone, Person.mobile_phone).where(
+            Person.org_id == org_id
+        )
+    )
+    for pid, first, last, work, personal, wphone, mphone in people:
+        label = " ".join(filter(None, [first, last]))
+        for e in (work, personal):
+            if e:
+                addr_map.setdefault(normalize_email(e), ("person", pid, label))
+        for p in (wphone, mphone):
+            n = normalize_phone(p)
+            if n:
+                phone_map.setdefault(n, ("person", pid, label))
+
+    leads = await db.execute(
+        select(Lead.id, Lead.first_name, Lead.last_name, Lead.email, Lead.work_phone,
+               Lead.mobile_phone).where(Lead.org_id == org_id)
+    )
+    for lid, first, last, email, wphone, mphone in leads:
+        label = " ".join(filter(None, [first, last]))
+        if email:
+            addr_map.setdefault(normalize_email(email), ("lead", lid, label))
+        for p in (wphone, mphone):
+            n = normalize_phone(p)
+            if n:
+                phone_map.setdefault(n, ("lead", lid, label))
+
+    _maps_cache[org_id] = (time.monotonic(), addr_map, phone_map)
+    return addr_map, phone_map
 
 
 async def _entity_labels(db: AsyncSession, org_id: uuid.UUID, refs: set) -> dict:
@@ -75,23 +128,31 @@ async def feed(
     items: list[dict] = []
 
     if kind in ("all", "email"):
-        emails = (
-            (
-                await db.execute(
-                    select(EmailMessage)
-                    .join(EmailParticipant, EmailParticipant.email_id == EmailMessage.id)
-                    .where(
-                        EmailMessage.org_id == user.org_id,
-                        EmailParticipant.direct.is_(True),
-                    )
-                    .distinct()
-                    .order_by(EmailMessage.sent_at.desc())
-                    .limit(need)
-                )
-            )
-            .scalars()
-            .all()
+        # Skinny columns only — the cached bodies can be tens of KB per row —
+        # and EXISTS instead of join+DISTINCT so rows never multiply.
+        engaged = exists().where(
+            (EmailParticipant.email_id == EmailMessage.id)
+            & EmailParticipant.direct.is_(True)
         )
+        emails = (
+            await db.execute(
+                select(
+                    EmailMessage.id,
+                    EmailMessage.sent_at,
+                    EmailMessage.created_at,
+                    EmailMessage.subject,
+                    EmailMessage.snippet,
+                    EmailMessage.from_email,
+                    EmailMessage.from_name,
+                    EmailMessage.is_outgoing,
+                    EmailMessage.owner_user_id,
+                    EmailMessage.gmail_id,
+                )
+                .where(EmailMessage.org_id == user.org_id, engaged)
+                .order_by(EmailMessage.sent_at.desc())
+                .limit(need)
+            )
+        ).all()
         email_ids = [e.id for e in emails]
         related: dict[uuid.UUID, list[dict]] = {}
         if email_ids:
@@ -105,25 +166,7 @@ async def feed(
             by_addr: dict[str, list[uuid.UUID]] = {}
             for eid, addr in parts:
                 by_addr.setdefault(addr, []).append(eid)
-            addr_map: dict[str, tuple[str, uuid.UUID, str]] = {}
-            people = await db.execute(
-                select(Person.id, Person.first_name, Person.last_name, Person.work_email,
-                       Person.personal_email).where(Person.org_id == user.org_id)
-            )
-            for pid, first, last, work, personal in people:
-                label = " ".join(filter(None, [first, last]))
-                for e in (work, personal):
-                    if e:
-                        addr_map.setdefault(normalize_email(e), ("person", pid, label))
-            leads = await db.execute(
-                select(Lead.id, Lead.first_name, Lead.last_name, Lead.email).where(
-                    Lead.org_id == user.org_id, Lead.email.is_not(None)
-                )
-            )
-            for lid, first, last, e in leads:
-                addr_map.setdefault(
-                    normalize_email(e), ("lead", lid, " ".join(filter(None, [first, last])))
-                )
+            addr_map, _ = await _org_contact_maps(db, user.org_id)
             for addr, eids in by_addr.items():
                 hit = addr_map.get(addr)
                 if not hit:
@@ -166,26 +209,7 @@ async def feed(
         )
         phone_map: dict[str, tuple[str, uuid.UUID, str]] = {}
         if events:
-            people = await db.execute(
-                select(Person.id, Person.first_name, Person.last_name, Person.work_phone,
-                       Person.mobile_phone).where(Person.org_id == user.org_id)
-            )
-            for pid, first, last, work, mobile in people:
-                label = " ".join(filter(None, [first, last]))
-                for p in (work, mobile):
-                    n = normalize_phone(p)
-                    if n:
-                        phone_map.setdefault(n, ("person", pid, label))
-            leads = await db.execute(
-                select(Lead.id, Lead.first_name, Lead.last_name, Lead.work_phone,
-                       Lead.mobile_phone).where(Lead.org_id == user.org_id)
-            )
-            for lid, first, last, work, mobile in leads:
-                label = " ".join(filter(None, [first, last]))
-                for p in (work, mobile):
-                    n = normalize_phone(p)
-                    if n:
-                        phone_map.setdefault(n, ("lead", lid, label))
+            _, phone_map = await _org_contact_maps(db, user.org_id)
         for e in events:
             if e.entity_type and e.entity_id:
                 label = None  # resolved below with the other entity labels

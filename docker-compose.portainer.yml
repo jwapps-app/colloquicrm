@@ -51,8 +51,12 @@ services:
       - -c
       - |
         while true; do
-          pg_dump -Fc -f "/backups/app-$$(date +%F).dump" && \
+          if pg_dump -Fc -f "/backups/app-$$(date +%F).dump"; then
             find /backups -name '*.dump' -mtime +$${RETENTION_DAYS} -delete
+            date > /backups/last-success
+          else
+            echo "BACKUP FAILED $$(date)" | tee -a /backups/failures.log
+          fi
           sleep 86400
         done
     depends_on:

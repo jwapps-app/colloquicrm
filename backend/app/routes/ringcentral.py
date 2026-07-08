@@ -66,6 +66,7 @@ async def connect(
         raise HTTPException(status_code=502, detail=str(exc))
     cfg.connected_at = utcnow()
     cfg.sync_error = None
+    await db.commit()  # visible before the client refetches
     return _status(cfg)
 
 
@@ -74,6 +75,7 @@ async def disconnect(admin: User = Depends(require_admin), db: AsyncSession = De
     await db.execute(
         delete(RingCentralIntegration).where(RingCentralIntegration.org_id == admin.org_id)
     )
+    await db.commit()  # visible before the client refetches
 
 
 @router.post("/sync")

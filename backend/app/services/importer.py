@@ -7,25 +7,33 @@ back to commit with a per-row action: create, skip, or merge.
 
 import csv
 import io
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Company,
     CustomField,
     CustomFieldValue,
+    EntityTag,
+    ImportJob,
     Lead,
     Opportunity,
     Person,
     Pipeline,
     Stage,
     User,
+    utcnow,
 )
-from app.services.common import add_tags, log_activity
+from app.services.common import add_tags, get_or_create_tag, log_activity
+
+log = logging.getLogger("importer")
+
+COMMIT_CHUNK = 250
 
 CF_HEADER = re.compile(r"^(.+?)\s+(cf_\d+)$")
 
@@ -385,6 +393,13 @@ class _CommitContext:
         self.field_types: dict[uuid.UUID, str] = {}
         self.field_objs: dict[uuid.UUID, CustomField] = {}
         self.fields_created: list[str] = []
+        self.tags: dict[str, uuid.UUID] = {}
+
+
+async def _tag_id(db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext, name: str) -> uuid.UUID:
+    if name not in ctx.tags:
+        ctx.tags[name] = (await get_or_create_tag(db, org_id, name)).id
+    return ctx.tags[name]
 
 
 async def _load_users(db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext) -> None:
@@ -532,6 +547,26 @@ async def _ensure_field(
     return field.id
 
 
+def _coerce_cf_value(ctx: _CommitContext, field_id: uuid.UUID, value) -> str:
+    field_type = ctx.field_types.get(field_id)
+    if field_type == "date":
+        parsed = _parse_date(str(value))
+        if parsed:
+            value = parsed
+    elif field_type == "select":
+        # Match the option's canonical casing; unknown values become new
+        # options rather than silently vanishing from the dropdown.
+        field = ctx.field_objs[field_id]
+        options = list(field.options or [])
+        canon = next((o for o in options if o.lower() == str(value).strip().lower()), None)
+        if canon is not None:
+            value = canon
+        else:
+            value = str(value).strip()
+            field.options = options + [value]
+    return str(value)
+
+
 async def _set_cf_values(
     db: AsyncSession,
     org_id: uuid.UUID,
@@ -545,22 +580,7 @@ async def _set_cf_values(
         if value in (None, ""):
             continue
         field_id = await _ensure_field(db, org_id, ctx, entity_type, name, sample_value=value)
-        field_type = ctx.field_types.get(field_id)
-        if field_type == "date":
-            parsed = _parse_date(str(value))
-            if parsed:
-                value = parsed
-        elif field_type == "select":
-            # Match the option's canonical casing; unknown values become new
-            # options rather than silently vanishing from the dropdown.
-            field = ctx.field_objs[field_id]
-            options = list(field.options or [])
-            canon = next((o for o in options if o.lower() == str(value).strip().lower()), None)
-            if canon is not None:
-                value = canon
-            else:
-                value = str(value).strip()
-                field.options = options + [value]
+        value = _coerce_cf_value(ctx, field_id, value)
         existing = (
             await db.execute(
                 select(CustomFieldValue).where(
@@ -571,14 +591,14 @@ async def _set_cf_values(
         ).scalar_one_or_none()
         if existing is not None:
             if not only_if_missing:
-                existing.value = str(value)
+                existing.value = value
         else:
             db.add(
                 CustomFieldValue(
                     field_id=field_id,
                     entity_type=entity_type,
                     entity_id=entity_id,
-                    value=str(value),
+                    value=value,
                 )
             )
 
@@ -631,63 +651,155 @@ async def _build_kwargs(
     return kwargs
 
 
-async def commit_rows(
-    db: AsyncSession, user: User, import_type: str, rows: list
-) -> dict:
+async def _commit_chunk(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    ctx: _CommitContext,
+    import_type: str,
+    rows: list[dict],
+) -> tuple[int, int, int]:
+    """Process one chunk of payload rows with set-based writes: new records,
+    their tags, and their custom values each land as bulk inserts instead of
+    a handful of round trips per row."""
     entity_type = IMPORT_TYPES[import_type]
     model = MODEL_BY_TYPE[import_type]
-    ctx = _CommitContext()
-    await _load_users(db, user.org_id, ctx)
-
     created = merged = skipped = 0
-    for i, row in enumerate(rows):
-        if row.action == "skip":
+    create_rows: list[dict] = []
+    tag_rows: list[dict] = []
+    cf_rows: list[dict] = []
+
+    for row in rows:
+        action = row.get("action") or "create"
+        merge_id = row.get("merge_id")
+        if action == "skip":
             skipped += 1
             continue
-        if row.action == "merge" and row.merge_id is not None:
+        if action == "merge" and merge_id:
             existing = (
                 await db.execute(
-                    select(model).where(model.id == row.merge_id, model.org_id == user.org_id)
+                    select(model).where(
+                        model.id == uuid.UUID(str(merge_id)), model.org_id == org_id
+                    )
                 )
             ).scalar_one_or_none()
             if existing is None:
                 skipped += 1
                 continue
-            kwargs = await _build_kwargs(db, user.org_id, ctx, import_type, row.data)
+            kwargs = await _build_kwargs(db, org_id, ctx, import_type, row.get("data") or {})
             kwargs.pop("created_at", None)
             for key, value in kwargs.items():
                 if value not in (None, "") and getattr(existing, key, None) in (None, ""):
                     setattr(existing, key, value)
-            if row.tags:
-                await add_tags(db, user.org_id, entity_type, existing.id, row.tags)
-            if row.custom_fields:
+            if row.get("tags"):
+                await add_tags(db, org_id, entity_type, existing.id, row["tags"])
+            if row.get("custom_fields"):
                 await _set_cf_values(
-                    db, user.org_id, ctx, entity_type, existing.id, row.custom_fields,
+                    db, org_id, ctx, entity_type, existing.id, row["custom_fields"],
                     only_if_missing=True,
                 )
             merged += 1
-        else:
-            kwargs = await _build_kwargs(db, user.org_id, ctx, import_type, row.data)
-            obj = model(org_id=user.org_id, **kwargs)
-            db.add(obj)
-            await db.flush()
-            if row.tags:
-                await add_tags(db, user.org_id, entity_type, obj.id, row.tags)
-            if row.custom_fields:
-                await _set_cf_values(
-                    db, user.org_id, ctx, entity_type, obj.id, row.custom_fields
-                )
-            created += 1
-        if i % 500 == 499:
-            await db.flush()
+            continue
 
-    await log_activity(
-        db, user.org_id, None, None, "import_completed", user.id,
-        {"type": import_type, "created": created, "merged": merged, "skipped": skipped},
-    )
-    return {
-        "created": created,
-        "merged": merged,
-        "skipped": skipped,
-        "custom_fields_created": ctx.fields_created,
-    }
+        kwargs = await _build_kwargs(db, org_id, ctx, import_type, row.get("data") or {})
+        rid = uuid.uuid4()
+        create_rows.append({"id": rid, "org_id": org_id, **kwargs})
+        for name in dict.fromkeys(t.strip() for t in (row.get("tags") or []) if t and t.strip()):
+            tag_rows.append(
+                {
+                    "tag_id": await _tag_id(db, org_id, ctx, name),
+                    "entity_type": entity_type,
+                    "entity_id": rid,
+                }
+            )
+        for name, value in (row.get("custom_fields") or {}).items():
+            if value in (None, ""):
+                continue
+            field_id = await _ensure_field(db, org_id, ctx, entity_type, name, sample_value=value)
+            cf_rows.append(
+                {
+                    "field_id": field_id,
+                    "entity_type": entity_type,
+                    "entity_id": rid,
+                    "value": _coerce_cf_value(ctx, field_id, value),
+                }
+            )
+        created += 1
+
+    # executemany needs uniform keys — group by key set (defaults fill the rest)
+    by_keys: dict[frozenset, list[dict]] = {}
+    for r in create_rows:
+        by_keys.setdefault(frozenset(r), []).append(r)
+    for group in by_keys.values():
+        await db.execute(insert(model), group)
+    if tag_rows:
+        await db.execute(insert(EntityTag), tag_rows)
+    if cf_rows:
+        await db.execute(insert(CustomFieldValue), cf_rows)
+    return created, merged, skipped
+
+
+async def run_import_job(job_id: uuid.UUID) -> None:
+    """Background worker: processes a committed import in chunks, committing
+    progress as it goes so a restart resumes instead of restarting."""
+    from app.db import SessionLocal
+
+    async with SessionLocal() as db:
+        job = await db.get(ImportJob, job_id)
+        if job is None or job.status != "running":
+            return
+        ctx = _CommitContext()
+        await _load_users(db, job.org_id, ctx)
+        try:
+            payload = job.payload or []
+            while job.processed < job.total:
+                chunk = payload[job.processed : job.processed + COMMIT_CHUNK]
+                if not chunk:
+                    break
+                c, m, s = await _commit_chunk(db, job.org_id, ctx, job.import_type, chunk)
+                job.processed += len(chunk)
+                job.created_count += c
+                job.merged_count += m
+                job.skipped_count += s
+                job.fields_created = sorted(set(job.fields_created or []) | set(ctx.fields_created))
+                job.updated_at = utcnow()
+                await db.commit()
+            await log_activity(
+                db, job.org_id, None, None, "import_completed", job.user_id,
+                {
+                    "type": job.import_type,
+                    "created": job.created_count,
+                    "merged": job.merged_count,
+                    "skipped": job.skipped_count,
+                },
+            )
+            job.status = "done"
+            job.payload = []  # the parsed rows are dead weight once imported
+            job.updated_at = utcnow()
+            await db.commit()
+            log.info(
+                "import %s done: %s created, %s merged, %s skipped",
+                job_id, job.created_count, job.merged_count, job.skipped_count,
+            )
+        except Exception as exc:
+            log.exception("import job %s failed", job_id)
+            await db.rollback()
+            job.status = "failed"
+            job.error = str(exc)[:1000]
+            job.updated_at = utcnow()
+            await db.commit()
+
+
+async def resume_interrupted_imports() -> None:
+    """Called at startup: any job still marked running was cut off by a
+    restart — pick it up from its committed offset."""
+    import asyncio
+
+    from app.db import SessionLocal
+
+    async with SessionLocal() as db:
+        stale = (
+            await db.execute(select(ImportJob.id).where(ImportJob.status == "running"))
+        ).scalars().all()
+    for job_id in stale:
+        log.info("resuming interrupted import %s", job_id)
+        asyncio.create_task(run_import_job(job_id))

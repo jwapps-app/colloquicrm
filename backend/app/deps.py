@@ -43,6 +43,8 @@ async def get_session_and_user(
         raise HTTPException(status_code=401, detail="Two-factor verification required")
     if as_utc(sess.expires_at) < utcnow():
         await db.delete(sess)
+        # The raise rolls the transaction back — commit or the row lives forever.
+        await db.commit()
         raise HTTPException(status_code=401, detail="Session expired")
     if not user.is_active:
         raise HTTPException(status_code=401, detail="Account disabled")

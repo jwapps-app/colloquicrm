@@ -24,9 +24,11 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/')) return;
 
   // Navigations: network-first, fall back to cached shell when offline.
+  // no-store bypasses the HTTP cache — a heuristically-cached index.html
+  // can point at bundles from weeks ago.
   if (req.mode === 'navigate') {
     event.respondWith(
-      fetch(req)
+      fetch(req, { cache: 'no-store' })
         .then((res) => {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put('/index.html', copy)).catch(() => {});

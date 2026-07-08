@@ -77,5 +77,72 @@ first, then set the stack env:
 | `APP_URL` | `https://crm.example.com` |
 | `APP_PORT` | `3310` (host port) |
 | `APP_NAME` | display name |
+| `BACKUP_RETENTION_DAYS` | `14` (optional) |
 
 Point the reverse proxy / tunnel hostname at `<NAS-IP>:<APP_PORT>`.
+
+**Finish setup before exposing the hostname.** The first visitor to a fresh
+instance gets the "create admin account" screen — do that yourself before
+wiring up the public tunnel/proxy, or anyone who finds the URL first owns the
+instance.
+
+### All backend settings
+
+Everything the app reads (from environment or `backend/.env`); the compose
+file already sets the required ones.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DATABASE_URL` | sqlite dev db | asyncpg format: `postgresql+asyncpg://user:pass@host:5432/db` |
+| `SECRET_KEY` | dev placeholder | production refuses to boot with a weak/placeholder value |
+| `ENVIRONMENT` | `development` | `production` arms the SECRET_KEY check |
+| `APP_NAME` | `Colloqui CRM` | display name everywhere, incl. the TOTP issuer |
+| `APP_URL` | `http://localhost:5173` | public URL; OAuth redirect base and chat links |
+| `ALLOWED_ORIGINS` | localhost dev | comma-separated CORS allow-list |
+| `SESSION_TTL_DAYS` | `30` | login session lifetime |
+| `STATIC_DIR` | auto-detect | where the built frontend lives (baked into the image) |
+| `GMAIL_BACKFILL_DAYS` | `0` | `0` = all history with known contacts; set a day count to bound it |
+| `GMAIL_BACKFILL_LEADS` | `false` | backfill searches People only unless enabled — leads can mean thousands of extra Gmail queries |
+| `RINGCENTRAL_BACKFILL_DAYS` | `365` | call/SMS history window |
+
+### Upgrades
+
+Re-pull the image and restart the stack — migrations run automatically at
+container start. Before upgrading, take a manual backup (below). Rolling back
+means restoring that dump and pinning the previous image digest; a downgraded
+app against an upgraded schema is not supported.
+
+### Backups and restore
+
+The `backup` sidecar writes a nightly `pg_dump -Fc` to
+`/volume1/docker/colloquicrm/backups` (`app-YYYY-MM-DD.dump`), prunes past
+`BACKUP_RETENTION_DAYS`, and touches `backups/last-success` on every good run —
+if that file goes stale, backups are failing (see `backups/failures.log`).
+
+Dumps contain **all CRM data plus live integration credentials** (Google
+refresh tokens, RingCentral JWT, Colloqui API key) unencrypted — treat the
+backups directory like the database itself.
+
+Restore (into a scratch or fresh stack):
+
+```
+# stop the api container first so nothing writes
+docker exec -i <postgres-container> dropdb -U app --if-exists app
+docker exec -i <postgres-container> createdb -U app app
+docker exec -i <postgres-container> pg_restore -U app -d app --no-owner < app-YYYY-MM-DD.dump
+# start the api container; alembic sees the restored version table and is a no-op
+```
+
+Drill this once against a scratch stack before you need it for real.
+
+### Account recovery
+
+- Forgotten password: any admin → Settings → Users → **Reset password**.
+- Lost authenticator: any admin → Settings → Users → **Reset 2FA**.
+- **Sole admin locked out of 2FA** (no other admin to help): disable it
+  directly in the database, then log in and re-enroll:
+
+  ```
+  docker exec -it <postgres-container> psql -U app -d app \
+    -c "UPDATE users SET totp_enabled=false, totp_secret=NULL WHERE email='you@example.com';"
+  ```

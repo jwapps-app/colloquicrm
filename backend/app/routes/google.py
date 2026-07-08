@@ -86,6 +86,7 @@ async def set_config(
     else:
         cfg.client_id = body.client_id.strip()
         cfg.client_secret = body.client_secret.strip()
+    await db.commit()  # visible before the client refetches
     return {"configured": True, "client_id": cfg.client_id, "redirect_uri": g.redirect_uri()}
 
 
@@ -93,6 +94,7 @@ async def set_config(
 async def delete_config(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     await db.execute(delete(GoogleAccount).where(GoogleAccount.org_id == admin.org_id))
     await db.execute(delete(GoogleIntegration).where(GoogleIntegration.org_id == admin.org_id))
+    await db.commit()  # visible before the client refetches
 
 
 @router.get("/auth-url")
@@ -150,7 +152,7 @@ async def callback(
     account.scopes = tokens.get("scope")
     account.connected_at = utcnow()
     account.sync_error = None
-    await db.flush()
+    await db.commit()  # the redirect target refetches status immediately
     return RedirectResponse(f"{dest}?google=connected")
 
 
@@ -160,19 +162,20 @@ async def unlink(user: User = Depends(get_current_user), db: AsyncSession = Depe
     if account is not None:
         await g.revoke(account)
         await db.delete(account)
+        await db.commit()  # visible before the client refetches
 
 
-@router.post("/sync")
+@router.post("/sync", status_code=202)
 async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Kicks a full sync (including contact-history backfill) in the
+    background — the backfill alone can outlive any request timeout."""
+    import asyncio
+
     account = await _account(db, user.id)
     if account is None:
         raise HTTPException(status_code=400, detail="No Google account connected")
-    try:
-        result = await g.sync_account(db, account, force_backfill=True)
-    except g.GoogleError as exc:
-        account.sync_error = str(exc)[:500]
-        raise HTTPException(status_code=502, detail=str(exc))
-    return {**result, "last_synced_at": account.last_synced_at.isoformat()}
+    asyncio.create_task(g.sync_account_background(user.id, force_backfill=True))
+    return {"status": "started"}
 
 
 @router.get("/diagnose")

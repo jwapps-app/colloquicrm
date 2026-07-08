@@ -243,6 +243,8 @@ function SecuritySection() {
 /* ---------- Custom fields ---------- */
 
 function CustomFieldsSection() {
+  const { user } = useAuth();
+  const isAdmin = !!user?.is_admin;
   const toast = useToast();
   const [entityType, setEntityType] = useState('person');
   const [fields, setFields] = useState(null);
@@ -328,10 +330,15 @@ function CustomFieldsSection() {
     <div className="card settings-card">
       <div className="panel-head">
         <h3>Custom fields</h3>
-        <button className="btn btn-primary btn-small" onClick={() => setShowAdd(true)}>
-          + Add field
-        </button>
+        {isAdmin && (
+          <button className="btn btn-primary btn-small" onClick={() => setShowAdd(true)}>
+            + Add field
+          </button>
+        )}
       </div>
+      {!isAdmin && (
+        <p className="muted">Custom fields are org-wide — ask an administrator to change them.</p>
+      )}
       <div className="tabs">
         {CF_ENTITY_TYPES.map((t) => (
           <button key={t.value} className={'tab' + (entityType === t.value ? ' active' : '')} onClick={() => setEntityType(t.value)}>
@@ -348,31 +355,41 @@ function CustomFieldsSection() {
           {fields.map((f) => (
             <div key={f.id} className="cf-row">
               <div className="cf-name">
-                <InlineField value={f.name} onSave={(v) => v && rename(f, v)} />
+                {isAdmin ? <InlineField value={f.name} onSave={(v) => v && rename(f, v)} /> : f.name}
               </div>
-              <select
-                className="inline-select cf-type"
-                value={f.field_type}
-                onChange={(e) => changeType(f, e.target.value)}
-                title="Field type"
-              >
-                {CUSTOM_FIELD_TYPES.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
+              {isAdmin ? (
+                <select
+                  className="inline-select cf-type"
+                  value={f.field_type}
+                  onChange={(e) => changeType(f, e.target.value)}
+                  title="Field type"
+                >
+                  {CUSTOM_FIELD_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="muted cf-type">{f.field_type}</span>
+              )}
               {f.field_type === 'select' && (
                 <span className="cf-options">
-                  <InlineField
-                    value={(f.options || []).join(', ')}
-                    onSave={(v) => changeOptions(f, v)}
-                  />
+                  {isAdmin ? (
+                    <InlineField
+                      value={(f.options || []).join(', ')}
+                      onSave={(v) => changeOptions(f, v)}
+                    />
+                  ) : (
+                    <span className="muted">{(f.options || []).join(', ')}</span>
+                  )}
                 </span>
               )}
-              <button className="icon-btn tiny" onClick={() => remove(f)} title="Delete field">
-                ×
-              </button>
+              {isAdmin && (
+                <button className="icon-btn tiny" onClick={() => remove(f)} title="Delete field">
+                  ×
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -456,6 +473,35 @@ function UsersSection() {
     }
   }
 
+  async function resetPassword(u) {
+    const pw = window.prompt(
+      `New temporary password for ${u.display_name} (at least 8 characters). Their existing sessions will be signed out.`
+    );
+    if (!pw) return;
+    try {
+      await post(`/users/${u.id}/reset-password`, { new_password: pw });
+      toast.success(`Password reset for ${u.display_name} — share it with them securely`);
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function toggleActive(u) {
+    const deactivating = u.is_active !== false;
+    if (
+      deactivating &&
+      !window.confirm(`Deactivate ${u.display_name}? They will be signed out immediately and can no longer log in.`)
+    )
+      return;
+    try {
+      await patch(`/users/${u.id}`, { is_active: !deactivating ? true : false });
+      setVersion((v) => v + 1);
+      toast.success(deactivating ? `${u.display_name} deactivated` : `${u.display_name} reactivated`);
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
   return (
     <div className="card settings-card">
       <div className="panel-head">
@@ -494,9 +540,20 @@ function UsersSection() {
                         {u.is_admin ? 'Remove admin' : 'Make admin'}
                       </button>
                     )}{' '}
+                    <button className="btn btn-small" onClick={() => resetPassword(u)} title="Sets a temporary password and signs out their sessions">
+                      Reset password
+                    </button>{' '}
                     {u.totp_enabled && (
                       <button className="btn btn-small" onClick={() => resetTotp(u)} title="Clears their authenticator so they can sign in with password only">
                         Reset 2FA
+                      </button>
+                    )}{' '}
+                    {u.id !== me?.id && (
+                      <button
+                        className={'btn btn-small' + (u.is_active === false ? '' : ' btn-danger-ghost')}
+                        onClick={() => toggleActive(u)}
+                      >
+                        {u.is_active === false ? 'Reactivate' : 'Deactivate'}
                       </button>
                     )}
                   </td>
@@ -818,8 +875,8 @@ function GoogleSection() {
   async function syncNow() {
     setBusy(true);
     try {
-      const res = await post('/integrations/google/sync');
-      toast.success(`Synced ${res.events_synced} calendar events, matched ${res.emails_synced} new emails`);
+      await post('/integrations/google/sync');
+      toast.success('Sync started — it runs in the background and can take a while on first run');
       setVersion((v) => v + 1);
     } catch (e) {
       toast.error(e.message);

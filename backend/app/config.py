@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # 0 = no window: sync all history with known contacts. Set a day count to
     # bound the initial backfill on very large installs.
     gmail_backfill_days: int = 0
+    # Backfill searches People's addresses by default. Leads too can mean tens
+    # of thousands of extra Gmail queries — opt in deliberately.
+    gmail_backfill_leads: bool = False
 
     @property
     def cors_origins(self) -> list[str]:

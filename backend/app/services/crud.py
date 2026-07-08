@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import Select, delete, func, or_, select, update
+from sqlalchemy import Select, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -26,6 +26,7 @@ from app.services.common import (
     add_tags,
     cleanup_entity,
     get_cf_maps,
+    get_or_create_tag,
     get_tag_maps,
     log_activity,
     row_to_dict,
@@ -238,16 +239,23 @@ def register_crud(
                 )
             ).scalars().all()
 
+        def sanitize(value):
+            # Spreadsheet formula injection: a leading =, +, -, or @ makes
+            # Excel/Sheets execute the cell. Imported data can plant these.
+            if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+                return "'" + value
+            return value
+
         buf = io.StringIO()
         writer = csv.writer(buf)
         header = base_cols + (["tags"] if has_extras else []) + [d.name for d in cf_defs]
         writer.writerow(header)
         for d in dicts:
-            row = [d.get(c) if d.get(c) is not None else "" for c in base_cols]
+            row = [sanitize(d.get(c)) if d.get(c) is not None else "" for c in base_cols]
             if has_extras:
-                row.append("; ".join(d.get("tags") or []))
+                row.append(sanitize("; ".join(d.get("tags") or [])))
             cf_values = d.get("custom_fields") or {}
-            row.extend(cf_values.get(str(cd.id)) or "" for cd in cf_defs)
+            row.extend(sanitize(cf_values.get(str(cd.id)) or "") for cd in cf_defs)
             writer.writerow(row)
 
         plural = PLURALS.get(entity_type, f"{entity_type}s")
@@ -309,8 +317,29 @@ def register_crud(
             names = [n.strip() for n in (body.tags or []) if n and n.strip()]
             if not names:
                 raise HTTPException(status_code=422, detail="No tags given")
-            for rid in ids:
-                await add_tags(db, user.org_id, entity_type, rid, names)
+            # Set-based: resolve tags once, then per chunk one existence check
+            # and one bulk insert — not two queries per record.
+            tag_ids = [(await get_or_create_tag(db, user.org_id, n)).id for n in names]
+            await db.flush()
+            for chunk in _chunks(ids):
+                existing = {
+                    (tid, rid)
+                    for tid, rid in await db.execute(
+                        select(EntityTag.tag_id, EntityTag.entity_id).where(
+                            EntityTag.entity_type == entity_type,
+                            EntityTag.tag_id.in_(tag_ids),
+                            EntityTag.entity_id.in_(chunk),
+                        )
+                    )
+                }
+                rows = [
+                    {"tag_id": tid, "entity_type": entity_type, "entity_id": rid}
+                    for rid in chunk
+                    for tid in tag_ids
+                    if (tid, rid) not in existing
+                ]
+                if rows:
+                    await db.execute(insert(EntityTag), rows)
         elif body.action == "set_owner":
             if not hasattr(model, "owner_id"):
                 raise HTTPException(status_code=422, detail="Records have no owner")

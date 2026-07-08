@@ -113,6 +113,7 @@ async def connect(
             pass
     status = _status(row, admin)
     status["bootstrap_note"] = bootstrap_note
+    await db.commit()  # visible before the client refetches
     return status
 
 
@@ -121,6 +122,7 @@ async def disconnect(admin: User = Depends(require_admin), db: AsyncSession = De
     row = await get_integration(db, admin.org_id)
     if row is not None:
         await db.delete(row)
+        await db.commit()  # visible before the client refetches
 
 
 @router.post("/test")
@@ -186,6 +188,7 @@ async def link_account(
             raise HTTPException(
                 status_code=502, detail=f"Linked, but could not join the space: {exc}"
             )
+    await db.commit()  # visible before the client refetches
     return {
         "colloqui_user_id": str(user.colloqui_user_id),
         "colloqui_username": user.colloqui_username,
@@ -198,3 +201,4 @@ async def unlink_account(
 ):
     user.colloqui_user_id = None
     user.colloqui_username = None
+    await db.commit()  # visible before the client refetches

@@ -89,6 +89,10 @@ export default function Login() {
             <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
+            <p className="muted login-hint">
+              Forgot your password or lost your authenticator? An administrator can reset either
+              from Settings → Users.
+            </p>
           </form>
         ) : (
           <form className="form" onSubmit={submitCode}>

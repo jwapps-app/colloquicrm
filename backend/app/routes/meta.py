@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, require_admin
 from app.models import CustomField, CustomFieldValue, EntityTag, SavedFilter, Tag, User
 from app.schemas import (
     CustomFieldIn,
@@ -57,7 +57,7 @@ async def list_custom_fields(
 
 @custom_fields_router.post("", status_code=201)
 async def create_custom_field(
-    body: CustomFieldIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    body: CustomFieldIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
     _check_entity_type(body.entity_type)
     exists = (
@@ -88,7 +88,9 @@ async def create_custom_field(
     )
     db.add(field)
     await db.flush()
-    return row_to_dict(field)
+    result = row_to_dict(field)
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 async def _get_field(db, user, field_id: uuid.UUID) -> CustomField:
@@ -108,7 +110,7 @@ async def _get_field(db, user, field_id: uuid.UUID) -> CustomField:
 async def update_custom_field(
     field_id: uuid.UUID,
     body: CustomFieldUpdateIn,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     field = await _get_field(db, user, field_id)
@@ -134,17 +136,20 @@ async def update_custom_field(
             parsed = _parse_date(v.value or "")
             if parsed:
                 v.value = parsed
-    return row_to_dict(field)
+    result = row_to_dict(field)
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 @custom_fields_router.delete("/{field_id}", status_code=204)
 async def delete_custom_field(
     field_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     field = await _get_field(db, user, field_id)
     await db.delete(field)
+    await db.commit()  # visible before the client refetches
 
 
 @saved_filters_router.get("")
@@ -179,7 +184,9 @@ async def create_saved_filter(
     )
     db.add(f)
     await db.flush()
-    return row_to_dict(f)
+    result = row_to_dict(f)
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 async def _get_filter(db, user, filter_id: uuid.UUID) -> SavedFilter:
@@ -211,7 +218,9 @@ async def update_saved_filter(
         f.filters = body.filters
     if body.is_public is not None:
         f.is_public = body.is_public
-    return row_to_dict(f)
+    result = row_to_dict(f)
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 @saved_filters_router.delete("/{filter_id}", status_code=204)
@@ -222,3 +231,4 @@ async def delete_saved_filter(
 ):
     f = await _get_filter(db, user, filter_id)
     await db.delete(f)
+    await db.commit()  # visible before the client refetches

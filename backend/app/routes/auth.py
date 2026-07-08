@@ -1,3 +1,5 @@
+import time
+from collections import defaultdict
 from datetime import timedelta
 
 import pyotp
@@ -13,6 +15,41 @@ from app.schemas import LoginIn, SetupIn, TotpCodeIn, TotpVerifyIn
 from app.security import hash_password, hash_token, new_session_token, verify_password
 
 router = APIRouter()
+
+# In-process throttle — single instance by design. Keyed by client IP and by
+# account email so neither one address hammering many accounts nor many
+# addresses hammering one account gets a free run.
+_FAIL_WINDOW_SECONDS = 900
+_FAIL_LIMIT = 10
+_TOTP_ATTEMPT_LIMIT = 5
+_failures: dict[str, list[float]] = defaultdict(list)
+
+
+def _client_ip(request: Request) -> str:
+    # cloudflared connects from localhost; the real client is in this header.
+    return request.headers.get("cf-connecting-ip") or (
+        request.client.host if request.client else "unknown"
+    )
+
+
+def _throttle(keys: list[str]) -> None:
+    now = time.monotonic()
+    for key in keys:
+        recent = [t for t in _failures[key] if now - t < _FAIL_WINDOW_SECONDS]
+        _failures[key] = recent
+        if len(recent) >= _FAIL_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed attempts. Wait a few minutes and try again.",
+            )
+
+
+def _record_failure(keys: list[str]) -> None:
+    now = time.monotonic()
+    for key in keys:
+        _failures[key].append(now)
+    if len(_failures) > 10_000:  # bound memory under address-spraying
+        _failures.clear()
 
 
 def user_out(user: User) -> dict:
@@ -78,11 +115,17 @@ async def setup(body: SetupIn, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/login")
-async def login(body: LoginIn, db: AsyncSession = Depends(get_db)):
+async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_db)):
+    email = body.email.lower()
+    throttle_keys = [f"ip:{_client_ip(request)}", f"email:{email}"]
+    _throttle(throttle_keys)
+    # Opportunistic hygiene: expired sessions otherwise accumulate forever.
+    await db.execute(delete(DbSession).where(DbSession.expires_at < utcnow()))
     user = (
-        await db.execute(select(User).where(User.email == body.email.lower()))
+        await db.execute(select(User).where(User.email == email))
     ).scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
+        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=401, detail="Account disabled")
@@ -96,7 +139,9 @@ async def login(body: LoginIn, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/totp")
-async def totp_verify(body: TotpVerifyIn, db: AsyncSession = Depends(get_db)):
+async def totp_verify(body: TotpVerifyIn, request: Request, db: AsyncSession = Depends(get_db)):
+    throttle_keys = [f"ip:{_client_ip(request)}"]
+    _throttle(throttle_keys)
     row = (
         await db.execute(
             select(DbSession, User)
@@ -105,6 +150,7 @@ async def totp_verify(body: TotpVerifyIn, db: AsyncSession = Depends(get_db)):
         )
     ).first()
     if row is None:
+        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid session")
     sess, user = row
     if not sess.pending_totp or as_utc(sess.expires_at) < utcnow():
@@ -112,8 +158,20 @@ async def totp_verify(body: TotpVerifyIn, db: AsyncSession = Depends(get_db)):
     if not user.totp_secret or not pyotp.TOTP(user.totp_secret).verify(
         body.code.strip(), valid_window=1
     ):
+        # A pending session is not an oracle: a few wrong codes burn it.
+        sess.totp_attempts += 1
+        if sess.totp_attempts >= _TOTP_ATTEMPT_LIMIT:
+            await db.delete(sess)
+            await db.commit()
+            _record_failure(throttle_keys)
+            raise HTTPException(
+                status_code=401, detail="Too many wrong codes; log in again"
+            )
+        await db.commit()
+        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid code")
     sess.pending_totp = False
+    sess.totp_attempts = 0
     sess.expires_at = utcnow() + timedelta(days=settings.session_ttl_days)
     await db.commit()
     return {"token": body.pending_token, "user": user_out(user)}

@@ -166,7 +166,9 @@ async def _known_rc_ids(db, org_id: uuid.UUID, ids: list[str]) -> set[str]:
     return {r for (r,) in rows}
 
 
-async def sync_calls(db, cfg: RingCentralIntegration, access: str, phone_map: dict) -> int:
+async def sync_calls(
+    db, cfg: RingCentralIntegration, access: str, phone_map: dict, touched: set[str]
+) -> int:
     date_from = (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
     stored = 0
     page = 1
@@ -203,6 +205,7 @@ async def sync_calls(db, cfg: RingCentralIntegration, access: str, phone_map: di
                     recording_id=str((rec.get("recording") or {}).get("id") or "") or None,
                 )
             )
+            touched.add(number)
             stored += 1
         paging = data.get("paging") or {}
         if page >= int(paging.get("totalPages") or 1):
@@ -211,7 +214,9 @@ async def sync_calls(db, cfg: RingCentralIntegration, access: str, phone_map: di
     return stored
 
 
-async def sync_sms(db, cfg: RingCentralIntegration, access: str, phone_map: dict) -> int:
+async def sync_sms(
+    db, cfg: RingCentralIntegration, access: str, phone_map: dict, touched: set[str]
+) -> int:
     date_from = (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
     stored = 0
     page = 1
@@ -250,6 +255,7 @@ async def sync_sms(db, cfg: RingCentralIntegration, access: str, phone_map: dict
                     text=(rec.get("subject") or "")[:2000] or None,
                 )
             )
+            touched.add(number)
             stored += 1
         paging = data.get("paging") or {}
         if page >= int(paging.get("totalPages") or 1):
@@ -269,20 +275,14 @@ async def sync_org(db, cfg: RingCentralIntegration) -> dict:
         cfg.last_synced_at = utcnow()
         cfg.sync_error = None
         return {"calls_synced": 0, "sms_synced": 0}
-    calls = await sync_calls(db, cfg, access, phone_map)
-    sms = await sync_sms(db, cfg, access, phone_map)
-    # Recompute relationship metrics for every person with stored phone
-    # history — self-healing, covers events stored before this feature too.
-    stored_numbers = {
-        n
-        for (n,) in await db.execute(
-            select(PhoneEvent.other_number).where(PhoneEvent.org_id == cfg.org_id).distinct()
-        )
-    }
+    touched: set[str] = set()
+    calls = await sync_calls(db, cfg, access, phone_map, touched)
+    sms = await sync_sms(db, cfg, access, phone_map, touched)
+    # Recompute relationship metrics only for people with NEW events this
+    # pass — recomputing everyone with any history burned thousands of
+    # queries every cycle once real call logs existed.
     person_ids = {
-        pid
-        for number, (etype, pid) in phone_map.items()
-        if etype == "person" and number in stored_numbers
+        phone_map[n][1] for n in touched if n in phone_map and phone_map[n][0] == "person"
     }
     if person_ids:
         from app.services.interactions import update_person_aggregates

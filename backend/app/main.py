@@ -75,6 +75,9 @@ async def lifespan(app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     await _seed()
+    from app.services.importer import resume_interrupted_imports
+
+    await resume_interrupted_imports()
     background = [
         asyncio.create_task(reminder_loop()),
         asyncio.create_task(google_sync_loop()),
@@ -98,6 +101,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def static_and_security_headers(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/"):
+        # Hashed filenames: cache forever, a new build means new names.
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    elif not path.startswith("/api/"):
+        # index.html and sw.js must always revalidate — a heuristically cached
+        # shell keeps serving bundles from an old deploy.
+        response.headers.setdefault("Cache-Control", "no-cache")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
 
 
 @app.get("/api/health")

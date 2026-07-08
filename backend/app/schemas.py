@@ -45,6 +45,10 @@ class UserAdminUpdateIn(BaseModel):
     is_active: bool | None = None
 
 
+class ResetPasswordIn(BaseModel):
+    new_password: str
+
+
 # ---- CRM entities ----
 # One schema per entity serves both create (POST) and partial update (PATCH,
 # via exclude_unset). Required-field rules are enforced in the routes.

@@ -19,6 +19,7 @@ export default function ImportWizard() {
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(1);
   const [result, setResult] = useState(null);
+  const [progress, setProgress] = useState(null);
   const [dupsOnly, setDupsOnly] = useState(false);
 
   function applyPreview(p) {
@@ -86,14 +87,26 @@ export default function ImportWizard() {
           custom_fields: r.custom_fields || {},
         })),
       };
-      const res = await post('/imports/commit', body);
-      setResult(res);
+      const { job_id } = await post('/imports/commit', body);
+      // The import runs server-side; poll until it lands.
+      let job = null;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        job = await get(`/imports/jobs/${job_id}`);
+        setProgress(job);
+        if (job.status !== 'running') break;
+      }
+      if (job.status === 'failed') {
+        throw new Error(job.error || 'Import failed');
+      }
+      setResult(job);
       toast.success('Import complete');
     } catch (err) {
       toast.error(err.message);
       setStep(2);
     }
     setBusy(false);
+    setProgress(null);
   }
 
   function reset() {
@@ -314,7 +327,23 @@ export default function ImportWizard() {
       {step === 3 &&
         (busy || !result ? (
           <div className="card">
-            <Loading label="Importing… this can take a moment for large files." />
+            {progress && progress.total > 0 ? (
+              <div className="import-progress">
+                <div className="progress-track">
+                  <div
+                    className="progress-fill"
+                    style={{ width: `${Math.round((progress.processed / progress.total) * 100)}%` }}
+                  />
+                </div>
+                <p className="muted">
+                  {progress.processed} of {progress.total} rows — {progress.created} created,{' '}
+                  {progress.merged} merged, {progress.skipped} skipped. You can leave this page;
+                  the import keeps running.
+                </p>
+              </div>
+            ) : (
+              <Loading label="Starting import…" />
+            )}
           </div>
         ) : (
           <div className="card import-result">
