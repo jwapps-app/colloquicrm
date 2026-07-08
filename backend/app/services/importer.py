@@ -36,6 +36,26 @@ log = logging.getLogger("importer")
 COMMIT_CHUNK = 250
 
 CF_HEADER = re.compile(r"^(.+?)\s+(cf_\d+)$")
+# Relationship custom fields in the full export: "Referred cf_123 people names"
+# (import the names as text) / "... people ids" (Copper-internal, skip).
+CF_PEOPLE_HEADER = re.compile(r"^(.+?)\s+cf_\d+\s+people\s+(names|ids)$")
+
+# Copper's full data export (Settings -> Export Data) uses value/type column
+# pairs instead of the per-list export's named columns.
+PAIR_HEADER = re.compile(r"^(Email|Phone Number|Social|Website)( \d+)?$")
+PAIR_TYPE_HEADER = re.compile(r"^(Email|Phone Number|Social|Website)( \d+)? Type$")
+PAIR_BUCKETS = {"Email": "emails", "Phone Number": "phones", "Social": "socials",
+                "Website": "websites"}
+
+# Full-export columns that mean nothing here — skipped without cluttering the
+# "unmapped headers" warning.
+SILENT_HEADERS = {
+    "Copper ID", "Copper URL", "Owner Id", "Company Id", "Primary Contact ID",
+    "Primary Contact", "Inactive Days", "Interaction Count", "Updated At",
+    "Last Status At", "Converted Opportunity Id", "Converted Contact Id",
+    "Completed Date", "Days in Stage", "Last Stage At", "Lead Created At",
+    "Last Contacted",  # people map it; elsewhere it's computed data
+}
 
 IMPORT_TYPES = {
     "people": "person",
@@ -76,6 +96,7 @@ HEADER_MAPS: dict[str, dict[str, str]] = {
         "Personal Website": "personal_website",
         "LinkedIn": "linkedin",
         "Facebook": "facebook",
+        "Last Contacted": "last_contacted_at",
         "Created At": "created_at",
     },
     "leads": {
@@ -85,6 +106,7 @@ HEADER_MAPS: dict[str, dict[str, str]] = {
         "Value": "value",
         "Currency": "currency",
         "Company": "company_name",
+        "Account": "company_name",
         "Owned By": "owner_name",
         "Source": "source",
         **_ADDRESS_COLS,
@@ -94,8 +116,10 @@ HEADER_MAPS: dict[str, dict[str, str]] = {
         "Work Website": "work_website",
         "Personal Website": "personal_website",
         "Lead Status": "status",
+        "Status": "status",
         "LinkedIn": "linkedin",
         "Facebook": "facebook",
+        "Converted At": "converted_at",
         "Created At": "created_at",
     },
     "companies": {
@@ -134,7 +158,8 @@ HEADER_MAPS: dict[str, dict[str, str]] = {
 
 MONEY_FIELDS = {"value"}
 PERCENT_FIELDS = {"win_probability"}
-DATE_FIELDS = {"close_date", "created_at"}
+DATE_FIELDS = {"close_date", "created_at", "last_contacted_at", "converted_at"}
+DATETIME_KWARGS = {"created_at", "last_contacted_at", "converted_at"}
 
 # Custom fields recognized by name and created with the right control instead
 # of a plain text box. Date-like fields are covered separately by sample-value
@@ -162,7 +187,7 @@ def _parse_percent(raw: str) -> int | None:
 
 def _parse_date(raw: str) -> str | None:
     raw = raw.strip()
-    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%m/%d/%Y %H:%M"):
         try:
             return datetime.strptime(raw, fmt).date().isoformat()
         except ValueError:
@@ -170,10 +195,80 @@ def _parse_date(raw: str) -> str | None:
     return None
 
 
+def _first_pair(pairs: list[tuple[str, str]], want_type: str | None = None, used=None):
+    for v, t in pairs:
+        if used and v in used:
+            continue
+        if want_type is None or t == want_type:
+            return v
+    return None
+
+
+def _apply_pairs(import_type: str, data: dict, buckets: dict) -> None:
+    """Fold the full export's value/type pairs into the entity's columns.
+    setdefault throughout: explicitly named columns always win."""
+    emails = buckets.get("emails", [])
+    phones = buckets.get("phones", [])
+    socials = buckets.get("socials", [])
+    websites = buckets.get("websites", [])
+
+    if import_type == "people" and emails:
+        work = _first_pair(emails, "work") or _first_pair(emails)
+        if work:
+            data.setdefault("work_email", work)
+        personal = _first_pair(emails, "personal", {work}) or _first_pair(emails, None, {work})
+        if personal:
+            data.setdefault("personal_email", personal)
+    elif import_type == "leads" and emails:
+        e = _first_pair(emails, "work") or _first_pair(emails)
+        if e:
+            data.setdefault("email", e)
+
+    if phones:
+        if import_type in ("people", "leads"):
+            work = _first_pair(phones, "work")
+            mobile = _first_pair(phones, "mobile")
+            if work is None:
+                work = _first_pair(phones, None, {mobile} if mobile else None)
+            if mobile is None:
+                mobile = _first_pair(phones, None, {work} if work else None)
+            if work:
+                data.setdefault("work_phone", work)
+            if mobile and mobile != work:
+                data.setdefault("mobile_phone", mobile)
+        elif import_type == "companies":
+            p = _first_pair(phones, "work") or _first_pair(phones)
+            if p:
+                data.setdefault("work_phone", p)
+
+    if socials and import_type in ("people", "leads", "companies"):
+        li = _first_pair(socials, "linkedin") or next(
+            (v for v, _ in socials if "linkedin.com" in v.lower()), None
+        )
+        fb = _first_pair(socials, "facebook") or next(
+            (v for v, _ in socials if "facebook.com" in v.lower()), None
+        )
+        if li:
+            data.setdefault("linkedin", li)
+        if fb:
+            data.setdefault("facebook", fb)
+
+    if websites:
+        work = _first_pair(websites, "work") or _first_pair(websites)
+        if work:
+            data.setdefault("work_website", work)
+        if import_type in ("people", "leads"):
+            personal = _first_pair(websites, "personal", {work})
+            if personal:
+                data.setdefault("personal_website", personal)
+
+
 def parse_csv(content: bytes, import_type: str) -> tuple[list[dict], list[str]]:
     """Returns (rows, unmapped_headers). Each row:
-    {data, tags, custom_fields}. Multiple 'Tag' columns and 'Name cf_NNN'
-    custom-field columns are Copper conventions."""
+    {data, tags, custom_fields}. Handles both of Copper's shapes: the per-list
+    CSV export (named columns, repeated 'Tag' columns) and the full data
+    export (Email/Phone/Social/Website value+type pairs, one 'Tags' column).
+    'Name cf_NNN' columns become real custom fields in both."""
     header_map = HEADER_MAPS[import_type]
     text = content.decode("utf-8-sig", errors="replace")
     reader = csv.reader(io.StringIO(text))
@@ -182,17 +277,37 @@ def parse_csv(content: bytes, import_type: str) -> tuple[list[dict], list[str]]:
     except StopIteration:
         return [], []
 
-    plan: list[tuple[str, str]] = []  # (kind, key) per column
+    plan: list[tuple[str, object]] = []  # (kind, key) per column
     unmapped: list[str] = []
     for h in headers:
         if h == "Tag":
             plan.append(("tag", h))
+        elif h == "Tags":
+            plan.append(("tags_csv", h))
         elif h in header_map:
             plan.append(("field", header_map[h]))
         else:
-            m = CF_HEADER.match(h)
-            if m:
-                plan.append(("cf", m.group(1).strip()))
+            cf = CF_HEADER.match(h)
+            cf_people = CF_PEOPLE_HEADER.match(h)
+            pair = PAIR_HEADER.match(h)
+            pair_type = PAIR_TYPE_HEADER.match(h)
+            if cf:
+                plan.append(("cf", cf.group(1).strip()))
+            elif cf_people:
+                if cf_people.group(2) == "names":
+                    plan.append(("cf", cf_people.group(1).strip()))
+                else:
+                    plan.append(("skip", h))  # internal ids
+            elif pair:
+                bucket = PAIR_BUCKETS[pair.group(1)]
+                slot = int((pair.group(2) or " 1").strip())
+                plan.append(("pair", (bucket, slot)))
+            elif pair_type:
+                bucket = PAIR_BUCKETS[pair_type.group(1)]
+                slot = int((pair_type.group(2) or " 1").strip())
+                plan.append(("pairtype", (bucket, slot)))
+            elif h in SILENT_HEADERS:
+                plan.append(("skip", h))
             elif h:
                 plan.append(("skip", h))
                 unmapped.append(h)
@@ -207,14 +322,22 @@ def parse_csv(content: bytes, import_type: str) -> tuple[list[dict], list[str]]:
         data: dict = {}
         tags: list[str] = []
         cfs: dict[str, str] = {}
+        pair_values: dict[tuple[str, int], str] = {}
+        pair_types: dict[tuple[str, int], str] = {}
         for (kind, key), cell in zip(plan, raw):
             cell = cell.strip()
             if not cell:
                 continue
             if kind == "tag":
                 tags.append(cell)
+            elif kind == "tags_csv":
+                tags.extend(t.strip() for t in cell.split(",") if t.strip())
             elif kind == "cf":
                 cfs[key] = cell
+            elif kind == "pair":
+                pair_values[key] = cell
+            elif kind == "pairtype":
+                pair_types[key] = cell.lower()
             elif kind == "field":
                 if key in MONEY_FIELDS:
                     parsed = _parse_money(cell)
@@ -226,6 +349,11 @@ def parse_csv(content: bytes, import_type: str) -> tuple[list[dict], list[str]]:
                     parsed = cell
                 if parsed is not None:
                     data[key] = parsed
+        if pair_values:
+            buckets: dict[str, list[tuple[str, str]]] = {}
+            for (bucket, slot), value in sorted(pair_values.items(), key=lambda x: x[0][1]):
+                buckets.setdefault(bucket, []).append((value, pair_types.get((bucket, slot), "")))
+            _apply_pairs(import_type, data, buckets)
         if data or tags or cfs:
             rows.append({"data": data, "tags": tags, "custom_fields": cfs})
     return rows, unmapped
@@ -260,13 +388,17 @@ async def find_duplicates(
             for e in (r["data"].get("work_email"), r["data"].get("personal_email"))
             if e
         }
-        if emails:
+        # asyncpg caps bind parameters at 32767 — a full Copper book easily
+        # exceeds that in one IN().
+        email_list = sorted(emails)
+        for i in range(0, len(email_list), 5000):
+            chunk = email_list[i : i + 5000]
             found = await db.execute(
                 select(Person.id, Person.first_name, Person.last_name, Person.work_email,
                        Person.personal_email).where(
                     Person.org_id == org_id,
-                    func.lower(Person.work_email).in_(emails)
-                    | func.lower(Person.personal_email).in_(emails),
+                    func.lower(Person.work_email).in_(chunk)
+                    | func.lower(Person.personal_email).in_(chunk),
                 )
             )
             for pid, first, last, work, personal in found:
@@ -288,10 +420,12 @@ async def find_duplicates(
             name_map[key.strip()] = (str(pid), " ".join(filter(None, [first, last])))
     elif import_type == "leads":
         emails = {r["data"]["email"].lower() for r in rows if r["data"].get("email")}
-        if emails:
+        email_list = sorted(emails)
+        for i in range(0, len(email_list), 5000):
+            chunk = email_list[i : i + 5000]
             found = await db.execute(
                 select(Lead.id, Lead.first_name, Lead.last_name, Lead.email).where(
-                    Lead.org_id == org_id, func.lower(Lead.email).in_(emails)
+                    Lead.org_id == org_id, func.lower(Lead.email).in_(chunk)
                 )
             )
             for lid, first, last, email in found:
@@ -617,7 +751,12 @@ async def _build_kwargs(
     if owner_name:
         kwargs["owner_id"] = ctx.users.get(owner_name.lower().strip())
 
-    created_at = data.pop("created_at", None)
+    # Timestamp columns need real datetimes, not the ISO date strings parsing
+    # produced.
+    extra_dates = {
+        key: _to_datetime(v) for key in DATETIME_KWARGS if (v := data.pop(key, None))
+    }
+    created_at = extra_dates.pop("created_at", None)
 
     if import_type == "people":
         company_name = data.pop("company_name", None)
@@ -642,12 +781,20 @@ async def _build_kwargs(
             kwargs["close_date"] = datetime.fromisoformat(close_date).date()
 
     model = MODEL_BY_TYPE[import_type]
-    columns = {c.key for c in model.__table__.columns}
+    columns = model.__table__.columns
     for key, value in data.items():
+        if key in columns:
+            # Real exports carry monster URLs and titles; hard-fail on one row
+            # would kill the whole chunk.
+            length = getattr(columns[key].type, "length", None)
+            if isinstance(value, str) and length and len(value) > length:
+                value = value[:length]
+            kwargs[key] = value
+    for key, value in extra_dates.items():
         if key in columns:
             kwargs[key] = value
     if created_at:
-        kwargs["created_at"] = _to_datetime(created_at)
+        kwargs["created_at"] = created_at
     return kwargs
 
 

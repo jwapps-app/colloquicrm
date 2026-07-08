@@ -42,12 +42,20 @@ enabled). `/api/health` is the readiness check.
 
 ## Import
 
-`POST /api/v1/imports/preview` (multipart CSV + type) parses Copper-format
-exports for people, leads, companies, and opportunities — including repeated
-`Tag` columns and `Name cf_NNNNNN` custom-field columns, which become real
-custom fields. The preview flags likely duplicates (email, name+company,
+`POST /api/v1/imports/preview` (multipart CSV + type) parses both of Copper's
+export shapes for people, leads, companies, and opportunities: the per-list
+CSV export (named columns, repeated `Tag` columns) and the full data export
+(`Email`/`Phone Number`/`Social`/`Website` value+type column pairs, one
+comma-separated `Tags` column). `Name cf_NNNNNN` columns become real custom
+fields either way. The preview flags likely duplicates (email, name+company,
 domain) in the file and against existing records; `POST /imports/commit`
-applies per-row create/skip/merge decisions.
+applies per-row create/skip/merge decisions and processes them as a background
+job with a progress endpoint.
+
+Copper's full export arrives as `.xlsx` — `scripts/copper_xlsx_to_csv.py`
+(needs `openpyxl`) converts `people/leads/companies/opportunities.xlsx` from
+`~/Downloads` into import-ready CSVs, dropping the hundreds of padded columns
+the export includes.
 
 ## Integrations
 
