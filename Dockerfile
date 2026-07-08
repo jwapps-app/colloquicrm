@@ -19,5 +19,9 @@ RUN chmod +x entrypoint.sh
 COPY --from=web /web/dist ./frontend-dist
 ENV STATIC_DIR=/srv/frontend-dist
 
+# Stamped by CI so /api/health can prove which commit is running.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+
 EXPOSE 8000
 CMD ["./entrypoint.sh"]

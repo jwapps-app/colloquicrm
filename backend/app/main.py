@@ -121,14 +121,20 @@ async def static_and_security_headers(request, call_next):
 
 @app.get("/api/health")
 async def health():
+    import os
+
+    version = os.environ.get("GIT_SHA", "unknown")[:12]
     try:
         async with SessionLocal() as db:
             await db.execute(text("SELECT 1"))
     except Exception:
         from fastapi.responses import JSONResponse
 
-        return JSONResponse(status_code=503, content={"status": "degraded", "database": "down"})
-    return {"status": "ok"}
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "database": "down", "version": version},
+        )
+    return {"status": "ok", "version": version}
 
 
 API = "/api/v1"
