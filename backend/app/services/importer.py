@@ -128,6 +128,13 @@ MONEY_FIELDS = {"value"}
 PERCENT_FIELDS = {"win_probability"}
 DATE_FIELDS = {"close_date", "created_at"}
 
+# Custom fields recognized by name and created with the right control instead
+# of a plain text box. Date-like fields are covered separately by sample-value
+# inference in _ensure_field.
+WELL_KNOWN_CF = {
+    "gender": ("select", ["Male", "Female"]),
+}
+
 
 def _parse_money(raw: str) -> float | None:
     cleaned = raw.replace("$", "").replace(",", "").strip()
@@ -376,6 +383,7 @@ class _CommitContext:
         self.stages: dict[tuple[uuid.UUID, str], uuid.UUID] = {}
         self.fields: dict[str, uuid.UUID] = {}
         self.field_types: dict[uuid.UUID, str] = {}
+        self.field_objs: dict[uuid.UUID, CustomField] = {}
         self.fields_created: list[str] = []
 
 
@@ -505,16 +513,22 @@ async def _ensure_field(
                 )
             )
         ).scalar_one()
-        field_type = "date" if sample_value and _parse_date(str(sample_value)) else "text"
+        known = WELL_KNOWN_CF.get(name.lower())
+        if known:
+            field_type, options = known
+        else:
+            field_type = "date" if sample_value and _parse_date(str(sample_value)) else "text"
+            options = None
         field = CustomField(
             org_id=org_id, entity_type=entity_type, name=name, position=max_pos + 1,
-            field_type=field_type,
+            field_type=field_type, options=options,
         )
         db.add(field)
         await db.flush()
         ctx.fields_created.append(name)
     ctx.fields[key] = field.id
     ctx.field_types[field.id] = field.field_type
+    ctx.field_objs[field.id] = field
     return field.id
 
 
@@ -536,6 +550,17 @@ async def _set_cf_values(
             parsed = _parse_date(str(value))
             if parsed:
                 value = parsed
+        elif field_type == "select":
+            # Match the option's canonical casing; unknown values become new
+            # options rather than silently vanishing from the dropdown.
+            field = ctx.field_objs[field_id]
+            options = list(field.options or [])
+            canon = next((o for o in options if o.lower() == str(value).strip().lower()), None)
+            if canon is not None:
+                value = canon
+            else:
+                value = str(value).strip()
+                field.options = options + [value]
         existing = (
             await db.execute(
                 select(CustomFieldValue).where(
