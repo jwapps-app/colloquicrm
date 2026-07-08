@@ -4,6 +4,7 @@ import { del, get } from '../api';
 import { useEntity, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
+import MergeButton from '../components/MergeButton';
 import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
 import TasksPanel from '../components/TasksPanel';
@@ -38,7 +39,7 @@ export default function CompanyDetail() {
   const nav = useNavigate();
   const toast = useToast();
   const users = useUsers();
-  const { entity: company, save, error } = useEntity('/companies', id);
+  const { entity: company, save, error, refresh } = useEntity('/companies', id);
   const people = useRelated('/people', { company_id: id }, [id]);
   const opps = useRelated('/opportunities', { company_id: id }, [id]);
 
@@ -62,6 +63,7 @@ export default function CompanyDetail() {
       backLabel="Companies"
       title={company.name}
       subtitle={[company.email_domain, company.city].filter(Boolean).join(' · ')}
+      actions={<MergeButton apiPath="/companies" entityId={id} label={company.name} onMerged={refresh} />}
       onDelete={remove}
       entityType="company"
       entityId={id}

@@ -111,7 +111,9 @@ async def create_note(
     )
     db.add(note)
     await db.flush()
-    return (await _serialize(db, [note]))[0]
+    result = (await _serialize(db, [note]))[0]
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 @router.patch("/{note_id}")
@@ -130,7 +132,9 @@ async def attach_note(
         raise HTTPException(status_code=404, detail="Note not found")
     await _valid_phone_event(db, user.org_id, body.phone_event_id)
     note.phone_event_id = body.phone_event_id
-    return (await _serialize(db, [note]))[0]
+    result = (await _serialize(db, [note]))[0]
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 @router.delete("/{note_id}", status_code=204)
@@ -163,3 +167,4 @@ async def delete_note(
             ).scalar_one_or_none()
             if still_referenced is None:
                 await db.delete(event)
+    await db.commit()  # visible before the client refetches

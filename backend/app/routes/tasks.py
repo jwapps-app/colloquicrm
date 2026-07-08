@@ -75,6 +75,7 @@ async def complete_task(
             {"task_id": str(t.id), "name": t.name},
         )
         colloqui.schedule(colloqui.notify_task_event(t.id, "completed"))
+    await db.commit()  # visible before the client refetches
     return {"id": str(t.id), "status": t.status, "completed_at": t.completed_at.isoformat()}
 
 
@@ -87,4 +88,5 @@ async def reopen_task(
     t = await _get_task(db, user, task_id)
     t.status = "open"
     t.completed_at = None
+    await db.commit()  # visible before the client refetches
     return {"id": str(t.id), "status": t.status, "completed_at": None}

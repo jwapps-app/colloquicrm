@@ -3,10 +3,11 @@ import uuid
 from fastapi import APIRouter
 from sqlalchemy import select
 
-from app.models import Company, Person
+from app.models import Company, Lead, Opportunity, Person
 from app.schemas import PersonIn
 from app.services.common import display_name_map
 from app.services.crud import register_crud
+from app.services.interactions import update_person_aggregates
 
 router = APIRouter()
 
@@ -56,6 +57,8 @@ register_crud(
     default_sort="last_name",
     required_any=["first_name", "last_name"],
     enrich=enrich,
+    merge_refs=[(Opportunity, "primary_person_id"), (Lead, "converted_person_id")],
+    after_merge=lambda db, user, target: update_person_aggregates(db, user.org_id, {target.id}),
 )
 
 

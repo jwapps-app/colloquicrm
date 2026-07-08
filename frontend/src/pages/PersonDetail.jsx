@@ -4,6 +4,7 @@ import { del, get, post } from '../api';
 import { useEntity, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
+import MergeButton from '../components/MergeButton';
 import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
 import TasksPanel from '../components/TasksPanel';
@@ -117,7 +118,7 @@ export default function PersonDetail() {
   const nav = useNavigate();
   const toast = useToast();
   const users = useUsers();
-  const { entity: person, save, error } = useEntity('/people', id);
+  const { entity: person, save, error, refresh } = useEntity('/people', id);
 
   if (error) return <div className="page"><Empty label="Person not found." hint={error} /></div>;
   if (!person) return <Loading label="Loading person…" />;
@@ -139,6 +140,7 @@ export default function PersonDetail() {
       backLabel="People"
       title={fullName(person)}
       subtitle={[person.title, person.company_name].filter(Boolean).join(' · ')}
+      actions={<MergeButton apiPath="/people" entityId={id} label={fullName(person)} onMerged={refresh} />}
       onDelete={remove}
       entityType="person"
       entityId={id}

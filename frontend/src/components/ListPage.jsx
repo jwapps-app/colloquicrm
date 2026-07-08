@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { del, get, post } from '../api';
+import { del, download, get, post } from '../api';
 import { useToast } from './Toast';
 import FormModal from './FormModal';
 import { Empty, Loading } from './ui';
@@ -41,6 +41,11 @@ export default function ListPage({
   const [users, setUsers] = useState([]);
   const [saved, setSaved] = useState([]);
   const [showCreate, setShowCreate] = useState(false);
+  const [selected, setSelected] = useState(new Set());
+  const [allMatching, setAllMatching] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [refresh, setRefresh] = useState(0);
   const pageSize = 25;
 
   // Debounced search.
@@ -71,6 +76,12 @@ export default function ListPage({
       on = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiPath, q, page, sort, order, filters, refresh]);
+
+  // A different result set makes the old selection meaningless.
+  useEffect(() => {
+    setSelected(new Set());
+    setAllMatching(false);
   }, [apiPath, q, page, sort, order, filters]);
 
   // Filter dropdown sources + saved filters.
@@ -159,6 +170,71 @@ export default function ListPage({
     }
   }
 
+  const listParams = { q: q || undefined, sort, order, ...filters };
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      await download(`${apiPath}/export`, listParams);
+    } catch (e) {
+      toast.error(e.message);
+    }
+    setExporting(false);
+  }
+
+  function toggleRow(e, id) {
+    e.stopPropagation();
+    setAllMatching(false);
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function togglePage(e) {
+    setAllMatching(false);
+    const ids = (data?.items || []).map((r) => r.id);
+    setSelected(e.target.checked ? new Set(ids) : new Set());
+  }
+
+  const selectedCount = allMatching ? data?.total || 0 : selected.size;
+
+  async function runBulk(body) {
+    setBulkBusy(true);
+    try {
+      const payload = allMatching
+        ? { ...body, select_all: true }
+        : { ...body, ids: [...selected] };
+      const res = await post(`${apiPath}/bulk`, payload, allMatching ? listParams : undefined);
+      toast.success(`${res.affected} record${res.affected === 1 ? '' : 's'} ${body.action === 'delete' ? 'deleted' : 'updated'}`);
+      setSelected(new Set());
+      setAllMatching(false);
+      setPage(1);
+      setRefresh((r) => r + 1);
+    } catch (e) {
+      toast.error(e.message);
+    }
+    setBulkBusy(false);
+  }
+
+  function bulkDelete() {
+    if (!window.confirm(`Delete ${selectedCount} record${selectedCount === 1 ? '' : 's'}? This can't be undone.`)) return;
+    runBulk({ action: 'delete' });
+  }
+
+  function bulkTag() {
+    const name = window.prompt('Tag to add to the selected records:');
+    if (!name || !name.trim()) return;
+    runBulk({ action: 'add_tags', tags: [name.trim()] });
+  }
+
+  function bulkOwner(ownerId) {
+    if (!ownerId) return;
+    runBulk({ action: 'set_owner', owner_id: ownerId });
+  }
+
   async function handleCreate(values) {
     const body = {};
     createFields.forEach((f) => {
@@ -186,6 +262,9 @@ export default function ListPage({
         <h1>{title}</h1>
         <div className="page-head-actions">
           {headerExtra}
+          <button className="btn" onClick={exportCsv} disabled={exporting || total === 0}>
+            {exporting ? 'Exporting…' : 'Export CSV'}
+          </button>
           {createFields && (
             <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
               + Add
@@ -243,6 +322,49 @@ export default function ListPage({
         )}
       </div>
 
+      {selectedCount > 0 && (
+        <div className="bulk-bar">
+          <span className="bulk-count">
+            {allMatching ? `All ${selectedCount} matching selected` : `${selectedCount} selected`}
+          </span>
+          {!allMatching && selected.size === items.length && total > items.length && (
+            <button className="linklike" onClick={() => setAllMatching(true)}>
+              Select all {total} matching
+            </button>
+          )}
+          <span className="bulk-actions">
+            <button className="btn btn-small" onClick={bulkTag} disabled={bulkBusy}>
+              Add tag…
+            </button>
+            <select
+              className="bulk-owner"
+              value=""
+              disabled={bulkBusy}
+              onChange={(e) => bulkOwner(e.target.value)}
+            >
+              <option value="">Change owner…</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.display_name || u.email}
+                </option>
+              ))}
+            </select>
+            <button className="btn btn-small btn-danger-ghost" onClick={bulkDelete} disabled={bulkBusy}>
+              {bulkBusy ? 'Working…' : 'Delete'}
+            </button>
+            <button
+              className="btn btn-small btn-ghost"
+              onClick={() => {
+                setSelected(new Set());
+                setAllMatching(false);
+              }}
+            >
+              Clear
+            </button>
+          </span>
+        </div>
+      )}
+
       <div className="card table-card">
         {loading && !data ? (
           <Loading />
@@ -252,6 +374,14 @@ export default function ListPage({
               <table className="table">
                 <thead>
                   <tr>
+                    <th className="no-sort col-check">
+                      <input
+                        type="checkbox"
+                        checked={items.length > 0 && (allMatching || selected.size === items.length)}
+                        onChange={togglePage}
+                        aria-label="Select all on this page"
+                      />
+                    </th>
                     {columns.map((c) => {
                       const key = c.sortKey || c.key;
                       const active = sort === key && c.sortable !== false;
@@ -267,6 +397,14 @@ export default function ListPage({
                 <tbody>
                   {items.map((row) => (
                     <tr key={row.id} onClick={() => nav(`${route}/${row.id}`)}>
+                      <td className="col-check" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={allMatching || selected.has(row.id)}
+                          onChange={(e) => toggleRow(e, row.id)}
+                          aria-label="Select row"
+                        />
+                      </td>
                       {columns.map((c) => (
                         <td key={c.key}>{c.render ? c.render(row) : row[c.key] ?? '—'}</td>
                       ))}

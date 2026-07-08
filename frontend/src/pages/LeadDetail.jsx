@@ -4,6 +4,7 @@ import { del, post } from '../api';
 import { useEntity, usePipelines, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
+import MergeButton from '../components/MergeButton';
 import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
 import TasksPanel from '../components/TasksPanel';
@@ -108,7 +109,7 @@ export default function LeadDetail() {
   const nav = useNavigate();
   const toast = useToast();
   const users = useUsers();
-  const { entity: lead, save, error } = useEntity('/leads', id);
+  const { entity: lead, save, error, refresh } = useEntity('/leads', id);
   const [showConvert, setShowConvert] = useState(false);
 
   if (error) return <div className="page"><Empty label="Lead not found." hint={error} /></div>;
@@ -134,6 +135,7 @@ export default function LeadDetail() {
         backLabel="Leads"
         title={fullName(lead)}
         subtitle={[lead.title, lead.company_name].filter(Boolean).join(' · ')}
+        actions={<MergeButton apiPath="/leads" entityId={id} label={fullName(lead)} onMerged={refresh} />}
         onDelete={remove}
         entityType="lead"
         entityId={id}

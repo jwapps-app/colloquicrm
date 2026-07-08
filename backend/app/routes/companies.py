@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.models import Company
+from app.models import Company, Opportunity, Person
 from app.schemas import CompanyIn
 from app.services.common import display_name_map
 from app.services.crud import register_crud
@@ -31,4 +31,5 @@ register_crud(
     default_sort="name",
     required_any=["name"],
     enrich=enrich,
+    merge_refs=[(Person, "company_id"), (Opportunity, "company_id")],
 )

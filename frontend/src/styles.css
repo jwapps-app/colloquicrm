@@ -641,6 +641,72 @@ textarea {
   min-height: 4px;
 }
 
+.bulk-bar {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+.bulk-count {
+  font-weight: 600;
+  font-size: 13px;
+}
+.bulk-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+.bulk-owner {
+  font-size: 13px;
+  padding: 4px 8px;
+}
+.col-check {
+  width: 34px;
+  text-align: center;
+}
+.col-check input {
+  cursor: pointer;
+}
+th.col-check {
+  cursor: default;
+}
+
+.merge-search {
+  width: 100%;
+  max-width: none;
+  margin-bottom: 10px;
+}
+.merge-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.merge-candidate {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.merge-candidate:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
 .table-card {
   padding: 0;
   overflow: hidden;

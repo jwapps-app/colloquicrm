@@ -15,7 +15,7 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
-async function request(method, path, { params, body, formData } = {}) {
+function buildUrl(path, params) {
   let url = BASE + path;
   if (params) {
     const qs = new URLSearchParams();
@@ -25,6 +25,11 @@ async function request(method, path, { params, body, formData } = {}) {
     const s = qs.toString();
     if (s) url += '?' + s;
   }
+  return url;
+}
+
+async function request(method, path, { params, body, formData } = {}) {
+  const url = buildUrl(path, params);
 
   const headers = {};
   const token = getToken();
@@ -89,6 +94,33 @@ async function request(method, path, { params, body, formData } = {}) {
     throw err;
   }
   return data;
+}
+
+export async function download(path, params) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(buildUrl(path, params), { headers, cache: 'no-store' });
+  if (!res.ok) {
+    let msg = `Download failed (${res.status})`;
+    try {
+      const d = await res.json();
+      if (d.detail) msg = d.detail;
+    } catch {
+      // non-JSON error body — keep the status message
+    }
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const dispo = res.headers.get('Content-Disposition') || '';
+  const m = dispo.match(/filename="?([^";]+)"?/);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = m ? m[1] : 'export.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
 }
 
 export const get = (path, params) => request('GET', path, { params });
