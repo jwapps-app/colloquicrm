@@ -68,14 +68,12 @@ export default function ProfilePanel({ entity, entityType, fields, onSave, users
         );
       } else if (d.field_type === 'select') {
         control = (
-          <select className="inline-select" value={value ?? ''} onChange={(e) => saveCustom(d, e.target.value || null)}>
-            <option value="">—</option>
-            {(d.options || []).map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
+          <InlineField
+            value={value}
+            type="select"
+            options={(d.options || []).map((o) => ({ value: o, label: o }))}
+            onSave={(v) => saveCustom(d, v)}
+          />
         );
       } else {
         control = (
