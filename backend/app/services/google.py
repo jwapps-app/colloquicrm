@@ -820,17 +820,39 @@ async def sync_account(db, account: GoogleAccount, force_backfill: bool = False)
     return {"events_synced": events, "emails_synced": emails}
 
 
+def _sync_error_text(exc: Exception) -> str:
+    # GoogleError messages are already curated; anything else gets its type
+    # named so the status is never a mystery.
+    if isinstance(exc, GoogleError):
+        return str(exc)[:500]
+    return f"Sync failed: {type(exc).__name__}: {exc}"[:500]
+
+
+async def _record_sync_error(db, user_id: uuid.UUID, exc: Exception) -> None:
+    # The failure may have left the session mid-transaction; roll back, then
+    # re-load the account cleanly to stamp the error.
+    await db.rollback()
+    account = (
+        await db.execute(select(GoogleAccount).where(GoogleAccount.user_id == user_id))
+    ).scalar_one_or_none()
+    if account is not None:
+        account.sync_error = _sync_error_text(exc)
+        await db.commit()
+
+
 async def run_sync_pass() -> None:
     async with SessionLocal() as db:
         accounts = (await db.execute(select(GoogleAccount))).scalars().all()
         for account in accounts:
+            user_id = account.user_id
             try:
                 await sync_account(db, account)
                 await db.commit()
-            except GoogleError as exc:
-                account.sync_error = str(exc)[:500]
+            except Exception as exc:
+                # Record ANY failure, not just GoogleError — an unrecorded crash
+                # leaves a stale status that looks like nothing changed.
                 log.warning("Google sync failed for %s: %s", account.email, exc)
-                await db.commit()
+                await _record_sync_error(db, user_id, exc)
 
 
 async def recompute_all_person_metrics(org_id: uuid.UUID) -> None:
@@ -865,10 +887,9 @@ async def sync_account_background(user_id: uuid.UUID, force_backfill: bool = Fal
             account.last_synced_at = utcnow()
             account.sync_error = None
             await db.commit()
-        except GoogleError as exc:
-            account.sync_error = str(exc)[:500]
+        except Exception as exc:
             log.warning("background sync failed for %s: %s", account.email, exc)
-            await db.commit()
+            await _record_sync_error(db, user_id, exc)
 
 
 async def sync_loop() -> None:
