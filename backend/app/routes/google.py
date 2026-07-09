@@ -185,6 +185,77 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
     return {"status": "started"}
 
 
+@router.get("/test-connection")
+async def test_connection(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Live probe: from the server, right now, try the OAuth token refresh and a
+    Gmail call and report exactly what happens — timings and precise errors.
+    Bypasses the background sync loop, so it works even if the loop is stuck."""
+    import time
+
+    import httpx
+
+    account = await _account(db, admin.id)
+    cfg = await _cfg(db, admin.org_id)
+    if account is None or cfg is None:
+        raise HTTPException(status_code=400, detail="Google is not connected")
+
+    out: dict = {
+        "backfill_cursor": account.gmail_backfill_cursor,
+        "backfill_done": bool(account.gmail_backfill_done),
+        "stored_sync_error": account.sync_error,
+        "token_endpoint": settings.google_token_url,
+        "gmail_endpoint": settings.google_gmail_base,
+    }
+
+    # Step 1 — refresh the access token (single attempt, short timeout).
+    t0 = time.monotonic()
+    access = None
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                settings.google_token_url,
+                data={
+                    "client_id": cfg.client_id,
+                    "client_secret": cfg.client_secret,
+                    "refresh_token": account.refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+        out["token_http_status"] = resp.status_code
+        if resp.status_code < 400:
+            out["token_ok"] = True
+            access = resp.json().get("access_token")
+        else:
+            out["token_ok"] = False
+            out["token_error"] = resp.text[:300]
+    except Exception as exc:
+        out["token_ok"] = False
+        out["token_error"] = f"{type(exc).__name__}: {exc}"
+    out["token_ms"] = round((time.monotonic() - t0) * 1000)
+
+    # Step 2 — a real Gmail call (mailbox profile), only if we got a token.
+    if access:
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(
+                    f"{settings.google_gmail_base}/users/me/profile",
+                    headers={"Authorization": f"Bearer {access}"},
+                )
+            out["gmail_http_status"] = resp.status_code
+            if resp.status_code < 400:
+                out["gmail_ok"] = True
+                out["gmail_messages_total"] = resp.json().get("messagesTotal")
+            else:
+                out["gmail_ok"] = False
+                out["gmail_error"] = resp.text[:300]
+        except Exception as exc:
+            out["gmail_ok"] = False
+            out["gmail_error"] = f"{type(exc).__name__}: {exc}"
+        out["gmail_ms"] = round((time.monotonic() - t0) * 1000)
+    return out
+
+
 @router.post("/recompute-metrics", status_code=202)
 async def recompute_metrics(admin: User = Depends(require_admin)):
     """Rebuild every person's interaction count and last-contacted date from
