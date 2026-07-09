@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -121,7 +121,11 @@ async def convert_lead(
     db: AsyncSession = Depends(get_db),
 ):
     lead = (
-        await db.execute(select(Lead).where(Lead.id == lead_id, Lead.org_id == user.org_id))
+        await db.execute(
+            select(Lead).where(
+                Lead.id == lead_id, Lead.org_id == user.org_id, Lead.deleted_at.is_(None)
+            )
+        )
     ).scalar_one_or_none()
     if lead is None:
         raise HTTPException(status_code=404, detail="lead not found")
@@ -133,7 +137,11 @@ async def convert_lead(
         name = lead.company_name.strip()
         company = (
             await db.execute(
-                select(Company).where(Company.org_id == user.org_id, Company.name == name)
+                select(Company).where(
+                    Company.org_id == user.org_id,
+                    func.lower(Company.name) == name.lower(),
+                    Company.deleted_at.is_(None),
+                )
             )
         ).scalar_one_or_none()
         if company is None:
@@ -199,8 +207,11 @@ async def convert_lead(
         {"person_id": str(person.id)},
     )
 
-    return {
+    result = {
         "person_id": str(person.id),
         "company_id": str(company_id) if company_id else None,
         "opportunity_id": str(opportunity_id) if opportunity_id else None,
     }
+    # The client navigates to the new person immediately.
+    await db.commit()
+    return result

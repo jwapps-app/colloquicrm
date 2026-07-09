@@ -365,12 +365,6 @@ def _full_name(data: dict) -> str:
     )
 
 
-def _row_label(import_type: str, data: dict) -> str:
-    if import_type in ("people", "leads"):
-        return _full_name(data) or data.get("work_email") or data.get("email") or "(unnamed)"
-    return data.get("name") or "(unnamed)"
-
-
 async def find_duplicates(
     db: AsyncSession, org_id: uuid.UUID, import_type: str, rows: list[dict]
 ) -> int:
@@ -397,6 +391,7 @@ async def find_duplicates(
                 select(Person.id, Person.first_name, Person.last_name, Person.work_email,
                        Person.personal_email).where(
                     Person.org_id == org_id,
+                    Person.deleted_at.is_(None),
                     func.lower(Person.work_email).in_(chunk)
                     | func.lower(Person.personal_email).in_(chunk),
                 )
@@ -414,7 +409,7 @@ async def find_duplicates(
                 ),
                 Person.first_name,
                 Person.last_name,
-            ).where(Person.org_id == org_id)
+            ).where(Person.org_id == org_id, Person.deleted_at.is_(None))
         )
         for pid, key, first, last in names:
             name_map[key.strip()] = (str(pid), " ".join(filter(None, [first, last])))
@@ -425,7 +420,9 @@ async def find_duplicates(
             chunk = email_list[i : i + 5000]
             found = await db.execute(
                 select(Lead.id, Lead.first_name, Lead.last_name, Lead.email).where(
-                    Lead.org_id == org_id, func.lower(Lead.email).in_(chunk)
+                    Lead.org_id == org_id,
+                    Lead.deleted_at.is_(None),
+                    func.lower(Lead.email).in_(chunk),
                 )
             )
             for lid, first, last, email in found:
@@ -438,13 +435,15 @@ async def find_duplicates(
                 ),
                 Lead.first_name,
                 Lead.last_name,
-            ).where(Lead.org_id == org_id)
+            ).where(Lead.org_id == org_id, Lead.deleted_at.is_(None))
         )
         for lid, key, first, last in names:
             name_map[key.strip()] = (str(lid), " ".join(filter(None, [first, last])))
     elif import_type == "companies":
         found = await db.execute(
-            select(Company.id, Company.name, Company.email_domain).where(Company.org_id == org_id)
+            select(Company.id, Company.name, Company.email_domain).where(
+                Company.org_id == org_id, Company.deleted_at.is_(None)
+            )
         )
         for cid, name, domain in found:
             name_map[name.lower().strip()] = (str(cid), name)
@@ -452,7 +451,9 @@ async def find_duplicates(
                 domain_map[domain.lower()] = (str(cid), name)
     elif import_type == "opportunities":
         found = await db.execute(
-            select(Opportunity.id, Opportunity.name).where(Opportunity.org_id == org_id)
+            select(Opportunity.id, Opportunity.name).where(
+                Opportunity.org_id == org_id, Opportunity.deleted_at.is_(None)
+            )
         )
         for oid, name in found:
             name_map[name.lower().strip()] = (str(oid), name)

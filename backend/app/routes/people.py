@@ -100,7 +100,13 @@ async def find_socials(
 ):
     """Mine the person's own emails and Gravatar for social profile links."""
     person = (
-        await db.execute(select(Person).where(Person.id == person_id, Person.org_id == user.org_id))
+        await db.execute(
+            select(Person).where(
+                Person.id == person_id,
+                Person.org_id == user.org_id,
+                Person.deleted_at.is_(None),
+            )
+        )
     ).scalar_one_or_none()
     if person is None:
         raise HTTPException(status_code=404, detail="person not found")

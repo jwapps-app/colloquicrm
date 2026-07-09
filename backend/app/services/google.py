@@ -881,17 +881,21 @@ async def run_sync_pass() -> None:
 
 # How many recent messages to scan per mailbox folder when suggesting contacts.
 SUGGESTION_SCAN_LIMIT = 400
-# Addresses that are obviously automated — never worth suggesting as a contact.
-SUGGESTION_BLOCKLIST = (
-    "noreply", "no-reply", "donotreply", "do-not-reply", "notifications",
-    "notification", "mailer-daemon", "postmaster", "bounce", "no_reply",
-    "automated", "alerts", "updates@", "news@", "newsletter", "support@",
-)
+# Local-part tokens that are obviously automated — never worth suggesting as
+# a contact. Matched against the LOCAL PART only, so a real address like
+# greenews@example.com isn't caught by "news".
+SUGGESTION_LOCAL_EXACT = {
+    "noreply", "no-reply", "donotreply", "do-not-reply", "no_reply",
+    "mailer-daemon", "postmaster", "bounce", "notifications", "notification",
+    "alerts", "updates", "news", "newsletter", "support", "info", "hello",
+    "automated", "marketing", "billing", "sales",
+}
+SUGGESTION_LOCAL_PREFIXES = ("noreply", "no-reply", "donotreply", "do-not-reply", "bounce")
 
 
 def _looks_automated(email: str) -> bool:
-    e = email.lower()
-    return any(b in e for b in SUGGESTION_BLOCKLIST)
+    local = email.lower().split("@", 1)[0]
+    return local in SUGGESTION_LOCAL_EXACT or local.startswith(SUGGESTION_LOCAL_PREFIXES)
 
 
 async def scan_contact_suggestions(user_id: uuid.UUID) -> None:
@@ -1005,7 +1009,11 @@ async def recompute_all_person_metrics(org_id: uuid.UUID) -> None:
     async with SessionLocal() as db:
         ids = [
             pid
-            for (pid,) in await db.execute(select(Person.id).where(Person.org_id == org_id))
+            for (pid,) in await db.execute(
+                select(Person.id).where(
+                    Person.org_id == org_id, Person.deleted_at.is_(None)
+                )
+            )
         ]
         for i in range(0, len(ids), 200):
             await update_person_aggregates(db, org_id, set(ids[i : i + 200]))

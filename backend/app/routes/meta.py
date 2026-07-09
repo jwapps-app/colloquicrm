@@ -43,7 +43,11 @@ async def contact_types(user: User = Depends(get_current_user), db: AsyncSession
     for model in (Person, Company):
         rows = await db.execute(
             select(model.contact_type)
-            .where(model.org_id == user.org_id, model.contact_type.is_not(None))
+            .where(
+                model.org_id == user.org_id,
+                model.contact_type.is_not(None),
+                model.deleted_at.is_(None),
+            )
             .distinct()
         )
         values.update(v for (v,) in rows if v and v.strip())

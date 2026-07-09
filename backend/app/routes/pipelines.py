@@ -97,12 +97,14 @@ async def create_pipeline(
         db.add(stage)
         stages.append(stage)
     await db.flush()
-    return {
+    result = {
         "id": str(p.id),
         "name": p.name,
         "position": p.position,
         "stages": [stage_out(s) for s in stages],
     }
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 @router.patch("/{pipeline_id}")
@@ -117,7 +119,9 @@ async def update_pipeline(
         p.name = body.name
     if body.position is not None:
         p.position = body.position
-    return {"id": str(p.id), "name": p.name, "position": p.position}
+    result = {"id": str(p.id), "name": p.name, "position": p.position}
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 @router.delete("/{pipeline_id}", status_code=204)
@@ -129,7 +133,9 @@ async def delete_pipeline(
     p = await _get_pipeline(db, user, pipeline_id)
     in_use = (
         await db.execute(
-            select(func.count()).select_from(Opportunity).where(Opportunity.pipeline_id == p.id)
+            select(func.count()).select_from(Opportunity).where(
+                Opportunity.pipeline_id == p.id, Opportunity.deleted_at.is_(None)
+            )
         )
     ).scalar_one()
     if in_use:
@@ -137,6 +143,7 @@ async def delete_pipeline(
             status_code=409, detail=f"Pipeline has {in_use} opportunities; move them first"
         )
     await db.delete(p)
+    await db.commit()  # visible before the client refetches
 
 
 @router.post("/{pipeline_id}/stages", status_code=201)
@@ -160,7 +167,9 @@ async def add_stage(
     )
     db.add(stage)
     await db.flush()
-    return stage_out(stage)
+    result = stage_out(stage)
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 async def _get_stage(db: AsyncSession, user: User, stage_id: uuid.UUID) -> Stage:
@@ -190,7 +199,9 @@ async def update_stage(
         s.win_probability = body.win_probability
     if body.position is not None:
         s.position = body.position
-    return stage_out(s)
+    result = stage_out(s)
+    await db.commit()  # visible before the client refetches
+    return result
 
 
 @router.delete("/stages/{stage_id}", status_code=204)
@@ -202,7 +213,9 @@ async def delete_stage(
     s = await _get_stage(db, user, stage_id)
     in_use = (
         await db.execute(
-            select(func.count()).select_from(Opportunity).where(Opportunity.stage_id == s.id)
+            select(func.count()).select_from(Opportunity).where(
+                Opportunity.stage_id == s.id, Opportunity.deleted_at.is_(None)
+            )
         )
     ).scalar_one()
     if in_use:
@@ -210,3 +223,4 @@ async def delete_stage(
             status_code=409, detail=f"Stage has {in_use} opportunities; move them first"
         )
     await db.delete(s)
+    await db.commit()  # visible before the client refetches

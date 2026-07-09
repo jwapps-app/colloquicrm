@@ -303,7 +303,11 @@ def register_crud(
                 owned = set()
                 for chunk in _chunks(ids):
                     rows = await db.execute(
-                        select(model.id).where(model.org_id == user.org_id, model.id.in_(chunk))
+                        _active(
+                            select(model.id).where(
+                                model.org_id == user.org_id, model.id.in_(chunk)
+                            )
+                        )
                     )
                     owned.update(rid for (rid,) in rows)
                 ids = [i for i in ids if i in owned]

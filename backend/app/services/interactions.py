@@ -14,12 +14,18 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
     from app.services.ringcentral import normalize_phone
 
     await db.flush()  # pending rows must be visible (autoflush is off)
-    for pid in person_ids:
-        person = (
-            await db.execute(select(Person).where(Person.id == pid, Person.org_id == org_id))
-        ).scalar_one_or_none()
-        if person is None:
-            continue
+    ids = list(person_ids)
+    persons: list[Person] = []
+    for i in range(0, len(ids), 500):
+        rows = await db.execute(
+            select(Person).where(
+                Person.id.in_(ids[i : i + 500]),
+                Person.org_id == org_id,
+                Person.deleted_at.is_(None),
+            )
+        )
+        persons.extend(rows.scalars())
+    for person in persons:
         emails = [normalize_email(e) for e in (person.work_email, person.personal_email) if e]
         numbers = [
             n for n in (normalize_phone(person.work_phone), normalize_phone(person.mobile_phone)) if n
@@ -44,7 +50,7 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
         from sqlalchemy import or_
 
         phone_conditions = [
-            (PhoneEvent.entity_type == "person") & (PhoneEvent.entity_id == pid)
+            (PhoneEvent.entity_type == "person") & (PhoneEvent.entity_id == person.id)
         ]
         if numbers:
             phone_conditions.append(PhoneEvent.other_number.in_(numbers))
