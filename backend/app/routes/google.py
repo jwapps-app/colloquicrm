@@ -47,6 +47,11 @@ async def _account(db: AsyncSession, user_id: uuid.UUID) -> GoogleAccount | None
 async def status(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     cfg = await _cfg(db, user.org_id)
     account = await _account(db, user.id)
+    backfill_total = None
+    backfill_done = bool(account.gmail_backfill_done) if account else False
+    if account and g.has_gmail_scope(account) and not backfill_done:
+        contact_map = await g._crm_email_map(db, user.org_id)
+        backfill_total = len(g._backfill_addresses(contact_map))
     return {
         "configured": cfg is not None,
         "client_id": cfg.client_id if cfg else None,
@@ -59,7 +64,9 @@ async def status(user: User = Depends(get_current_user), db: AsyncSession = Depe
             else None,
             "sync_error": account.sync_error if account else None,
             "gmail_enabled": g.has_gmail_scope(account) if account else False,
-            "gmail_backfill_done": bool(account.gmail_backfill_done) if account else False,
+            "gmail_backfill_done": backfill_done,
+            "gmail_backfill_cursor": account.gmail_backfill_cursor if account else 0,
+            "gmail_backfill_total": backfill_total,
         },
         "emails_matched": (
             await db.execute(

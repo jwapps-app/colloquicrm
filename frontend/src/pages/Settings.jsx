@@ -981,12 +981,33 @@ function GoogleSection() {
                 {status.me.last_synced_at ? ` — synced ${new Date(status.me.last_synced_at).toLocaleString()}` : ' — not synced yet'}
               </p>
               {status.me.gmail_enabled ? (
-                <p className="muted">
-                  ✉ Email sync is on — {status.emails_matched ?? 0} matched email
-                  {(status.emails_matched ?? 0) === 1 ? '' : 's'} so far. Mail involving your People and
-                  Leads shows on their timelines. After adding new people, hit "Sync now" to pull
-                  their email history.
-                </p>
+                <>
+                  <p className="muted">
+                    ✉ Email sync is on — {status.emails_matched ?? 0} matched email
+                    {(status.emails_matched ?? 0) === 1 ? '' : 's'} so far. Mail involving your People and
+                    Leads shows on their timelines. After adding new people, hit "Sync now" to pull
+                    their email history.
+                  </p>
+                  {!status.me.gmail_backfill_done && status.me.gmail_backfill_total ? (
+                    <div className="import-progress">
+                      <div className="progress-track">
+                        <div
+                          className="progress-fill"
+                          style={{
+                            width: `${Math.min(100, Math.round(((status.me.gmail_backfill_cursor || 0) / status.me.gmail_backfill_total) * 100))}%`,
+                          }}
+                        />
+                      </div>
+                      <p className="muted">
+                        History backfill: {status.me.gmail_backfill_cursor || 0} of{' '}
+                        {status.me.gmail_backfill_total} contacts scanned. Runs in the background;
+                        emails and interaction counts keep filling in.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="muted">✓ History backfill complete.</p>
+                  )}
+                </>
               ) : (
                 <p className="gmail-hint">
                   ✉ Email sync is available but needs a fresh Google consent.{' '}

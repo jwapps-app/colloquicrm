@@ -132,14 +132,29 @@ async def exchange_code(cfg: GoogleIntegration, code: str) -> dict:
     )
 
 
-async def _get_json(url: str, access_token: str, params: dict | None = None) -> dict:
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(
-                url, params=params, headers={"Authorization": f"Bearer {access_token}"}
-            )
-    except httpx.HTTPError as exc:
-        raise GoogleError(f"Cannot reach Google: {exc}") from exc
+async def _get_json(
+    url: str, access_token: str, params: dict | None = None, timeout: float = 20.0
+) -> dict:
+    # Transport errors (timeouts, dropped connections) are transient — retry a
+    # couple times with backoff before giving up. Gmail 4xx/5xx are handled
+    # below and NOT retried here, so rate limits still surface as GoogleError.
+    resp = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(
+                    url, params=params, headers={"Authorization": f"Bearer {access_token}"}
+                )
+            break
+        except httpx.HTTPError as exc:
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            # str(timeout errors) is often empty — name the class so the
+            # sync_error is legible.
+            raise GoogleError(
+                f"Cannot reach Google: {type(exc).__name__}: {exc}".rstrip(": ")
+            ) from exc
     if resp.status_code >= 400:
         detail = ""
         try:
@@ -553,14 +568,56 @@ async def fetch_message_body(access: str, gmail_id: str) -> dict:
 ADDRESSES_PER_QUERY = 10
 # How many addresses to fully process between checkpoints (5 searches' worth).
 BACKFILL_ADDRESSES_PER_CHECKPOINT = 50
+# The combined search is the heaviest query in the system; give it room before
+# calling it a timeout.
+SEARCH_TIMEOUT = 45.0
+
+
+def _is_rate_limit(exc: "GoogleError") -> bool:
+    s = str(exc)
+    return "(429)" in s or "(403)" in s
+
+
+def _contact_query(addrs: list[str]) -> str:
+    # Header operators match literal addresses; the quoted free-text term
+    # catches variants the operators miss (e.g. dotted gmail headers).
+    # Over-fetching is fine: the metadata matcher filters on real headers.
+    clause = " OR ".join(f'from:{a} OR to:{a} OR cc:{a} OR "{a}"' for a in addrs)
+    window = (
+        f"newer_than:{settings.gmail_backfill_days}d " if settings.gmail_backfill_days > 0 else ""
+    )
+    return f"{window}-in:spam -in:trash ({clause})"
+
+
+async def _run_search(access: str, q: str) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    page_token = None
+    while True:
+        params = {"q": q, "maxResults": 500}
+        if page_token:
+            params["pageToken"] = page_token
+        data = await _get_json(
+            f"{settings.google_gmail_base}/users/me/messages", access, params,
+            timeout=SEARCH_TIMEOUT,
+        )
+        for m in data.get("messages", []):
+            mid = m.get("id")
+            if mid and mid not in seen:
+                seen.add(mid)
+                ids.append(mid)
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return ids
 
 
 async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
     """Ask Gmail for mail exchanged with the given addresses, rather than
-    crawling the whole mailbox — one search per few contacts, so it is fast
-    and quota-cheap even on large accounts."""
-    ids: list[str] = []
-    seen: set[str] = set()
+    crawling the whole mailbox. Rate limits propagate (the caller checkpoints);
+    a combined query that fails any other way — usually a timeout on a large
+    mailbox — degrades to one-address-at-a-time so a single heavy contact can't
+    jam the whole backfill. A genuinely broken address is skipped and logged."""
     expanded: list[str] = []
     seen_addr: set[str] = set()
     for a in addresses:
@@ -568,36 +625,40 @@ async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
             if variant and variant not in seen_addr:
                 seen_addr.add(variant)
                 expanded.append(variant)
-    addresses = expanded
-    for i in range(0, len(addresses), ADDRESSES_PER_QUERY):
-        chunk = addresses[i : i + ADDRESSES_PER_QUERY]
-        # Header operators match literal addresses; the quoted free-text term
-        # catches variants the operators miss (e.g. dotted gmail headers).
-        # Over-fetching is fine: the metadata matcher filters on real headers.
-        clause = " OR ".join(f'from:{a} OR to:{a} OR cc:{a} OR "{a}"' for a in chunk)
-        window = (
-            f"newer_than:{settings.gmail_backfill_days}d "
-            if settings.gmail_backfill_days > 0
-            else ""
-        )
-        q = f"{window}-in:spam -in:trash ({clause})"
-        page_token = None
-        while True:
-            params = {"q": q, "maxResults": 500}
-            if page_token:
-                params["pageToken"] = page_token
-            data = await _get_json(
-                f"{settings.google_gmail_base}/users/me/messages", access, params
-            )
-            for m in data.get("messages", []):
-                mid = m.get("id")
-                if mid and mid not in seen:
-                    seen.add(mid)
-                    ids.append(mid)
-            page_token = data.get("nextPageToken")
-            if not page_token:
-                break
+
+    ids: list[str] = []
+    seen: set[str] = set()
+    for i in range(0, len(expanded), ADDRESSES_PER_QUERY):
+        group = expanded[i : i + ADDRESSES_PER_QUERY]
+        try:
+            got = await _run_search(access, _contact_query(group))
+        except GoogleError as exc:
+            if _is_rate_limit(exc):
+                raise
+            log.warning("combined gmail search failed (%s); retrying per address", exc)
+            got = []
+            for a in group:
+                try:
+                    got += await _run_search(access, _contact_query([a]))
+                except GoogleError as e2:
+                    if _is_rate_limit(e2):
+                        raise
+                    log.warning("gmail search skipping %s: %s", a, e2)
+        for mid in got:
+            if mid not in seen:
+                seen.add(mid)
+                ids.append(mid)
     return ids
+
+
+def _backfill_addresses(contact_map: dict) -> list[str]:
+    """People's addresses drive the backfill (leads only if opted in), sorted
+    so the checkpoint cursor is stable across restarts."""
+    return sorted(
+        a
+        for a, (etype, _) in contact_map.items()
+        if etype == "person" or settings.gmail_backfill_leads
+    )
 
 
 async def sync_gmail(
@@ -626,13 +687,7 @@ async def sync_gmail(
             profile = await _get_json(f"{settings.google_gmail_base}/users/me/profile", access)
             account.gmail_history_id = str(profile.get("historyId") or "")
             await db.commit()
-        # People only by default: a 19k-lead book would mean thousands of
-        # Gmail searches. Sorted so the checkpoint survives restarts.
-        addresses = sorted(
-            a
-            for a, (etype, _) in contact_map.items()
-            if etype == "person" or settings.gmail_backfill_leads
-        )
+        addresses = _backfill_addresses(contact_map)
         cursor = account.gmail_backfill_cursor or 0
         while cursor < len(addresses):
             chunk = addresses[cursor : cursor + BACKFILL_ADDRESSES_PER_CHECKPOINT]
@@ -640,7 +695,7 @@ async def sync_gmail(
                 ids = await _search_contact_mail(access, chunk)
                 stored, people = await _store_messages(db, account, access, ids, contact_map)
             except GoogleError as exc:
-                if "(429)" in str(exc) or "(403)" in str(exc):
+                if _is_rate_limit(exc):
                     # Quota pressure: keep the checkpoint, resume next pass.
                     account.sync_error = "Gmail rate limited — backfill resumes automatically"
                     await db.commit()
