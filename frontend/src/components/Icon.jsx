@@ -66,6 +66,12 @@ const PATHS = {
       <line x1="21" y1="21" x2="16.65" y2="16.65" />
     </>
   ),
+  mail: (
+    <>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <polyline points="22 7 12 13 2 7" />
+    </>
+  ),
 };
 
 export default function Icon({ name, size = 18 }) {

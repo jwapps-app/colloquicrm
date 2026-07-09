@@ -1804,6 +1804,72 @@ th.col-check {
   background: #fff;
 }
 
+/* Email search results */
+.email-results {
+  padding: 0;
+}
+.email-result {
+  border-bottom: 1px solid var(--border);
+  padding: 4px 14px 10px;
+}
+.email-result:last-child {
+  border-bottom: none;
+}
+.email-result-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  width: 100%;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  padding: 10px 0 4px;
+  font: inherit;
+  color: inherit;
+}
+.email-result-main {
+  min-width: 0;
+  flex: 1;
+}
+.email-subject {
+  display: block;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.email-snippet {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.email-result-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.email-dir {
+  color: var(--muted);
+}
+.email-dir.out {
+  color: var(--accent);
+}
+.email-related {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 4px;
+}
+
 /* Feed enhancements */
 .feed-related {
   margin-left: 8px;

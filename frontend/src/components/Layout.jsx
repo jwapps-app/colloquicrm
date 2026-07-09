@@ -11,6 +11,7 @@ const NAV = [
   { to: '/companies', icon: 'companies', label: 'Companies' },
   { to: '/opportunities', icon: 'opportunities', label: 'Opportunities' },
   { to: '/tasks', icon: 'tasks', label: 'Tasks' },
+  { to: '/emails', icon: 'mail', label: 'Emails' },
   { to: '/import', icon: 'import', label: 'Import' },
   { to: '/settings', icon: 'settings', label: 'Settings' },
 ];

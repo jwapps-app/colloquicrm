@@ -489,6 +489,90 @@ async def calendar_events(
 emails_router = APIRouter()
 
 
+@emails_router.get("/search")
+async def search_emails(
+    q: str,
+    page: int = 1,
+    page_size: int = 25,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full-text search across every synced email — subject, snippet, sender,
+    and archived body — newest first."""
+    from sqlalchemy import or_
+
+    from app.routes.feed import _org_contact_maps
+
+    term = (q or "").strip()
+    if len(term) < 2:
+        return {"items": [], "page": 1, "has_more": False}
+    page = max(1, page)
+    page_size = min(max(page_size, 1), 50)
+    pattern = f"%{term.lower()}%"
+    cols = [
+        EmailMessage.subject,
+        EmailMessage.snippet,
+        EmailMessage.from_name,
+        EmailMessage.from_email,
+        EmailMessage.body_text,
+    ]
+    stmt = (
+        select(EmailMessage)
+        .where(
+            EmailMessage.org_id == user.org_id,
+            or_(*[func.lower(func.coalesce(c, "")).like(pattern) for c in cols]),
+        )
+        .order_by(EmailMessage.sent_at.desc().nulls_last())
+        .offset((page - 1) * page_size)
+        .limit(page_size + 1)  # one extra to detect more
+    )
+    messages = (await db.execute(stmt)).scalars().all()
+    has_more = len(messages) > page_size
+    messages = messages[:page_size]
+
+    related: dict = {}
+    if messages:
+        parts = await db.execute(
+            select(EmailParticipant.email_id, EmailParticipant.email).where(
+                EmailParticipant.email_id.in_([m.id for m in messages]),
+                EmailParticipant.direct.is_(True),
+            )
+        )
+        by_addr: dict = {}
+        for eid, addr in parts:
+            by_addr.setdefault(addr, []).append(eid)
+        addr_map, _ = await _org_contact_maps(db, user.org_id)
+        for addr, eids in by_addr.items():
+            hit = addr_map.get(addr)
+            if not hit:
+                continue
+            entry = {"entity_type": hit[0], "entity_id": str(hit[1]), "label": hit[2]}
+            for eid in eids:
+                bucket = related.setdefault(eid, [])
+                if entry not in bucket:
+                    bucket.append(entry)
+
+    return {
+        "items": [
+            {
+                "id": str(m.id),
+                "subject": m.subject,
+                "snippet": m.snippet,
+                "from_email": m.from_email,
+                "from_name": m.from_name,
+                "is_outgoing": m.is_outgoing,
+                "sent_at": m.sent_at.isoformat() if m.sent_at else None,
+                "gmail_id": m.gmail_id,
+                "owner_user_id": str(m.owner_user_id) if m.owner_user_id else None,
+                "related": related.get(m.id, []),
+            }
+            for m in messages
+        ],
+        "page": page,
+        "has_more": has_more,
+    }
+
+
 @emails_router.get("")
 async def emails_for_entity(
     entity_type: str,
