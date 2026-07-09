@@ -22,7 +22,13 @@ options_router = APIRouter()
 
 ENTITY_TYPES = {"person", "lead", "company", "opportunity"}
 
-DEFAULT_CONTACT_TYPES = ["Potential Customer", "Current Customer", "Uncategorized", "Other"]
+DEFAULT_CONTACT_TYPES = [
+    "Potential Customer",
+    "Current Customer",
+    "Former Customer",
+    "Uncategorized",
+    "Other",
+]
 
 
 @options_router.get("/contact-types")

@@ -38,9 +38,25 @@ export function timeOfDay(iso) {
   return parseWhen(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// Per-device display preference: 'first-last' (John A. Doe) or 'last-first'
+// (Doe, John A.). Read fresh each call so a change applies everywhere.
+export function nameFormat() {
+  try {
+    return localStorage.getItem('crm_name_format') === 'last-first' ? 'last-first' : 'first-last';
+  } catch {
+    return 'first-last';
+  }
+}
+
 export function fullName(o) {
   if (!o) return '';
-  return [o.prefix, o.first_name, o.middle_name, o.last_name, o.suffix].filter(Boolean).join(' ') || '(no name)';
+  const { prefix, first_name, middle_name, last_name, suffix } = o;
+  if (nameFormat() === 'last-first' && last_name && (first_name || middle_name)) {
+    const lastPart = [last_name, suffix].filter(Boolean).join(' ');
+    const firstPart = [first_name, middle_name].filter(Boolean).join(' ');
+    return `${lastPart}, ${firstPart}`;
+  }
+  return [prefix, first_name, middle_name, last_name, suffix].filter(Boolean).join(' ') || '(no name)';
 }
 
 export function humanize(s) {

@@ -53,6 +53,26 @@ function ProfileSection() {
     setBusy(false);
   }
 
+  const [nameOrder, setNameOrder] = useState(() => {
+    try {
+      return localStorage.getItem('crm_name_format') === 'last-first' ? 'last-first' : 'first-last';
+    } catch {
+      return 'first-last';
+    }
+  });
+
+  function changeNameOrder(value) {
+    setNameOrder(value);
+    try {
+      localStorage.setItem('crm_name_format', value);
+    } catch {
+      // storage unavailable — the choice just won't persist
+    }
+    // Names are rendered from static column definitions across many pages;
+    // reload so the new order applies everywhere at once.
+    window.location.reload();
+  }
+
   return (
     <>
       <form className="card form settings-card" onSubmit={saveName}>
@@ -64,6 +84,13 @@ function ProfileSection() {
         <label className="field">
           <span>Email</span>
           <input value={user?.email || ''} disabled />
+        </label>
+        <label className="field">
+          <span>Name display</span>
+          <select value={nameOrder} onChange={(e) => changeNameOrder(e.target.value)}>
+            <option value="first-last">First Last (John Doe)</option>
+            <option value="last-first">Last, First (Doe, John)</option>
+          </select>
         </label>
         <div className="form-actions">
           <button className="btn btn-primary" type="submit" disabled={busy}>
