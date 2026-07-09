@@ -625,6 +625,12 @@ BACKFILL_ADDRESSES_PER_CHECKPOINT = 50
 # The combined search is the heaviest query in the system; give it room before
 # calling it a timeout.
 SEARCH_TIMEOUT = 45.0
+# Cap how much history one checkpoint chunk pulls. A single mailing-list or
+# heavy-correspondent address can match tens of thousands of messages; fetching
+# them all (at format=full) would grind one chunk for hours and never advance
+# the cursor. Gmail returns newest-first, so the cap keeps recent mail — what a
+# CRM needs — and skips ancient bulk.
+BACKFILL_MAX_IDS_PER_CHUNK = 4000
 
 
 def _is_rate_limit(exc: "GoogleError") -> bool:
@@ -643,7 +649,7 @@ def _contact_query(addrs: list[str]) -> str:
     return f"{window}-in:spam -in:trash ({clause})"
 
 
-async def _run_search(access: str, q: str) -> list[str]:
+async def _run_search(access: str, q: str, max_ids: int | None = None) -> list[str]:
     ids: list[str] = []
     seen: set[str] = set()
     page_token = None
@@ -660,6 +666,8 @@ async def _run_search(access: str, q: str) -> list[str]:
             if mid and mid not in seen:
                 seen.add(mid)
                 ids.append(mid)
+        if max_ids is not None and len(ids) >= max_ids:
+            break  # newest-first; stop once we have enough recent history
         page_token = data.get("nextPageToken")
         if not page_token:
             break
@@ -683,17 +691,22 @@ async def _search_contact_mail(access: str, addresses: list[str]) -> list[str]:
     ids: list[str] = []
     seen: set[str] = set()
     for i in range(0, len(expanded), ADDRESSES_PER_QUERY):
+        remaining = BACKFILL_MAX_IDS_PER_CHUNK - len(ids)
+        if remaining <= 0:
+            break  # this checkpoint chunk has pulled enough recent history
         group = expanded[i : i + ADDRESSES_PER_QUERY]
         try:
-            got = await _run_search(access, _contact_query(group))
+            got = await _run_search(access, _contact_query(group), max_ids=remaining)
         except GoogleError as exc:
             if _is_rate_limit(exc):
                 raise
             log.warning("combined gmail search failed (%s); retrying per address", exc)
             got = []
             for a in group:
+                if len(ids) + len(got) >= BACKFILL_MAX_IDS_PER_CHUNK:
+                    break
                 try:
-                    got += await _run_search(access, _contact_query([a]))
+                    got += await _run_search(access, _contact_query([a]), max_ids=remaining)
                 except GoogleError as e2:
                     if _is_rate_limit(e2):
                         raise
