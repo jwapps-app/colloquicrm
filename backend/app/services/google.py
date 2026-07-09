@@ -477,12 +477,18 @@ async def _fetch_message(access: str, gmail_id: str, full: bool) -> dict | None:
 async def _known_gmail_ids(db, owner_user_id: uuid.UUID, ids: list[str]) -> set[str]:
     if not ids:
         return set()
-    rows = await db.execute(
-        select(EmailMessage.gmail_id).where(
-            EmailMessage.owner_user_id == owner_user_id, EmailMessage.gmail_id.in_(ids)
+    # A single prolific address can return tens of thousands of message ids;
+    # asyncpg caps bind parameters at 32767, so chunk the IN() clause.
+    known: set[str] = set()
+    for i in range(0, len(ids), 5000):
+        rows = await db.execute(
+            select(EmailMessage.gmail_id).where(
+                EmailMessage.owner_user_id == owner_user_id,
+                EmailMessage.gmail_id.in_(ids[i : i + 5000]),
+            )
         )
-    )
-    return {gid for (gid,) in rows}
+        known.update(gid for (gid,) in rows)
+    return known
 
 
 async def _store_messages(
