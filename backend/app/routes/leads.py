@@ -59,6 +59,11 @@ register_crud(
     default_sort="last_name",
     required_any=["first_name", "last_name"],
     enrich=enrich,
+    merge_pool=[
+        ["email"],
+        ["work_phone", "mobile_phone"],
+        ["work_website", "personal_website"],
+    ],
 )
 
 

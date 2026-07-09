@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react';
 import { get, post } from '../api';
+import { useContactTypes } from '../hooks';
 import { useToast } from './Toast';
 
 /**
  * Contact suggestions mined from Gmail: frequent correspondents who aren't in
- * the CRM yet. Add one (creates a Person) or Ignore it (never resurfaces).
- * Shown as a dismissible banner atop the People list.
+ * the CRM yet. Add one (creates a Person, typed by the header selector) or
+ * Ignore it (never resurfaces). Collapsed by default — just the count.
  */
 export default function SuggestionsPanel({ onAdded }) {
   const toast = useToast();
+  const contactTypes = useContactTypes();
   const [items, setItems] = useState([]);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const [addType, setAddType] = useState('Personal');
 
   async function load() {
     try {
@@ -44,9 +47,9 @@ export default function SuggestionsPanel({ onAdded }) {
   async function add(s) {
     setBusyId(s.id);
     try {
-      await post(`/contact-suggestions/${s.id}/add`);
+      await post(`/contact-suggestions/${s.id}/add`, { contact_type: addType });
       setItems((xs) => xs.filter((x) => x.id !== s.id));
-      toast.success(`Added ${s.display_name || s.email}`);
+      toast.success(`Added ${s.display_name || s.email} as ${addType}`);
       onAdded?.();
     } catch (e) {
       toast.error(e.message);
@@ -70,13 +73,29 @@ export default function SuggestionsPanel({ onAdded }) {
   return (
     <div className="card suggestions">
       <div className="suggestions-head">
-        <strong>{items.length} suggested contact{items.length === 1 ? '' : 's'} from your email</strong>
+        <button className="suggestions-toggle" onClick={() => setCollapsed((c) => !c)}>
+          <span className="suggestions-caret">{collapsed ? '▸' : '▾'}</span>
+          <strong>
+            {items.length} suggested contact{items.length === 1 ? '' : 's'} from your email
+          </strong>
+        </button>
         <div className="suggestions-head-actions">
+          {!collapsed && (
+            <label className="suggestions-type">
+              Add as
+              <select value={addType} onChange={(e) => setAddType(e.target.value)}>
+                {(contactTypes.length ? contactTypes : [{ value: 'Personal', label: 'Personal' }]).map(
+                  (t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  )
+                )}
+              </select>
+            </label>
+          )}
           <button className="btn btn-small" onClick={scan} disabled={scanning}>
             {scanning ? 'Scanning…' : 'Rescan email'}
-          </button>
-          <button className="linklike" onClick={() => setCollapsed((c) => !c)}>
-            {collapsed ? 'Show' : 'Hide'}
           </button>
         </div>
       </div>

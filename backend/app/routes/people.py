@@ -75,6 +75,11 @@ register_crud(
     merge_refs=[(Opportunity, "primary_person_id"), (Lead, "converted_person_id")],
     after_merge=lambda db, user, target: update_person_aggregates(db, user.org_id, {target.id}),
     extra_filter=_hide_self_filter,
+    merge_pool=[
+        ["work_email", "personal_email"],
+        ["work_phone", "mobile_phone"],
+        ["work_website", "personal_website"],
+    ],
 )
 
 

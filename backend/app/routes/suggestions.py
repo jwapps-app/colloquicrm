@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +11,10 @@ from app.models import ContactSuggestion, Person, User, utcnow
 from app.services.common import log_activity
 
 router = APIRouter()
+
+
+class AddSuggestionIn(BaseModel):
+    contact_type: str | None = None
 
 
 def _split_name(display_name: str | None, email: str) -> tuple[str, str]:
@@ -74,19 +79,21 @@ async def _get_pending(db, user, sug_id):
 @router.post("/{sug_id}/add")
 async def add_suggestion(
     sug_id: uuid.UUID,
+    body: AddSuggestionIn | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Turn a suggestion into a real Person and mark it handled."""
     s = await _get_pending(db, user, sug_id)
     first, last = _split_name(s.display_name, s.email)
+    contact_type = (body.contact_type if body and body.contact_type else "Personal")
     person = Person(
         org_id=user.org_id,
         first_name=first,
         last_name=last or None,
         work_email=s.email,
         owner_id=user.id,
-        contact_type="Uncategorized",
+        contact_type=contact_type,
     )
     db.add(person)
     s.status = "added"

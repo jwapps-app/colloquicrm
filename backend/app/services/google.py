@@ -943,13 +943,24 @@ async def scan_contact_suggestions(user_id: uuid.UUID) -> None:
                         if parsed is None:
                             continue
                         sent_at = parsed["sent_at"]
-                        for _kind, email, name in parsed["participants"]:
+                        outgoing = bool(parsed["is_outgoing"])
+                        for kind, email, name in parsed["participants"]:
                             if not email or email == owner_email or "@" not in email:
                                 continue
                             if _looks_automated(email):
                                 continue
-                            t = tally.setdefault(email, {"count": 0, "name": None, "last": None})
+                            # "You emailed them" = you sent to this recipient.
+                            # "They emailed you" = they are the sender inbound.
+                            counts = outgoing and kind in ("to", "cc")
+                            counts = counts or (not outgoing and kind == "from")
+                            if not counts:
+                                continue
+                            t = tally.setdefault(
+                                email, {"count": 0, "out": 0, "name": None, "last": None}
+                            )
                             t["count"] += 1
+                            if outgoing:
+                                t["out"] += 1
                             if name and not t["name"]:
                                 t["name"] = name
                             if sent_at and (t["last"] is None or sent_at > t["last"]):
@@ -957,6 +968,11 @@ async def scan_contact_suggestions(user_id: uuid.UUID) -> None:
 
             for email, t in tally.items():
                 if email in contact_map:  # already a Person/Lead
+                    continue
+                # A single message you never replied to isn't worth suggesting.
+                # Qualify only if you emailed them at least once, or there's a
+                # real back-and-forth (2+ messages).
+                if t["out"] == 0 and t["count"] < 2:
                     continue
                 s = existing.get(email)
                 if s is None:

@@ -76,6 +76,7 @@ def register_crud(
     merge_refs: list[tuple] | None = None,  # (Model, fk attr name) to re-point on merge
     after_merge: Callable | None = None,
     extra_filter: Callable | None = None,  # (request, user, stmt) -> stmt
+    merge_pool: list[list[str]] | None = None,  # column groups pooled on merge
 ) -> None:
     """Wires list/create/get/patch/delete endpoints for one entity onto a
     router. body_model serves both create and PATCH (exclude_unset)."""
@@ -545,12 +546,34 @@ def register_crud(
             filter(None, [getattr(source, "first_name", None), getattr(source, "last_name", None)])
         )
 
+        # Multi-slot fields (a person's two emails, two phones, …) pool ALL
+        # distinct values from both records instead of only filling blanks, so
+        # merging never drops the duplicate's second email. Anything past the
+        # available slots is preserved in Details so nothing is lost.
+        pooled_cols: set[str] = set()
+        overflow: list[str] = []
+        for group in merge_pool or []:
+            pooled_cols.update(group)
+            values: list[str] = []
+            for rec in (target, source):  # target first keeps its primary in slot 0
+                for gcol in group:
+                    v = getattr(rec, gcol, None)
+                    if v not in (None, "") and v not in values:
+                        values.append(v)
+            for i, gcol in enumerate(group):
+                setattr(target, gcol, values[i] if i < len(values) else getattr(target, gcol))
+            overflow.extend(values[len(group):])
+
         for col in model.__table__.columns:
             key = col.key
-            if key in MERGE_SKIP:
+            if key in MERGE_SKIP or key in pooled_cols:
                 continue
             if getattr(target, key) in (None, "") and getattr(source, key) not in (None, ""):
                 setattr(target, key, getattr(source, key))
+
+        if overflow and hasattr(target, "details"):
+            extra = "Also (from merge): " + ", ".join(overflow)
+            target.details = f"{target.details}\n{extra}" if target.details else extra
 
         # Satellites keyed by (entity_type, entity_id) follow the survivor.
         for sat_model in (Note, Task, Activity, PhoneEvent):

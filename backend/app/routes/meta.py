@@ -23,9 +23,11 @@ options_router = APIRouter()
 ENTITY_TYPES = {"person", "lead", "company", "opportunity"}
 
 DEFAULT_CONTACT_TYPES = [
+    "Personal",
     "Potential Customer",
     "Current Customer",
     "Former Customer",
+    "Vendor",
     "Uncategorized",
     "Other",
 ]

@@ -32,4 +32,5 @@ register_crud(
     required_any=["name"],
     enrich=enrich,
     merge_refs=[(Person, "company_id"), (Opportunity, "company_id")],
+    merge_pool=[["work_phone"], ["work_website"]],
 )
