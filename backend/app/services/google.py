@@ -105,11 +105,23 @@ def auth_url(client_id: str, user_id: uuid.UUID) -> str:
 
 
 async def _post_form(url: str, data: dict) -> dict:
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, data=data)
-    except httpx.HTTPError as exc:
-        raise GoogleError(f"Cannot reach Google: {exc}") from exc
+    # This is the OAuth token endpoint — it runs at the START of every sync to
+    # refresh the access token, so a transient blip here aborts the whole pass
+    # before anything else. Retry with backoff; a real rejection (4xx) below is
+    # not retried.
+    resp = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, data=data)
+            break
+        except httpx.HTTPError as exc:
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            raise GoogleError(
+                f"Cannot reach Google: {type(exc).__name__}: {exc}".rstrip(": ")
+            ) from exc
     if resp.status_code >= 400:
         try:
             detail = resp.json().get("error_description") or resp.json().get("error")
