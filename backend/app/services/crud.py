@@ -168,7 +168,11 @@ def register_crud(
 
     def sort_clause(sort: str | None, order: str):
         sort_col = sortable.get(sort or default_sort) or sortable[default_sort]
-        return sort_col.desc() if order == "desc" else sort_col.asc()
+        clause = sort_col.desc() if order == "desc" else sort_col.asc()
+        # Records without a value ("never contacted", no close date) belong at
+        # the bottom whichever way you sort — Postgres defaults NULLs to the
+        # top on DESC.
+        return clause.nulls_last()
 
     @router.get("")
     async def list_items(
