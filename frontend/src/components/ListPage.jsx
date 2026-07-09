@@ -25,6 +25,7 @@ export default function ListPage({
   defaultSort = 'created_at',
   defaultOrder = 'desc',
   headerExtra,
+  extraParams = {},
 }) {
   const nav = useNavigate();
   const toast = useToast();
@@ -71,7 +72,7 @@ export default function ListPage({
   useEffect(() => {
     let on = true;
     setLoading(true);
-    get(apiPath, { q: q || undefined, page, page_size: pageSize, sort, order, ...filters })
+    get(apiPath, { q: q || undefined, page, page_size: pageSize, sort, order, ...filters, ...extraParams })
       .then((d) => {
         if (on) setData(d);
       })
@@ -189,7 +190,7 @@ export default function ListPage({
     }
   }
 
-  const listParams = { q: q || undefined, sort, order, ...filters };
+  const listParams = { q: q || undefined, sort, order, ...filters, ...extraParams };
 
   async function exportCsv() {
     setExporting(true);

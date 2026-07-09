@@ -73,6 +73,23 @@ function ProfileSection() {
     window.location.reload();
   }
 
+  const [hideSelf, setHideSelf] = useState(() => {
+    try {
+      return localStorage.getItem('crm_hide_self') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  function changeHideSelf(checked) {
+    setHideSelf(checked);
+    try {
+      localStorage.setItem('crm_hide_self', checked ? '1' : '0');
+    } catch {
+      // best-effort
+    }
+  }
+
   return (
     <>
       <form className="card form settings-card" onSubmit={saveName}>
@@ -91,6 +108,14 @@ function ProfileSection() {
             <option value="first-last">First Last (John Doe)</option>
             <option value="last-first">Last, First (Doe, John)</option>
           </select>
+        </label>
+        <label className="cf-checkbox settings-check">
+          <input
+            type="checkbox"
+            checked={hideSelf}
+            onChange={(e) => changeHideSelf(e.target.checked)}
+          />
+          <span>Hide my own contact from the People list</span>
         </label>
         <div className="form-actions">
           <button className="btn btn-primary" type="submit" disabled={busy}>

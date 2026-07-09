@@ -13,6 +13,13 @@ const columns = [
 
 export default function PeopleList() {
   const contactTypes = useContactTypes();
+  const hideSelf = (() => {
+    try {
+      return localStorage.getItem('crm_hide_self') === '1';
+    } catch {
+      return false;
+    }
+  })();
   const createFields = [
     { key: 'first_name', label: 'First name', required: true },
     { key: 'last_name', label: 'Last name' },
@@ -38,6 +45,7 @@ export default function PeopleList() {
       createTitle="Add person"
       defaultSort="last_contacted_at"
       defaultOrder="desc"
+      extraParams={hideSelf ? { hide_self: 1 } : {}}
     />
   );
 }

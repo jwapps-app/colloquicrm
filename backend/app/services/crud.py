@@ -75,6 +75,7 @@ def register_crud(
     after_create: Callable | None = None,
     merge_refs: list[tuple] | None = None,  # (Model, fk attr name) to re-point on merge
     after_merge: Callable | None = None,
+    extra_filter: Callable | None = None,  # (request, user, stmt) -> stmt
 ) -> None:
     """Wires list/create/get/patch/delete endpoints for one entity onto a
     router. body_model serves both create and PATCH (exclude_unset)."""
@@ -164,6 +165,8 @@ def register_crud(
                     )
                 )
             )
+        if extra_filter is not None:
+            stmt = extra_filter(request, user, stmt)
         return stmt
 
     def sort_clause(sort: str | None, order: str):

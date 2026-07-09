@@ -987,6 +987,18 @@ th.col-check {
   padding-top: 5px;
   display: block;
 }
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin: 4px 0 2px;
+  cursor: pointer;
+}
+.settings-check input {
+  width: auto;
+  margin: 0;
+}
 
 .tag-editor {
   display: flex;

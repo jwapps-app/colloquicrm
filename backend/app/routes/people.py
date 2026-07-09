@@ -1,13 +1,28 @@
 import uuid
 
 from fastapi import APIRouter
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import Company, Lead, Opportunity, Person
 from app.schemas import PersonIn
 from app.services.common import display_name_map
 from app.services.crud import register_crud
 from app.services.interactions import update_person_aggregates
+
+
+def _hide_self_filter(request, user, stmt):
+    """When hide_self=1, drop the contact record that is the logged-in user
+    (matched by email). The record still exists and is editable directly —
+    it's just kept out of the everyday People list."""
+    if not request.query_params.get("hide_self"):
+        return stmt
+    own = (user.email or "").lower()
+    if not own:
+        return stmt
+    return stmt.where(
+        func.coalesce(func.lower(Person.work_email), "") != own,
+        func.coalesce(func.lower(Person.personal_email), "") != own,
+    )
 
 router = APIRouter()
 
@@ -59,6 +74,7 @@ register_crud(
     enrich=enrich,
     merge_refs=[(Opportunity, "primary_person_id"), (Lead, "converted_person_id")],
     after_merge=lambda db, user, target: update_person_aggregates(db, user.org_id, {target.id}),
+    extra_filter=_hide_self_filter,
 )
 
 
