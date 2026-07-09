@@ -17,7 +17,7 @@ function isFilled(value) {
  * Left-column profile panel: standard + custom fields in one click-to-edit
  * list. Only filled fields show by default; a toggle reveals the empty ones.
  */
-export default function ProfilePanel({ entity, entityType, fields, onSave, users = [] }) {
+export default function ProfilePanel({ entity, entityType, fields, onSave, users = [], contactTypes = [] }) {
   const [defs, setDefs] = useState([]);
   const [showEmpty, setShowEmpty] = useState(false);
 
@@ -104,6 +104,10 @@ export default function ProfilePanel({ entity, entityType, fields, onSave, users
         const u = users.find((x) => x.id === v);
         return u ? u.display_name || u.email : entity.owner_name || '';
       };
+    } else if (f.key === 'contact_type' && contactTypes.length > 0) {
+      // Data-driven: imported records decide what types exist.
+      type = 'select';
+      options = contactTypes;
     } else if (type === 'date' && !render) {
       render = (v) => (v ? fmtDate(v) : '');
     }

@@ -52,6 +52,18 @@ export function useUsers() {
   return users;
 }
 
+export function useContactTypes() {
+  // Data-driven: whatever contact types exist in the org (plus defaults),
+  // shaped as {value,label} options for selects.
+  const [types, setTypes] = useState([]);
+  useEffect(() => {
+    get('/options/contact-types')
+      .then((d) => setTypes((Array.isArray(d) ? d : []).map((v) => ({ value: v, label: v }))))
+      .catch(() => {});
+  }, []);
+  return types;
+}
+
 export function usePipelines() {
   const [pipelines, setPipelines] = useState([]);
   useEffect(() => {

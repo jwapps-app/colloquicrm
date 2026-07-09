@@ -18,8 +18,28 @@ from app.services.common import row_to_dict
 tags_router = APIRouter()
 custom_fields_router = APIRouter()
 saved_filters_router = APIRouter()
+options_router = APIRouter()
 
 ENTITY_TYPES = {"person", "lead", "company", "opportunity"}
+
+DEFAULT_CONTACT_TYPES = ["Potential Customer", "Current Customer", "Uncategorized", "Other"]
+
+
+@options_router.get("/contact-types")
+async def contact_types(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Every contact type in use across people and companies, plus the
+    defaults — imported data decides what the dropdowns offer."""
+    from app.models import Company, Person
+
+    values: set[str] = set(DEFAULT_CONTACT_TYPES)
+    for model in (Person, Company):
+        rows = await db.execute(
+            select(model.contact_type)
+            .where(model.org_id == user.org_id, model.contact_type.is_not(None))
+            .distinct()
+        )
+        values.update(v for (v,) in rows if v and v.strip())
+    return sorted(values)
 
 
 @tags_router.get("")

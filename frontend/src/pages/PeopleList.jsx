@@ -1,6 +1,6 @@
 import ListPage from '../components/ListPage';
+import { useContactTypes } from '../hooks';
 import { fmtDate, fullName, humanize } from '../format';
-import { CONTACT_TYPES } from '../constants/options';
 
 const columns = [
   { key: 'name', label: 'Name', sortKey: 'last_name', render: (p) => <strong>{fullName(p)}</strong> },
@@ -11,17 +11,17 @@ const columns = [
   { key: 'interaction_count', label: 'Interactions', render: (p) => p.interaction_count ?? 0 },
 ];
 
-const createFields = [
-  { key: 'first_name', label: 'First name', required: true },
-  { key: 'last_name', label: 'Last name' },
-  { key: 'title', label: 'Title' },
-  { key: 'work_email', label: 'Work email', type: 'email' },
-  { key: 'mobile_phone', label: 'Mobile phone' },
-  { key: 'contact_type', label: 'Contact type', type: 'select', options: CONTACT_TYPES },
-  { key: 'details', label: 'Details', type: 'textarea' },
-];
-
 export default function PeopleList() {
+  const contactTypes = useContactTypes();
+  const createFields = [
+    { key: 'first_name', label: 'First name', required: true },
+    { key: 'last_name', label: 'Last name' },
+    { key: 'title', label: 'Title' },
+    { key: 'work_email', label: 'Work email', type: 'email' },
+    { key: 'mobile_phone', label: 'Mobile phone' },
+    { key: 'contact_type', label: 'Contact type', type: 'select', options: contactTypes },
+    { key: 'details', label: 'Details', type: 'textarea' },
+  ];
   return (
     <ListPage
       title="People"
@@ -30,7 +30,7 @@ export default function PeopleList() {
       route="/people"
       columns={columns}
       filterDefs={[
-        { key: 'contact_type', label: 'Contact type', options: CONTACT_TYPES },
+        { key: 'contact_type', label: 'Contact type', options: contactTypes },
         { type: 'tag' },
         { type: 'owner' },
       ]}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { del, get } from '../api';
-import { useEntity, useUsers } from '../hooks';
+import { useContactTypes, useEntity, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
 import MergeButton from '../components/MergeButton';
@@ -39,6 +39,7 @@ export default function CompanyDetail() {
   const nav = useNavigate();
   const toast = useToast();
   const users = useUsers();
+  const contactTypes = useContactTypes();
   const { entity: company, save, error, refresh } = useEntity('/companies', id);
   const people = useRelated('/people', { company_id: id }, [id]);
   const opps = useRelated('/opportunities', { company_id: id }, [id]);
@@ -69,7 +70,7 @@ export default function CompanyDetail() {
       entityId={id}
       left={
         <>
-          <ProfilePanel entity={company} entityType="company" fields={COMPANY_FIELDS} users={users} onSave={save} />
+          <ProfilePanel entity={company} entityType="company" fields={COMPANY_FIELDS} users={users} contactTypes={contactTypes} onSave={save} />
           <div className="card">
             <h4 className="panel-title">Tags</h4>
             <TagEditor tags={company.tags || []} onChange={(tags) => save({ tags })} />

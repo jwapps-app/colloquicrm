@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { del, get, post } from '../api';
-import { useEntity, useUsers } from '../hooks';
+import { useContactTypes, useEntity, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
 import MergeButton from '../components/MergeButton';
@@ -118,6 +118,7 @@ export default function PersonDetail() {
   const nav = useNavigate();
   const toast = useToast();
   const users = useUsers();
+  const contactTypes = useContactTypes();
   const { entity: person, save, error, refresh } = useEntity('/people', id);
 
   if (error) return <div className="page"><Empty label="Person not found." hint={error} /></div>;
@@ -146,7 +147,7 @@ export default function PersonDetail() {
       entityId={id}
       left={
         <>
-          <ProfilePanel entity={person} entityType="person" fields={PERSON_FIELDS} users={users} onSave={save} />
+          <ProfilePanel entity={person} entityType="person" fields={PERSON_FIELDS} users={users} contactTypes={contactTypes} onSave={save} />
           <div className="card">
             <h4 className="panel-title">Tags</h4>
             <TagEditor tags={person.tags || []} onChange={(tags) => save({ tags })} />
