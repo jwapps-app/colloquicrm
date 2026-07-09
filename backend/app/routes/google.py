@@ -518,7 +518,10 @@ async def search_emails(
         return {"items": [], "page": 1, "has_more": False}
     page = max(1, page)
     page_size = min(max(page_size, 1), 50)
-    pattern = f"%{term.lower()}%"
+    pattern = f"%{term}%"
+    # Plain ilike (no lower() wrapper) so the pg_trgm GIN indexes can serve
+    # the leading-wildcard match; and skinny columns only — archived bodies
+    # can be a megabyte each, and the response never returns them.
     cols = [
         EmailMessage.subject,
         EmailMessage.snippet,
@@ -527,16 +530,26 @@ async def search_emails(
         EmailMessage.body_text,
     ]
     stmt = (
-        select(EmailMessage)
+        select(
+            EmailMessage.id,
+            EmailMessage.subject,
+            EmailMessage.snippet,
+            EmailMessage.from_email,
+            EmailMessage.from_name,
+            EmailMessage.is_outgoing,
+            EmailMessage.sent_at,
+            EmailMessage.gmail_id,
+            EmailMessage.owner_user_id,
+        )
         .where(
             EmailMessage.org_id == user.org_id,
-            or_(*[func.lower(func.coalesce(c, "")).like(pattern) for c in cols]),
+            or_(*[c.ilike(pattern) for c in cols]),
         )
         .order_by(EmailMessage.sent_at.desc().nulls_last())
         .offset((page - 1) * page_size)
         .limit(page_size + 1)  # one extra to detect more
     )
-    messages = (await db.execute(stmt)).scalars().all()
+    messages = (await db.execute(stmt)).all()
     has_more = len(messages) > page_size
     messages = messages[:page_size]
 
@@ -600,8 +613,20 @@ async def emails_for_entity(
     if obj is None:
         raise HTTPException(status_code=404, detail=f"{entity_type} not found")
 
+    # Skinny columns — cached bodies are large and this endpoint never
+    # returns them.
     stmt = (
-        select(EmailMessage)
+        select(
+            EmailMessage.id,
+            EmailMessage.subject,
+            EmailMessage.snippet,
+            EmailMessage.from_email,
+            EmailMessage.from_name,
+            EmailMessage.is_outgoing,
+            EmailMessage.sent_at,
+            EmailMessage.gmail_id,
+            EmailMessage.owner_user_id,
+        )
         .join(EmailParticipant, EmailParticipant.email_id == EmailMessage.id)
         .where(EmailMessage.org_id == user.org_id, EmailParticipant.direct.is_(True))
         .distinct()
@@ -622,7 +647,7 @@ async def emails_for_entity(
         stmt = stmt.where(EmailParticipant.email.in_(emails))
 
     stmt = stmt.order_by(EmailMessage.sent_at.desc()).limit(min(max(limit, 1), 200))
-    messages = (await db.execute(stmt)).scalars().all()
+    messages = (await db.execute(stmt)).all()
     return {
         "items": [
             {

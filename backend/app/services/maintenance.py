@@ -1,4 +1,4 @@
-"""Trash retention: records soft-deleted more than RETENTION_DAYS ago are
+"""Trash retention: records soft-deleted past the configured retention window are
 permanently purged. This is the ONLY path that removes trashed records — there
 is no manual 'empty trash', so anything deleted has the full window to be
 noticed as missing and restored."""
@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from sqlalchemy import delete, select
 
+from app.config import settings
 from app.db import SessionLocal
 from app.models import (
     Company,
@@ -23,7 +24,6 @@ from app.models import (
 
 log = logging.getLogger("maintenance")
 
-RETENTION_DAYS = 60
 PURGE_INTERVAL_SECONDS = 86400  # daily
 
 # (model, entity_type used by the polymorphic satellites)
@@ -36,7 +36,7 @@ _TRASH_MODELS = [
 
 
 async def purge_expired_trash() -> int:
-    cutoff = utcnow() - timedelta(days=RETENTION_DAYS)
+    cutoff = utcnow() - timedelta(days=settings.trash_retention_days)
     purged = 0
     async with SessionLocal() as db:
         for model, entity_type in _TRASH_MODELS:

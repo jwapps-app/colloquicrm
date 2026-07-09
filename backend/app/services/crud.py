@@ -611,24 +611,25 @@ def register_crud(
                     )
                 )
             }
-            source_cfs = (
-                await db.execute(
-                    select(CustomFieldValue).where(
+            source_field_ids = [
+                fid
+                for (fid,) in await db.execute(
+                    select(CustomFieldValue.field_id).where(
                         CustomFieldValue.entity_type == entity_type,
                         CustomFieldValue.entity_id == source.id,
                     )
                 )
-            ).scalars().all()
-            for cfv in source_cfs:
-                if cfv.field_id not in taken:
-                    await db.execute(
-                        update(CustomFieldValue)
-                        .where(
-                            CustomFieldValue.field_id == cfv.field_id,
-                            CustomFieldValue.entity_id == source.id,
-                        )
-                        .values(entity_id=target.id)
+            ]
+            movable = [fid for fid in source_field_ids if fid not in taken]
+            if movable:
+                await db.execute(
+                    update(CustomFieldValue)
+                    .where(
+                        CustomFieldValue.entity_id == source.id,
+                        CustomFieldValue.field_id.in_(movable),
                     )
+                    .values(entity_id=target.id)
+                )
 
         for ref_model, attr in merge_refs or []:
             await db.execute(

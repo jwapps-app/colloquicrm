@@ -321,7 +321,19 @@ async def sync_calendar(db, cfg: GoogleIntegration, account: GoogleAccount) -> i
         data = await _get_json(
             f"{settings.google_calendar_base}/calendars/primary/events", access, params
         )
-        for item in data.get("items", []):
+        items = data.get("items", [])
+        # One lookup for the whole page instead of a SELECT per event.
+        page_ids = [i.get("id") for i in items if i.get("id")]
+        existing_by_gid: dict[str, CalendarEvent] = {}
+        if page_ids:
+            rows = await db.execute(
+                select(CalendarEvent).where(
+                    CalendarEvent.org_id == account.org_id,
+                    CalendarEvent.google_event_id.in_(page_ids),
+                )
+            )
+            existing_by_gid = {e.google_event_id: e for e in rows.scalars()}
+        for item in items:
             if item.get("status") == "cancelled":
                 continue
             event_id = item.get("id")
@@ -329,14 +341,7 @@ async def sync_calendar(db, cfg: GoogleIntegration, account: GoogleAccount) -> i
                 continue
             starts_at, all_day = _parse_when(item.get("start"))
             ends_at, _ = _parse_when(item.get("end"))
-            existing = (
-                await db.execute(
-                    select(CalendarEvent).where(
-                        CalendarEvent.org_id == account.org_id,
-                        CalendarEvent.google_event_id == event_id,
-                    )
-                )
-            ).scalar_one_or_none()
+            existing = existing_by_gid.get(event_id)
             if existing is None:
                 existing = CalendarEvent(org_id=account.org_id, google_event_id=event_id)
                 db.add(existing)
