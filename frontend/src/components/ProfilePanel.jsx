@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { get } from '../api';
+import { cachedGet } from '../api';
 import InlineField from './InlineField';
 import { fmtDate } from '../format';
 
@@ -23,7 +23,7 @@ export default function ProfilePanel({ entity, entityType, fields, onSave, users
 
   useEffect(() => {
     if (!entityType) return;
-    get('/custom-fields', { entity_type: entityType })
+    cachedGet('/custom-fields', { entity_type: entityType })
       .then((d) =>
         setDefs(Array.isArray(d) ? [...d].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)) : [])
       )

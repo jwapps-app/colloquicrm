@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { get, post } from '../api';
 import { useAuth } from '../auth';
 import { useToast } from './Toast';
@@ -42,11 +42,16 @@ export default function TasksPanel({ entityType, entityId }) {
   const [whenMin, setWhenMin] = useState(0);
   const [busy, setBusy] = useState(false);
 
+  const loadEpoch = useRef(0);
+
   async function load() {
+    const epoch = ++loadEpoch.current;
     try {
       const d = await get('/tasks', { entity_type: entityType, entity_id: entityId, status: 'open', page_size: 50 });
+      if (epoch !== loadEpoch.current) return; // superseded by a newer load
       setTasks(d?.items || []);
     } catch (e) {
+      if (epoch !== loadEpoch.current) return;
       toast.error(e.message);
       setTasks([]);
     }

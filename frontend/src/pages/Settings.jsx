@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import QRCode from 'qrcode';
 import { del, get, patch, post } from '../api';
 import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
@@ -26,14 +25,14 @@ function TrashSection() {
 
   async function load() {
     const out = {};
-    for (const t of TRASH_TYPES) {
-      try {
-        const d = await get(`${t.api}/trash/list`);
-        if (d.items?.length) out[t.api] = { label: t.label, items: d.items };
-      } catch {
-        // ignore per-type failure
+    const results = await Promise.allSettled(
+      TRASH_TYPES.map((t) => get(`${t.api}/trash/list`))
+    );
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value.items?.length) {
+        out[TRASH_TYPES[i].api] = { label: TRASH_TYPES[i].label, items: r.value.items };
       }
-    }
+    });
     setGroups(out);
   }
 
@@ -253,6 +252,8 @@ function SecuritySection() {
       setSetup(s);
       setCode('');
       try {
+        // Loaded on demand — 2FA setup is the only place qrcode is used.
+        const { default: QRCode } = await import('qrcode');
         setQr(await QRCode.toDataURL(s.otpauth_url, { width: 220, margin: 1 }));
       } catch {
         setQr(null); // secret + URL below still work

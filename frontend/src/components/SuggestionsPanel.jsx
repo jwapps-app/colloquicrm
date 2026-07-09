@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { get, post } from '../api';
 import { useContactTypes } from '../hooks';
 import { useToast } from './Toast';
@@ -16,18 +16,24 @@ export default function SuggestionsPanel({ onAdded }) {
   const [scanning, setScanning] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [addType, setAddType] = useState('Personal');
+  const mounted = useRef(true);
 
   async function load() {
     try {
       const d = await get('/contact-suggestions');
-      setItems(d.items || []);
+      if (mounted.current) setItems(d.items || []);
     } catch {
       // silent — suggestions are optional
     }
   }
 
   useEffect(() => {
+    mounted.current = true;
     load();
+    return () => {
+      mounted.current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function scan() {

@@ -1,16 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { get } from '../api';
+import { EmailBody, useEmailBodies } from '../components/EmailBody';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';
-import { entityPath, parseWhen } from '../format';
+import { entityPath, fmtDate } from '../format';
 
 const PAGE_SIZE = 25;
-
-function when(iso) {
-  const d = parseWhen(iso);
-  return d ? d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
-}
 
 export default function EmailSearch() {
   const toast = useToast();
@@ -20,8 +16,7 @@ export default function EmailSearch() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [open, setOpen] = useState(null);
-  const [bodies, setBodies] = useState({});
+  const { open, toggle, bodies } = useEmailBodies();
   const boxRef = useRef(null);
 
   useEffect(() => {
@@ -61,23 +56,6 @@ export default function EmailSearch() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, page]);
-
-  async function toggle(id) {
-    if (open === id) {
-      setOpen(null);
-      return;
-    }
-    setOpen(id);
-    if (!bodies[id]) {
-      setBodies((b) => ({ ...b, [id]: { loading: true } }));
-      try {
-        const body = await get(`/emails/${id}/body`);
-        setBodies((b) => ({ ...b, [id]: { ...body, loading: false } }));
-      } catch (e) {
-        setBodies((b) => ({ ...b, [id]: { error: e.message, loading: false } }));
-      }
-    }
-  }
 
   return (
     <div className="page">
@@ -124,7 +102,7 @@ export default function EmailSearch() {
                       {m.is_outgoing ? '↑ sent' : '↓ received'}
                     </span>
                     <span className="muted">{from}</span>
-                    <span className="muted">{when(m.sent_at)}</span>
+                    <span className="muted">{fmtDate(m.sent_at)}</span>
                   </div>
                 </button>
                 {(m.related || []).length > 0 && (
@@ -141,19 +119,7 @@ export default function EmailSearch() {
                     })}
                   </div>
                 )}
-                {open === m.id && (
-                  <div className="email-body-wrap">
-                    {b?.loading && <Loading small />}
-                    {b?.error && <div className="form-error">{b.error}</div>}
-                    {b?.body_text && <div className="email-body">{b.body_text}</div>}
-                    {!b?.body_text && b?.body_html && (
-                      <iframe title="email" className="email-frame" sandbox="" srcDoc={b.body_html} />
-                    )}
-                    {b && !b.loading && !b.error && !b.body_text && !b.body_html && (
-                      <div className="muted">No body stored for this message.</div>
-                    )}
-                  </div>
-                )}
+                {open === m.id && <EmailBody body={b} />}
               </div>
             );
           })}

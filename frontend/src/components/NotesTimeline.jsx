@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { del, get, patch, post } from '../api';
+import { EmailBody, useEmailBodies } from './EmailBody';
 import { useToast } from './Toast';
 import { useAuth } from '../auth';
 import { fmtDateTime, humanize, parseWhen } from '../format';
@@ -21,8 +22,7 @@ export default function NotesTimeline({ entityType, entityId }) {
   const [activities, setActivities] = useState(null);
   const [emails, setEmails] = useState(null);
   const [phoneEvents, setPhoneEvents] = useState(null);
-  const [openEmail, setOpenEmail] = useState(null); // id currently expanded
-  const [bodies, setBodies] = useState({}); // id -> {loading, body_text, body_html, error}
+  const { open: openEmail, toggle: toggleEmail, bodies } = useEmailBodies();
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [logCall, setLogCall] = useState(false);
@@ -30,8 +30,10 @@ export default function NotesTimeline({ entityType, entityId }) {
   const [composerFor, setComposerFor] = useState(null); // call id with open note composer
   const [callDraft, setCallDraft] = useState('');
   const [attachFor, setAttachFor] = useState(null); // call id with open attach picker
+  const loadEpoch = useRef(0);
 
   async function load() {
+    const epoch = ++loadEpoch.current;
     try {
       const phoneable = entityType === 'person' || entityType === 'lead';
       const [n, a, em, ph] = await Promise.all([
@@ -44,11 +46,13 @@ export default function NotesTimeline({ entityType, entityId }) {
           ? get('/integrations/ringcentral/events', { entity_type: entityType, entity_id: entityId }).catch(() => ({ items: [] }))
           : Promise.resolve({ items: [] }),
       ]);
+      if (epoch !== loadEpoch.current) return; // superseded by a newer load
       setNotes(n?.items || []);
       setActivities(a?.items || []);
       setEmails(em?.items || []);
       setPhoneEvents(ph?.items || []);
     } catch (e) {
+      if (epoch !== loadEpoch.current) return;
       toast.error(e.message);
       setNotes((v) => v || []);
       setActivities((v) => v || []);
@@ -153,23 +157,6 @@ export default function NotesTimeline({ entityType, entityId }) {
       await load();
     } catch (err) {
       toast.error(err.message);
-    }
-  }
-
-  async function toggleEmail(id) {
-    if (openEmail === id) {
-      setOpenEmail(null);
-      return;
-    }
-    setOpenEmail(id);
-    if (!bodies[id]) {
-      setBodies((b) => ({ ...b, [id]: { loading: true } }));
-      try {
-        const body = await get(`/emails/${id}/body`);
-        setBodies((b) => ({ ...b, [id]: { ...body, loading: false } }));
-      } catch (e) {
-        setBodies((b) => ({ ...b, [id]: { loading: false, error: e.message } }));
-      }
     }
   }
 
@@ -351,27 +338,7 @@ export default function NotesTimeline({ entityType, entityId }) {
                 {openEmail !== item.id && item.snippet && (
                   <div className="muted email-snippet">{item.snippet}</div>
                 )}
-                {openEmail === item.id && (
-                  <div className="email-body-wrap">
-                    {bodies[item.id]?.loading && <div className="muted">Loading message…</div>}
-                    {bodies[item.id]?.error && <div className="form-error">{bodies[item.id].error}</div>}
-                    {bodies[item.id]?.body_text && (
-                      <div className="email-body">{bodies[item.id].body_text}</div>
-                    )}
-                    {!bodies[item.id]?.body_text && bodies[item.id]?.body_html && (
-                      <iframe
-                        title="email"
-                        className="email-frame"
-                        sandbox=""
-                        srcDoc={bodies[item.id].body_html}
-                      />
-                    )}
-                    {bodies[item.id] && !bodies[item.id].loading && !bodies[item.id].error
-                      && !bodies[item.id].body_text && !bodies[item.id].body_html && (
-                      <div className="muted">No readable content in this message.</div>
-                    )}
-                  </div>
-                )}
+                {openEmail === item.id && <EmailBody body={bodies[item.id]} />}
               </div>
             ) : item._type === 'note' ? (
               <div key={`n-${item.id}`} className="timeline-item note-item">

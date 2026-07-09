@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import ListPage from '../components/ListPage';
 import SuggestionsPanel from '../components/SuggestionsPanel';
 import { useContactTypes } from '../hooks';
@@ -14,6 +15,7 @@ const columns = [
 
 export default function PeopleList() {
   const contactTypes = useContactTypes();
+  const [refreshToken, setRefreshToken] = useState(0);
   const hideSelf = (() => {
     try {
       return localStorage.getItem('crm_hide_self') === '1';
@@ -36,7 +38,7 @@ export default function PeopleList() {
       entityType="person"
       apiPath="/people"
       route="/people"
-      banner={<SuggestionsPanel />}
+      banner={<SuggestionsPanel onAdded={() => setRefreshToken((k) => k + 1)} />}
       columns={columns}
       filterDefs={[
         { key: 'contact_type', label: 'Contact type', options: contactTypes },
@@ -48,6 +50,7 @@ export default function PeopleList() {
       defaultSort="last_contacted_at"
       defaultOrder="desc"
       extraParams={hideSelf ? { hide_self: 1 } : {}}
+      refreshToken={refreshToken}
     />
   );
 }

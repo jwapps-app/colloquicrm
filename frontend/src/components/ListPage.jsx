@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { del, download, get, post } from '../api';
+import { cachedGet, del, download, get, post } from '../api';
 import { useToast } from './Toast';
 import FormModal from './FormModal';
 import { Empty, Loading } from './ui';
@@ -27,27 +27,28 @@ export default function ListPage({
   headerExtra,
   extraParams = {},
   banner,
+  refreshToken = 0,
 }) {
   const nav = useNavigate();
   const toast = useToast();
 
   // The sort you choose becomes this list's default (per device).
   const prefsKey = `crm_list:${entityType}`;
-  const prefs = (() => {
+  const readPrefs = () => {
     try {
       return JSON.parse(localStorage.getItem(prefsKey)) || {};
     } catch {
       return {};
     }
-  })();
+  };
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState(prefs.sort || defaultSort);
-  const [order, setOrder] = useState(prefs.order || defaultOrder);
+  const [sort, setSort] = useState(() => readPrefs().sort || defaultSort);
+  const [order, setOrder] = useState(() => readPrefs().order || defaultOrder);
   const [filters, setFilters] = useState({});
   const [tags, setTags] = useState([]);
   const [users, setUsers] = useState([]);
@@ -88,7 +89,7 @@ export default function ListPage({
       on = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiPath, q, page, sort, order, filters, refresh]);
+  }, [apiPath, q, page, sort, order, filters, refresh, refreshToken]);
 
   // A different result set makes the old selection meaningless.
   useEffect(() => {
@@ -107,10 +108,10 @@ export default function ListPage({
 
   // Filter dropdown sources + saved filters.
   useEffect(() => {
-    get('/tags')
+    cachedGet('/tags')
       .then((d) => setTags(Array.isArray(d) ? d : []))
       .catch(() => {});
-    get('/users')
+    cachedGet('/users')
       .then((d) => setUsers(d?.items || []))
       .catch(() => {});
     get('/saved-filters', { entity_type: entityType })

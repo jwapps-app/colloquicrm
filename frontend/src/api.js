@@ -123,6 +123,23 @@ export async function download(path, params) {
   URL.revokeObjectURL(a.href);
 }
 
+// Short-TTL cache for static-ish org lookups (users, contact types, tags,
+// custom fields, pipelines) that otherwise re-fetch on every navigation.
+// Sharing the in-flight promise also dedupes concurrent identical requests.
+const _getCache = new Map();
+
+export function cachedGet(path, params, ttlMs = 60000) {
+  const url = buildUrl(path, params);
+  const hit = _getCache.get(url);
+  if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
+  const promise = request('GET', path, { params }).catch((e) => {
+    _getCache.delete(url); // don't cache failures
+    throw e;
+  });
+  _getCache.set(url, { at: Date.now(), promise });
+  return promise;
+}
+
 export const get = (path, params) => request('GET', path, { params });
 export const post = (path, body, params) => request('POST', path, { body, params });
 export const patch = (path, body) => request('PATCH', path, { body });

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { get } from '../api';
+import { EmailBody, useEmailBodies } from '../components/EmailBody';
 import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';
@@ -49,8 +50,7 @@ export default function Feed() {
   const [hasMore, setHasMore] = useState(false);
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [openEmail, setOpenEmail] = useState(null);
-  const [bodies, setBodies] = useState({});
+  const { open: openEmail, toggle: toggleEmail, bodies, close: closeEmail } = useEmailBodies();
 
   useEffect(() => {
     let on = true;
@@ -79,24 +79,7 @@ export default function Feed() {
     setTab(id);
     setItems(null);
     setPage(1);
-    setOpenEmail(null);
-  }
-
-  async function toggleEmail(id) {
-    if (openEmail === id) {
-      setOpenEmail(null);
-      return;
-    }
-    setOpenEmail(id);
-    if (!bodies[id]) {
-      setBodies((b) => ({ ...b, [id]: { loading: true } }));
-      try {
-        const body = await get(`/emails/${id}/body`);
-        setBodies((b) => ({ ...b, [id]: { ...body, loading: false } }));
-      } catch (e) {
-        setBodies((b) => ({ ...b, [id]: { loading: false, error: e.message } }));
-      }
-    }
+    closeEmail();
   }
 
   const groups = useMemo(() => {
@@ -177,13 +160,7 @@ export default function Feed() {
                           </div>
                           {!open && it.snippet && <div className="muted email-snippet">{it.snippet}</div>}
                           {open && (
-                            <div className="email-body-wrap">
-                              {b?.loading && <div className="muted">Loading message…</div>}
-                              {b?.error && <div className="form-error">{b.error}</div>}
-                              {b?.body_text && <div className="email-body">{b.body_text}</div>}
-                              {!b?.body_text && b?.body_html && (
-                                <iframe title="email" className="email-frame" sandbox="" srcDoc={b.body_html} />
-                              )}
+                            <EmailBody body={b}>
                               {user?.id === it.owner_user_id && it.gmail_id && (
                                 <a
                                   className="muted email-open"
@@ -194,7 +171,7 @@ export default function Feed() {
                                   Open in Gmail ↗
                                 </a>
                               )}
-                            </div>
+                            </EmailBody>
                           )}
                         </div>
                         <span className="muted feed-time">{timeOfDay(it.at)}</span>

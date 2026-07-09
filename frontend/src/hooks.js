@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { get, patch } from './api';
+import { cachedGet, get, patch } from './api';
 import { useToast } from './components/Toast';
 
 // Load one entity + provide an inline-save helper that PATCHes and merges.
@@ -45,7 +45,7 @@ export function useEntity(apiPath, id) {
 export function useUsers() {
   const [users, setUsers] = useState([]);
   useEffect(() => {
-    get('/users')
+    cachedGet('/users')
       .then((d) => setUsers(d && d.items ? d.items : []))
       .catch(() => {});
   }, []);
@@ -57,7 +57,7 @@ export function useContactTypes() {
   // shaped as {value,label} options for selects.
   const [types, setTypes] = useState([]);
   useEffect(() => {
-    get('/options/contact-types')
+    cachedGet('/options/contact-types')
       .then((d) => setTypes((Array.isArray(d) ? d : []).map((v) => ({ value: v, label: v }))))
       .catch(() => {});
   }, []);
@@ -67,7 +67,7 @@ export function useContactTypes() {
 export function usePipelines() {
   const [pipelines, setPipelines] = useState([]);
   useEffect(() => {
-    get('/pipelines')
+    cachedGet('/pipelines')
       .then((d) => setPipelines(Array.isArray(d) ? d : []))
       .catch(() => {});
   }, []);

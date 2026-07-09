@@ -27,19 +27,24 @@ export default function GlobalSearch() {
       return;
     }
     setLoading(true);
+    let on = true; // a slower earlier query must not overwrite a newer one
     const t = setTimeout(async () => {
       try {
         const res = await Promise.all(
           SECTIONS.map((s) => get(s.api, { q: term, page: 1, page_size: 5 }).catch(() => ({ items: [] })))
         );
+        if (!on) return;
         setResults(
           SECTIONS.map((s, i) => ({ ...s, items: res[i]?.items || [] })).filter((s) => s.items.length > 0)
         );
       } finally {
-        setLoading(false);
+        if (on) setLoading(false);
       }
     }, 300);
-    return () => clearTimeout(t);
+    return () => {
+      on = false;
+      clearTimeout(t);
+    };
   }, [q]);
 
   useEffect(() => {
