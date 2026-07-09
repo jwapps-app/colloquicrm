@@ -1697,6 +1697,18 @@ th.col-check {
   justify-content: flex-end;
 }
 
+.google-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+/* Push Disconnect to the far end, away from the primary actions. */
+.google-actions .google-disconnect {
+  margin-left: auto;
+}
+
 .cal-event .cal-link {
   margin-left: 6px;
   text-decoration: none;

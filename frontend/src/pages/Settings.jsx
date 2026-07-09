@@ -875,20 +875,14 @@ function GoogleSection() {
   async function syncNow() {
     setBusy(true);
     try {
+      // One button does it all: pull email/calendar history and rebuild
+      // interaction counts. Both run in the background.
       await post('/integrations/google/sync');
-      toast.success('Sync started — it runs in the background and can take a while on first run');
+      if (user?.is_admin) {
+        await post('/integrations/google/recompute-metrics').catch(() => {});
+      }
+      toast.success('Sync started — email history and interaction counts update in the background');
       setVersion((v) => v + 1);
-    } catch (e) {
-      toast.error(e.message);
-    }
-    setBusy(false);
-  }
-
-  async function recomputeMetrics() {
-    setBusy(true);
-    try {
-      await post('/integrations/google/recompute-metrics');
-      toast.success('Recomputing in the background — counts fill in over the next few minutes');
     } catch (e) {
       toast.error(e.message);
     }
@@ -1017,26 +1011,14 @@ function GoogleSection() {
                 </p>
               )}
               {status.me.sync_error && <p className="form-error">Sync error: {status.me.sync_error}</p>}
-              <div className="form-actions">
-                <button className="btn btn-small" onClick={syncNow} disabled={busy}>
-                  Sync now
+              <div className="google-actions">
+                <button className="btn btn-small btn-primary" onClick={syncNow} disabled={busy}>
+                  {busy ? 'Working…' : 'Sync now'}
                 </button>
-                <a className="btn btn-small" href="/import?source=google">
+                <a className="btn btn-small btn-ghost" href="/import?source=google">
                   Import contacts
                 </a>
-                {user?.is_admin && (
-                  <button
-                    className="btn btn-small"
-                    onClick={recomputeMetrics}
-                    disabled={busy}
-                    title="Rebuild every person's interaction count and last-contacted date from stored emails and calls"
-                  >
-                    Recompute metrics
-                  </button>
-                )}
-              </div>
-              <div className="disconnect-row">
-                <button className="btn btn-small btn-danger" onClick={disconnect}>
+                <button className="btn btn-small btn-danger-ghost google-disconnect" onClick={disconnect}>
                   Disconnect
                 </button>
               </div>
