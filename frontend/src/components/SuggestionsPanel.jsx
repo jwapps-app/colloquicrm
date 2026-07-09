@@ -51,7 +51,7 @@ export default function SuggestionsPanel({ onAdded }) {
   }
 
   async function add(s) {
-    const addType = types[s.id] || 'Personal';
+    const addType = types[s.id] || 'Uncategorized';
     setBusyId(s.id);
     try {
       await post(`/contact-suggestions/${s.id}/add`, { contact_type: addType });
@@ -106,11 +106,11 @@ export default function SuggestionsPanel({ onAdded }) {
               <div className="suggestion-actions">
                 <select
                   className="suggestion-type-select"
-                  value={types[s.id] || 'Personal'}
+                  value={types[s.id] || 'Uncategorized'}
                   onChange={(e) => setTypes((t) => ({ ...t, [s.id]: e.target.value }))}
                   disabled={busyId === s.id}
                 >
-                  {(contactTypes.length ? contactTypes : [{ value: 'Personal', label: 'Personal' }]).map(
+                  {(contactTypes.length ? contactTypes : [{ value: 'Uncategorized', label: 'Uncategorized' }]).map(
                     (t) => (
                       <option key={t.value} value={t.value}>
                         {t.label}

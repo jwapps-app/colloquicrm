@@ -86,7 +86,7 @@ async def add_suggestion(
     """Turn a suggestion into a real Person and mark it handled."""
     s = await _get_pending(db, user, sug_id)
     first, last = _split_name(s.display_name, s.email)
-    contact_type = (body.contact_type if body and body.contact_type else "Personal")
+    contact_type = (body.contact_type if body and body.contact_type else "Uncategorized")
     person = Person(
         org_id=user.org_id,
         first_name=first,
