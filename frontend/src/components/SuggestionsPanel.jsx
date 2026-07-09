@@ -5,7 +5,7 @@ import { useToast } from './Toast';
 
 /**
  * Contact suggestions mined from Gmail: frequent correspondents who aren't in
- * the CRM yet. Add one (creates a Person, typed by the header selector) or
+ * the CRM yet. Add one (creates a Person, typed by the row's selector) or
  * Ignore it (never resurfaces). Collapsed by default — just the count.
  */
 export default function SuggestionsPanel({ onAdded }) {
@@ -15,7 +15,7 @@ export default function SuggestionsPanel({ onAdded }) {
   const [collapsed, setCollapsed] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [busyId, setBusyId] = useState(null);
-  const [addType, setAddType] = useState('Personal');
+  const [types, setTypes] = useState({});
   const mounted = useRef(true);
 
   async function load() {
@@ -51,6 +51,7 @@ export default function SuggestionsPanel({ onAdded }) {
   }
 
   async function add(s) {
+    const addType = types[s.id] || 'Personal';
     setBusyId(s.id);
     try {
       await post(`/contact-suggestions/${s.id}/add`, { contact_type: addType });
@@ -86,20 +87,6 @@ export default function SuggestionsPanel({ onAdded }) {
           </strong>
         </button>
         <div className="suggestions-head-actions">
-          {!collapsed && (
-            <label className="suggestions-type">
-              Add as
-              <select value={addType} onChange={(e) => setAddType(e.target.value)}>
-                {(contactTypes.length ? contactTypes : [{ value: 'Personal', label: 'Personal' }]).map(
-                  (t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  )
-                )}
-              </select>
-            </label>
-          )}
           <button className="btn btn-small" onClick={scan} disabled={scanning}>
             {scanning ? 'Scanning…' : 'Rescan email'}
           </button>
@@ -117,6 +104,20 @@ export default function SuggestionsPanel({ onAdded }) {
                 {s.message_count} message{s.message_count === 1 ? '' : 's'}
               </span>
               <div className="suggestion-actions">
+                <select
+                  className="suggestion-type-select"
+                  value={types[s.id] || 'Personal'}
+                  onChange={(e) => setTypes((t) => ({ ...t, [s.id]: e.target.value }))}
+                  disabled={busyId === s.id}
+                >
+                  {(contactTypes.length ? contactTypes : [{ value: 'Personal', label: 'Personal' }]).map(
+                    (t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    )
+                  )}
+                </select>
                 <button className="btn btn-small btn-primary" onClick={() => add(s)} disabled={busyId === s.id}>
                   Add
                 </button>

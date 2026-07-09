@@ -1903,16 +1903,10 @@ th.col-check {
   color: var(--accent);
   font-size: 12px;
 }
-.suggestions-type {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.suggestions-type select {
+.suggestion-type-select {
   font-size: 13px;
   padding: 3px 6px;
+  max-width: 140px;
 }
 .suggestions-list {
   margin-top: 10px;
