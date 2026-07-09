@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Backfill searches People's addresses by default. Leads too can mean tens
     # of thousands of extra Gmail queries — opt in deliberately.
     gmail_backfill_leads: bool = False
+    # Store each synced email's full body at sync time, so the CRM is a true
+    # archive that survives deletion in Gmail. Off = bodies fetched lazily on
+    # first view only (lighter storage, not a permanent record).
+    gmail_archive_bodies: bool = True
 
     @property
     def cors_origins(self) -> list[str]:

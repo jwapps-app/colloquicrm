@@ -228,7 +228,7 @@ async def diagnose_address(
         contact_map = await g._crm_email_map(db, user.org_id)
         samples = []
         for gid in ids[:5]:
-            item = await g._fetch_message_meta(access, gid)
+            item = await g._fetch_message(access, gid, full=False)
             if item is None:
                 continue
             parsed = g._parse_message(item, (account.email or "").lower().strip())

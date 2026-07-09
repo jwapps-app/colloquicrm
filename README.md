@@ -111,6 +111,7 @@ file already sets the required ones.
 | `STATIC_DIR` | auto-detect | where the built frontend lives (baked into the image) |
 | `GMAIL_BACKFILL_DAYS` | `0` | `0` = all history with known contacts; set a day count to bound it |
 | `GMAIL_BACKFILL_LEADS` | `false` | backfill searches People only unless enabled — leads can mean thousands of extra Gmail queries |
+| `GMAIL_ARCHIVE_BODIES` | `true` | store each synced email's full body so the CRM is a permanent archive; `false` fetches bodies lazily on first view only |
 | `RINGCENTRAL_BACKFILL_DAYS` | `365` | call/SMS history window |
 
 ### Upgrades

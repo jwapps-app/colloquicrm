@@ -435,15 +435,24 @@ def _parse_message(item: dict, owner_email: str) -> dict | None:
     }
 
 
-async def _fetch_message_meta(access: str, gmail_id: str) -> dict | None:
+# A single Gmail messages.get costs the same quota (5 units) at format=full as
+# at format=metadata, so when archiving bodies we fetch full once and get the
+# headers AND body from the one call — no extra API cost or rate-limit pressure.
+MAX_BODY_CHARS = 1_000_000  # guard against a pathological newsletter row
+
+
+async def _fetch_message(access: str, gmail_id: str, full: bool) -> dict | None:
+    params = (
+        {"format": "full"}
+        if full
+        else {
+            "format": "metadata",
+            "metadataHeaders": ["From", "To", "Cc", "Subject", "Message-ID"],
+        }
+    )
     try:
         return await _get_json(
-            f"{settings.google_gmail_base}/users/me/messages/{gmail_id}",
-            access,
-            {
-                "format": "metadata",
-                "metadataHeaders": ["From", "To", "Cc", "Subject", "Message-ID"],
-            },
+            f"{settings.google_gmail_base}/users/me/messages/{gmail_id}", access, params
         )
     except GoogleError as exc:
         if "(404)" in str(exc):
@@ -469,6 +478,7 @@ async def _store_messages(
     """Fetch metadata for unseen ids, keep only CRM-matching mail.
     Returns (stored_count, matched_person_ids)."""
     owner_email = normalize_email(account.email)
+    archive = settings.gmail_archive_bodies
     stored = 0
     matched_people: set[uuid.UUID] = set()
 
@@ -479,7 +489,7 @@ async def _store_messages(
     CHUNK = 10
     for i in range(0, len(unseen), CHUNK):
         chunk = unseen[i : i + CHUNK]
-        items = await asyncio.gather(*[_fetch_message_meta(access, g) for g in chunk])
+        items = await asyncio.gather(*[_fetch_message(access, g, archive) for g in chunk])
         for item in items:
             if item is None:
                 continue
@@ -515,6 +525,15 @@ async def _store_messages(
                 org_id=account.org_id, owner_user_id=account.user_id,
                 **{**parsed, "rfc_message_id": rfc},
             )
+            if archive:
+                # Body came free with the full fetch — store it now so the CRM
+                # keeps the message even if it's later deleted from Gmail.
+                found: dict = {}
+                _walk_parts(item.get("payload") or {}, found)
+                text, html = found.get("text"), found.get("html")
+                msg.body_text = text[:MAX_BODY_CHARS] if text else None
+                msg.body_html = html[:MAX_BODY_CHARS] if html else None
+                msg.body_fetched_at = utcnow()
             db.add(msg)
             await db.flush()
             seen_emails: set[str] = set()
