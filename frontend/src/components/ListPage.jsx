@@ -29,13 +29,23 @@ export default function ListPage({
   const nav = useNavigate();
   const toast = useToast();
 
+  // The sort you choose becomes this list's default (per device).
+  const prefsKey = `crm_list:${entityType}`;
+  const prefs = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(prefsKey)) || {};
+    } catch {
+      return {};
+    }
+  })();
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState(defaultSort);
-  const [order, setOrder] = useState(defaultOrder);
+  const [sort, setSort] = useState(prefs.sort || defaultSort);
+  const [order, setOrder] = useState(prefs.order || defaultOrder);
   const [filters, setFilters] = useState({});
   const [tags, setTags] = useState([]);
   const [users, setUsers] = useState([]);
@@ -83,6 +93,15 @@ export default function ListPage({
     setSelected(new Set());
     setAllMatching(false);
   }, [apiPath, q, page, sort, order, filters]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(prefsKey, JSON.stringify({ sort, order }));
+    } catch {
+      // storage unavailable — sorting still works, just doesn't persist
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefsKey, sort, order]);
 
   // Filter dropdown sources + saved filters.
   useEffect(() => {

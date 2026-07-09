@@ -178,6 +178,16 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
     return {"status": "started"}
 
 
+@router.post("/recompute-metrics", status_code=202)
+async def recompute_metrics(admin: User = Depends(require_admin)):
+    """Rebuild every person's interaction count and last-contacted date from
+    stored emails and calls, in the background."""
+    import asyncio
+
+    asyncio.create_task(g.recompute_all_person_metrics(admin.org_id))
+    return {"status": "started"}
+
+
 @router.get("/diagnose")
 async def diagnose_address(
     email: str,

@@ -648,7 +648,10 @@ async def sync_gmail(
                     return stored_total
                 raise
             stored_total += stored
-            matched_people |= people
+            # Metrics update INSIDE the checkpoint — a rate-limit resume or
+            # restart must never leave stored mail uncounted.
+            if people:
+                await _update_person_aggregates(db, account.org_id, people)
             cursor += len(chunk)
             account.gmail_backfill_cursor = cursor
             account.sync_error = None
@@ -725,6 +728,24 @@ async def run_sync_pass() -> None:
                 account.sync_error = str(exc)[:500]
                 log.warning("Google sync failed for %s: %s", account.email, exc)
                 await db.commit()
+
+
+async def recompute_all_person_metrics(org_id: uuid.UUID) -> None:
+    """Rebuild interaction counts / last-contacted for every person in the
+    org from stored emails and phone events. Repair tool for data synced
+    before metrics were tracked per checkpoint."""
+    from app.models import Person
+    from app.services.interactions import update_person_aggregates
+
+    async with SessionLocal() as db:
+        ids = [
+            pid
+            for (pid,) in await db.execute(select(Person.id).where(Person.org_id == org_id))
+        ]
+        for i in range(0, len(ids), 200):
+            await update_person_aggregates(db, org_id, set(ids[i : i + 200]))
+            await db.commit()
+        log.info("recomputed interaction metrics for %s people", len(ids))
 
 
 async def sync_account_background(user_id: uuid.UUID, force_backfill: bool = False) -> None:

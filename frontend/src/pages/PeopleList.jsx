@@ -36,8 +36,8 @@ export default function PeopleList() {
       ]}
       createFields={createFields}
       createTitle="Add person"
-      defaultSort="last_name"
-      defaultOrder="asc"
+      defaultSort="last_contacted_at"
+      defaultOrder="desc"
     />
   );
 }

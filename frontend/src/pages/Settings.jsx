@@ -884,6 +884,17 @@ function GoogleSection() {
     setBusy(false);
   }
 
+  async function recomputeMetrics() {
+    setBusy(true);
+    try {
+      await post('/integrations/google/recompute-metrics');
+      toast.success('Recomputing in the background — counts fill in over the next few minutes');
+    } catch (e) {
+      toast.error(e.message);
+    }
+    setBusy(false);
+  }
+
   function copyRedirect() {
     navigator.clipboard
       .writeText(status?.redirect_uri || '')
@@ -992,6 +1003,16 @@ function GoogleSection() {
                 <a className="btn btn-small" href="/import?source=google">
                   Import contacts
                 </a>
+                {user?.is_admin && (
+                  <button
+                    className="btn btn-small"
+                    onClick={recomputeMetrics}
+                    disabled={busy}
+                    title="Rebuild every person's interaction count and last-contacted date from stored emails and calls"
+                  >
+                    Recompute metrics
+                  </button>
+                )}
               </div>
               <div className="disconnect-row">
                 <button className="btn btn-small btn-danger" onClick={disconnect}>
