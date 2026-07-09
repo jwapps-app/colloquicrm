@@ -452,7 +452,9 @@ async def _fetch_message(access: str, gmail_id: str, full: bool) -> dict | None:
     )
     try:
         return await _get_json(
-            f"{settings.google_gmail_base}/users/me/messages/{gmail_id}", access, params
+            f"{settings.google_gmail_base}/users/me/messages/{gmail_id}", access, params,
+            # Full bodies can be large — give the fetch room like the search has.
+            timeout=SEARCH_TIMEOUT if full else 20.0,
         )
     except GoogleError as exc:
         if "(404)" in str(exc):
@@ -489,7 +491,22 @@ async def _store_messages(
     CHUNK = 10
     for i in range(0, len(unseen), CHUNK):
         chunk = unseen[i : i + CHUNK]
-        items = await asyncio.gather(*[_fetch_message(access, g, archive) for g in chunk])
+        results = await asyncio.gather(
+            *[_fetch_message(access, g, archive) for g in chunk], return_exceptions=True
+        )
+        items = []
+        for gid, res in zip(chunk, results):
+            if isinstance(res, GoogleError):
+                if _is_rate_limit(res):
+                    raise res  # propagate so the backfill checkpoints and backs off
+                # A single message that won't fetch (usually a timeout on a
+                # large full-body message) must not abort the whole chunk — skip
+                # it; it stays unseen and is retried next pass.
+                log.warning("skipping message %s: %s", gid, res)
+                continue
+            if isinstance(res, BaseException):
+                raise res  # unexpected: don't silently swallow
+            items.append(res)
         for item in items:
             if item is None:
                 continue
