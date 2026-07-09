@@ -130,7 +130,9 @@ async def fetch_own_numbers(access: str) -> list[str]:
 async def _crm_phone_map(db, org_id: uuid.UUID) -> dict[str, tuple[str, uuid.UUID]]:
     out: dict[str, tuple[str, uuid.UUID]] = {}
     rows = await db.execute(
-        select(Person.id, Person.work_phone, Person.mobile_phone).where(Person.org_id == org_id)
+        select(Person.id, Person.work_phone, Person.mobile_phone).where(
+            Person.org_id == org_id, Person.deleted_at.is_(None)
+        )
     )
     for pid, work, mobile in rows:
         for p in (work, mobile):
@@ -138,7 +140,9 @@ async def _crm_phone_map(db, org_id: uuid.UUID) -> dict[str, tuple[str, uuid.UUI
             if n:
                 out[n] = ("person", pid)
     rows = await db.execute(
-        select(Lead.id, Lead.work_phone, Lead.mobile_phone).where(Lead.org_id == org_id)
+        select(Lead.id, Lead.work_phone, Lead.mobile_phone).where(
+            Lead.org_id == org_id, Lead.deleted_at.is_(None)
+        )
     )
     for lid, work, mobile in rows:
         for p in (work, mobile):

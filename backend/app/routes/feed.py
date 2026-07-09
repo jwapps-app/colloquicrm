@@ -49,7 +49,7 @@ async def _org_contact_maps(db: AsyncSession, org_id: uuid.UUID) -> tuple[dict, 
     people = await db.execute(
         select(Person.id, Person.first_name, Person.last_name, Person.work_email,
                Person.personal_email, Person.work_phone, Person.mobile_phone).where(
-            Person.org_id == org_id
+            Person.org_id == org_id, Person.deleted_at.is_(None)
         )
     )
     for pid, first, last, work, personal, wphone, mphone in people:
@@ -64,7 +64,7 @@ async def _org_contact_maps(db: AsyncSession, org_id: uuid.UUID) -> tuple[dict, 
 
     leads = await db.execute(
         select(Lead.id, Lead.first_name, Lead.last_name, Lead.email, Lead.work_phone,
-               Lead.mobile_phone).where(Lead.org_id == org_id)
+               Lead.mobile_phone).where(Lead.org_id == org_id, Lead.deleted_at.is_(None))
     )
     for lid, first, last, email, wphone, mphone in leads:
         label = " ".join(filter(None, [first, last]))

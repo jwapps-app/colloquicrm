@@ -44,10 +44,10 @@ export default function OpportunityDetail() {
   const pipeline = pipelines.find((p) => p.id === opp.pipeline_id);
 
   async function remove() {
-    if (!window.confirm('Delete this opportunity? This cannot be undone.')) return;
+    if (!window.confirm('Move this opportunity to Trash? Recoverable from Settings → Trash for 60 days.')) return;
     try {
       await del(`/opportunities/${id}`);
-      toast.success('Opportunity deleted');
+      toast.success('Opportunity moved to Trash');
       nav('/opportunities');
     } catch (e) {
       toast.error(e.message);

@@ -94,7 +94,7 @@ export default function MergeButton({ apiPath, entityId, label, onMerged }) {
                 Keep <strong>{label}</strong> and merge <strong>{nameOf(pick)}</strong> into it?
               </p>
               <p className="muted">
-                “{nameOf(pick)}” will be deleted after its data moves over. This can't be undone.
+                “{nameOf(pick)}” moves to Trash after its data folds in — recoverable for 60 days.
               </p>
               <div className="form-actions">
                 <button className="btn btn-ghost" onClick={() => setPick(null)} disabled={busy}>

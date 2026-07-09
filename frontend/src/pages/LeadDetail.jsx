@@ -116,10 +116,10 @@ export default function LeadDetail() {
   if (!lead) return <Loading label="Loading lead…" />;
 
   async function remove() {
-    if (!window.confirm('Delete this lead? This cannot be undone.')) return;
+    if (!window.confirm('Move this lead to Trash? Recoverable from Settings → Trash for 60 days.')) return;
     try {
       await del(`/leads/${id}`);
-      toast.success('Lead deleted');
+      toast.success('Lead moved to Trash');
       nav('/leads');
     } catch (e) {
       toast.error(e.message);

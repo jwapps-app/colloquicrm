@@ -80,13 +80,19 @@ def register_crud(
     """Wires list/create/get/patch/delete endpoints for one entity onto a
     router. body_model serves both create and PATCH (exclude_unset)."""
 
+    soft_delete = hasattr(model, "deleted_at")
+
+    def _active(stmt: Select) -> Select:
+        # Trashed records are invisible everywhere except the trash view.
+        return stmt.where(model.deleted_at.is_(None)) if soft_delete else stmt
+
     def base_query(user: User) -> Select:
-        return select(model).where(model.org_id == user.org_id)
+        return _active(select(model).where(model.org_id == user.org_id))
 
     async def get_owned(db: AsyncSession, user: User, item_id: uuid.UUID):
         obj = (
             await db.execute(
-                select(model).where(model.id == item_id, model.org_id == user.org_id)
+                _active(select(model).where(model.id == item_id, model.org_id == user.org_id))
             )
         ).scalar_one_or_none()
         if obj is None:
@@ -305,6 +311,14 @@ def register_crud(
 
         if body.action == "delete":
             for chunk in _chunks(ids):
+                if soft_delete:
+                    # To Trash in bulk — satellites stay attached for restore.
+                    await db.execute(
+                        update(model)
+                        .where(model.org_id == user.org_id, model.id.in_(chunk))
+                        .values(deleted_at=utcnow())
+                    )
+                    continue
                 for sat, type_col, id_col in (
                     (EntityTag, EntityTag.entity_type, EntityTag.entity_id),
                     (CustomFieldValue, CustomFieldValue.entity_type, CustomFieldValue.entity_id),
@@ -441,12 +455,73 @@ def register_crud(
         label = getattr(obj, "name", None) or " ".join(
             filter(None, [getattr(obj, "first_name", None), getattr(obj, "last_name", None)])
         )
-        await cleanup_entity(db, entity_type, obj.id)
-        await db.delete(obj)
+        if soft_delete:
+            # To Trash — recoverable for the retention window. Satellites stay
+            # attached so a restore brings the record back whole.
+            obj.deleted_at = utcnow()
+        else:
+            await cleanup_entity(db, entity_type, obj.id)
+            await db.delete(obj)
         await log_activity(
             db, user.org_id, None, None, f"{entity_type}_deleted", user.id, {"label": label}
         )
         await db.commit()
+
+    if soft_delete:
+
+        @router.get("/trash/list")
+        async def list_trash(
+            user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+        ):
+            rows = (
+                (
+                    await db.execute(
+                        select(model)
+                        .where(model.org_id == user.org_id, model.deleted_at.is_not(None))
+                        .order_by(model.deleted_at.desc())
+                        .limit(500)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            out = []
+            for r in rows:
+                label = getattr(r, "name", None) or " ".join(
+                    filter(None, [getattr(r, "first_name", None), getattr(r, "last_name", None)])
+                )
+                out.append(
+                    {
+                        "id": str(r.id),
+                        "label": label or "(unnamed)",
+                        "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
+                    }
+                )
+            return {"items": out, "entity_type": entity_type}
+
+        @router.post("/{item_id}/restore")
+        async def restore_item(
+            item_id: uuid.UUID,
+            user: User = Depends(get_current_user),
+            db: AsyncSession = Depends(get_db),
+        ):
+            obj = (
+                await db.execute(
+                    select(model).where(
+                        model.id == item_id,
+                        model.org_id == user.org_id,
+                        model.deleted_at.is_not(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if obj is None:
+                raise HTTPException(status_code=404, detail="Not in trash")
+            obj.deleted_at = None
+            if hasattr(obj, "updated_at"):
+                obj.updated_at = utcnow()
+            await log_activity(db, user.org_id, entity_type, obj.id, "restored", user.id)
+            await db.commit()
+            return {"id": str(obj.id), "restored": True}
 
     MERGE_SKIP = {"id", "org_id", "created_at", "updated_at", "interaction_count",
                   "last_contacted_at"}
@@ -535,8 +610,13 @@ def register_crud(
                 .values(**{attr: target.id})
             )
 
-        await cleanup_entity(db, entity_type, source.id)
-        await db.delete(source)
+        if soft_delete:
+            # The merged record goes to Trash (its data already moved to the
+            # survivor), so even a mistaken merge is recoverable.
+            source.deleted_at = utcnow()
+        else:
+            await cleanup_entity(db, entity_type, source.id)
+            await db.delete(source)
         if hasattr(target, "updated_at"):
             target.updated_at = utcnow()
         await log_activity(

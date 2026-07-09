@@ -7,8 +7,96 @@ import { useToast } from '../components/Toast';
 import FormModal from '../components/FormModal';
 import InlineField from '../components/InlineField';
 import { Loading } from '../components/ui';
-import { humanize } from '../format';
+import { fmtDate, humanize } from '../format';
 import { CF_ENTITY_TYPES, CUSTOM_FIELD_TYPES } from '../constants/options';
+
+/* ---------- Trash ---------- */
+
+const TRASH_TYPES = [
+  { api: '/people', label: 'People' },
+  { api: '/leads', label: 'Leads' },
+  { api: '/companies', label: 'Companies' },
+  { api: '/opportunities', label: 'Opportunities' },
+];
+
+function TrashSection() {
+  const toast = useToast();
+  const [groups, setGroups] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+
+  async function load() {
+    const out = {};
+    for (const t of TRASH_TYPES) {
+      try {
+        const d = await get(`${t.api}/trash/list`);
+        if (d.items?.length) out[t.api] = { label: t.label, items: d.items };
+      } catch {
+        // ignore per-type failure
+      }
+    }
+    setGroups(out);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function restore(api, item) {
+    setBusyId(item.id);
+    try {
+      await post(`${api}/${item.id}/restore`);
+      setGroups((g) => {
+        const next = { ...g };
+        const grp = { ...next[api], items: next[api].items.filter((x) => x.id !== item.id) };
+        if (grp.items.length) next[api] = grp;
+        else delete next[api];
+        return next;
+      });
+      toast.success(`Restored ${item.label}`);
+    } catch (e) {
+      toast.error(e.message);
+    }
+    setBusyId(null);
+  }
+
+  const total = groups ? Object.values(groups).reduce((n, g) => n + g.items.length, 0) : 0;
+
+  return (
+    <div className="card settings-card">
+      <h3>Trash</h3>
+      <p className="muted">
+        Deleted records are kept here for 60 days, then permanently removed automatically. There's
+        no manual empty — so anything deleted has the full window to be noticed and restored.
+      </p>
+      {groups === null ? (
+        <Loading small />
+      ) : total === 0 ? (
+        <div className="muted panel-empty">Trash is empty.</div>
+      ) : (
+        Object.entries(groups).map(([api, grp]) => (
+          <div key={api} className="trash-group">
+            <h4 className="panel-title">
+              {grp.label} ({grp.items.length})
+            </h4>
+            {grp.items.map((item) => (
+              <div key={item.id} className="trash-row">
+                <span className="trash-label">{item.label}</span>
+                <span className="muted trash-when">deleted {fmtDate(item.deleted_at)}</span>
+                <button
+                  className="btn btn-small"
+                  onClick={() => restore(api, item)}
+                  disabled={busyId === item.id}
+                >
+                  Restore
+                </button>
+              </div>
+            ))}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
 
 /* ---------- Profile ---------- */
 
@@ -1284,6 +1372,7 @@ export default function Settings() {
     { id: 'fields', label: 'Custom Fields' },
     ...(user?.is_admin ? [{ id: 'users', label: 'Users' }] : []),
     { id: 'integrations', label: 'Integrations' },
+    { id: 'trash', label: 'Trash' },
   ];
 
   return (
@@ -1303,6 +1392,7 @@ export default function Settings() {
       {tab === 'fields' && <CustomFieldsSection />}
       {tab === 'users' && user?.is_admin && <UsersSection />}
       {tab === 'integrations' && <IntegrationsSection />}
+      {tab === 'trash' && <TrashSection />}
     </div>
   );
 }

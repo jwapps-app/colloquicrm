@@ -229,7 +229,7 @@ export default function ListPage({
         ? { ...body, select_all: true }
         : { ...body, ids: [...selected] };
       const res = await post(`${apiPath}/bulk`, payload, allMatching ? listParams : undefined);
-      toast.success(`${res.affected} record${res.affected === 1 ? '' : 's'} ${body.action === 'delete' ? 'deleted' : 'updated'}`);
+      toast.success(`${res.affected} record${res.affected === 1 ? '' : 's'} ${body.action === 'delete' ? 'moved to Trash' : 'updated'}`);
       setSelected(new Set());
       setAllMatching(false);
       setPage(1);
@@ -241,7 +241,7 @@ export default function ListPage({
   }
 
   function bulkDelete() {
-    if (!window.confirm(`Delete ${selectedCount} record${selectedCount === 1 ? '' : 's'}? This can't be undone.`)) return;
+    if (!window.confirm(`Move ${selectedCount} record${selectedCount === 1 ? '' : 's'} to Trash? Recoverable from Settings → Trash for 60 days.`)) return;
     runBulk({ action: 'delete' });
   }
 

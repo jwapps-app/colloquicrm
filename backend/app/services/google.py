@@ -397,14 +397,18 @@ async def _crm_email_map(db, org_id: uuid.UUID) -> dict[str, tuple[str, uuid.UUI
     """Every known contact email in the org -> (entity_type, id)."""
     out: dict[str, tuple[str, uuid.UUID]] = {}
     rows = await db.execute(
-        select(Person.id, Person.work_email, Person.personal_email).where(Person.org_id == org_id)
+        select(Person.id, Person.work_email, Person.personal_email).where(
+            Person.org_id == org_id, Person.deleted_at.is_(None)
+        )
     )
     for pid, work, personal in rows:
         for e in (work, personal):
             if e:
                 out[normalize_email(e)] = ("person", pid)
     rows = await db.execute(
-        select(Lead.id, Lead.email).where(Lead.org_id == org_id, Lead.email.is_not(None))
+        select(Lead.id, Lead.email).where(
+            Lead.org_id == org_id, Lead.email.is_not(None), Lead.deleted_at.is_(None)
+        )
     )
     for lid, e in rows:
         out.setdefault(normalize_email(e), ("lead", lid))

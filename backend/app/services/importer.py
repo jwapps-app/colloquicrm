@@ -550,7 +550,11 @@ async def _resolve_company(
         return ctx.companies[key]
     company = (
         await db.execute(
-            select(Company).where(Company.org_id == org_id, func.lower(Company.name) == key)
+            select(Company).where(
+                Company.org_id == org_id,
+                func.lower(Company.name) == key,
+                Company.deleted_at.is_(None),
+            )
         )
     ).scalars().first()
     if company is None:
@@ -628,6 +632,7 @@ async def _resolve_person(db: AsyncSession, org_id: uuid.UUID, name: str) -> uui
         await db.execute(
             select(Person.id).where(
                 Person.org_id == org_id,
+                Person.deleted_at.is_(None),
                 func.lower(
                     func.coalesce(Person.first_name, "") + " " + func.coalesce(Person.last_name, "")
                 )

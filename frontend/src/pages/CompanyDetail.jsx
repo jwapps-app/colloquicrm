@@ -48,10 +48,10 @@ export default function CompanyDetail() {
   if (!company) return <Loading label="Loading company…" />;
 
   async function remove() {
-    if (!window.confirm('Delete this company? This cannot be undone.')) return;
+    if (!window.confirm('Move this company to Trash? Recoverable from Settings → Trash for 60 days.')) return;
     try {
       await del(`/companies/${id}`);
-      toast.success('Company deleted');
+      toast.success('Company moved to Trash');
       nav('/companies');
     } catch (e) {
       toast.error(e.message);

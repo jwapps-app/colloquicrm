@@ -32,6 +32,7 @@ from app.routes import (
 )
 from app.services.colloqui import reminder_loop
 from app.services.google import sync_loop as google_sync_loop
+from app.services.maintenance import purge_loop
 from app.services.ringcentral import sync_loop as ringcentral_sync_loop
 
 DEFAULT_PIPELINES = [
@@ -83,6 +84,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(reminder_loop()),
         asyncio.create_task(google_sync_loop()),
         asyncio.create_task(ringcentral_sync_loop()),
+        asyncio.create_task(purge_loop()),
     ]
     yield
     for task in background:

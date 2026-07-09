@@ -1921,6 +1921,27 @@ th.col-check {
   flex-shrink: 0;
 }
 
+/* Trash view */
+.trash-group {
+  margin-top: 12px;
+}
+.trash-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+}
+.trash-label {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+}
+.trash-when {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* Feed enhancements */
 .feed-related {
   margin-left: 8px;

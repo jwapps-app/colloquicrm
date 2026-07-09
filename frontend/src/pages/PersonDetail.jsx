@@ -125,10 +125,10 @@ export default function PersonDetail() {
   if (!person) return <Loading label="Loading person…" />;
 
   async function remove() {
-    if (!window.confirm('Delete this person? This cannot be undone.')) return;
+    if (!window.confirm('Move this person to Trash? Recoverable from Settings → Trash for 60 days.')) return;
     try {
       await del(`/people/${id}`);
-      toast.success('Person deleted');
+      toast.success('Person moved to Trash');
       nav('/people');
     } catch (e) {
       toast.error(e.message);
