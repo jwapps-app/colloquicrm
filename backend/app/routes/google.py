@@ -256,6 +256,49 @@ async def test_connection(admin: User = Depends(require_admin), db: AsyncSession
     return out
 
 
+@router.get("/diagnose-backfill")
+async def diagnose_backfill(admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    """Run the exact backfill step for the current cursor chunk — the search
+    and the dedup query — synchronously, right now, and report what happens.
+    Reproduces the failing path live without waiting on the background loop."""
+    import time
+
+    account = await _account(db, admin.id)
+    cfg = await _cfg(db, admin.org_id)
+    if account is None or cfg is None:
+        raise HTTPException(status_code=400, detail="Google is not connected")
+
+    out: dict = {"cursor": account.gmail_backfill_cursor, "done": bool(account.gmail_backfill_done)}
+    try:
+        access = await g.ensure_access_token(db, cfg, account)
+        contact_map = await g._crm_email_map(db, admin.org_id)
+        addresses = g._backfill_addresses(contact_map)
+        out["total_addresses"] = len(addresses)
+        cursor = account.gmail_backfill_cursor or 0
+        chunk = addresses[cursor : cursor + g.BACKFILL_ADDRESSES_PER_CHECKPOINT]
+        out["chunk_size"] = len(chunk)
+        out["sample_addresses"] = chunk[:5]
+
+        t0 = time.monotonic()
+        ids = await g._search_contact_mail(access, chunk)
+        out["search_ms"] = round((time.monotonic() - t0) * 1000)
+        out["search_hits"] = len(ids)
+
+        t0 = time.monotonic()
+        known = await g._known_gmail_ids(db, account.user_id, ids)
+        out["dedup_ms"] = round((time.monotonic() - t0) * 1000)
+        out["already_stored"] = len(known)
+        out["unseen"] = len(ids) - len(known)
+        out["step_result"] = "search + dedup OK on current code"
+    except Exception as exc:
+        import traceback
+
+        out["error_type"] = type(exc).__name__
+        out["error"] = str(exc)[:400]
+        out["traceback_tail"] = traceback.format_exc()[-600:]
+    return out
+
+
 @router.post("/recompute-metrics", status_code=202)
 async def recompute_metrics(admin: User = Depends(require_admin)):
     """Rebuild every person's interaction count and last-contacted date from
