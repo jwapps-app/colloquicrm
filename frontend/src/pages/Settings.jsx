@@ -7,7 +7,7 @@ import { useToast } from '../components/Toast';
 import FormModal from '../components/FormModal';
 import InlineField from '../components/InlineField';
 import { Loading } from '../components/ui';
-import { fmtDate, humanize } from '../format';
+import { fmtDate } from '../format';
 import { CF_ENTITY_TYPES, CUSTOM_FIELD_TYPES } from '../constants/options';
 
 /* ---------- Trash ---------- */

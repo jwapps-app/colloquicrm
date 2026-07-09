@@ -24,7 +24,6 @@ from app.models import Lead, Person, PhoneEvent, RingCentralIntegration, utcnow
 log = logging.getLogger("ringcentral")
 
 SYNC_INTERVAL_SECONDS = 600
-BACKFILL_DAYS_DEFAULT = 0  # 0 = as far back as RingCentral retains
 
 
 class RingCentralError(Exception):

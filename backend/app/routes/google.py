@@ -511,8 +511,6 @@ async def search_emails(
 ):
     """Full-text search across every synced email — subject, snippet, sender,
     and archived body — newest first."""
-    from sqlalchemy import or_
-
     from app.routes.feed import _org_contact_maps
 
     term = (q or "").strip()
