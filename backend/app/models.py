@@ -376,6 +376,24 @@ class CalendarEventAttendee(Base):
     display_name: Mapped[str | None] = mapped_column(String(255))
 
 
+class ContactSuggestion(Base):
+    """A frequent email correspondent who isn't a CRM contact yet — surfaced
+    for one-click Add or a persistent Ignore."""
+
+    __tablename__ = "contact_suggestions"
+    __table_args__ = (UniqueConstraint("org_id", "email"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # pending|ignored|added
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Note(Base):
     __tablename__ = "notes"
     __table_args__ = (Index("ix_notes_entity", "entity_type", "entity_id"),)

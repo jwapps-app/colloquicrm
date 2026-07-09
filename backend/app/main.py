@@ -26,6 +26,7 @@ from app.routes import (
     opportunities,
     people,
     pipelines,
+    suggestions,
     tasks,
     users,
 )
@@ -153,6 +154,9 @@ app.include_router(meta.options_router, prefix=f"{API}/options", tags=["options"
 app.include_router(meta.custom_fields_router, prefix=f"{API}/custom-fields", tags=["custom-fields"])
 app.include_router(meta.saved_filters_router, prefix=f"{API}/saved-filters", tags=["saved-filters"])
 app.include_router(imports.router, prefix=f"{API}/imports", tags=["imports"])
+app.include_router(
+    suggestions.router, prefix=f"{API}/contact-suggestions", tags=["suggestions"]
+)
 app.include_router(
     colloqui_routes.router, prefix=f"{API}/integrations/colloqui", tags=["integrations"]
 )

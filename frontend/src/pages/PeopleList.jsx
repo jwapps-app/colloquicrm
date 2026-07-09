@@ -1,4 +1,5 @@
 import ListPage from '../components/ListPage';
+import SuggestionsPanel from '../components/SuggestionsPanel';
 import { useContactTypes } from '../hooks';
 import { fmtDate, fullName, humanize } from '../format';
 
@@ -35,6 +36,7 @@ export default function PeopleList() {
       entityType="person"
       apiPath="/people"
       route="/people"
+      banner={<SuggestionsPanel />}
       columns={columns}
       filterDefs={[
         { key: 'contact_type', label: 'Contact type', options: contactTypes },

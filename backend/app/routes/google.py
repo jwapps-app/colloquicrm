@@ -309,6 +309,18 @@ async def recompute_metrics(admin: User = Depends(require_admin)):
     return {"status": "started"}
 
 
+@router.post("/scan-suggestions", status_code=202)
+async def scan_suggestions(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Scan recent mail for frequent correspondents not yet in the CRM."""
+    import asyncio
+
+    account = await _account(db, user.id)
+    if account is None or not g.has_gmail_scope(account):
+        raise HTTPException(status_code=400, detail="Connect Google with email access first")
+    asyncio.create_task(g.scan_contact_suggestions(user.id))
+    return {"status": "started"}
+
+
 @router.get("/diagnose")
 async def diagnose_address(
     email: str,

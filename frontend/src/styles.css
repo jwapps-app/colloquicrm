@@ -1870,6 +1870,57 @@ th.col-check {
   margin: 2px 0 4px;
 }
 
+/* Contact suggestions banner */
+.suggestions {
+  margin-bottom: 14px;
+  border-left: 3px solid var(--accent);
+}
+.suggestions-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.suggestions-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.suggestions-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+}
+.suggestion-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.suggestion-who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.suggestion-name {
+  font-weight: 600;
+}
+.suggestion-email {
+  font-size: 12px;
+}
+.suggestion-count {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.suggestion-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 /* Feed enhancements */
 .feed-related {
   margin-left: 8px;

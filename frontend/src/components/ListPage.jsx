@@ -26,6 +26,7 @@ export default function ListPage({
   defaultOrder = 'desc',
   headerExtra,
   extraParams = {},
+  banner,
 }) {
   const nav = useNavigate();
   const toast = useToast();
@@ -278,6 +279,7 @@ export default function ListPage({
 
   return (
     <div className="page">
+      {banner}
       <div className="page-head">
         <h1>{title}</h1>
         <div className="page-head-actions">

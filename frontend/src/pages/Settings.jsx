@@ -941,6 +941,17 @@ function GoogleSection() {
     setBusy(false);
   }
 
+  async function scanSuggestions() {
+    setBusy(true);
+    try {
+      await post('/integrations/google/scan-suggestions');
+      toast.success('Scanning your email — new-contact suggestions appear on the People page shortly');
+    } catch (e) {
+      toast.error(e.message);
+    }
+    setBusy(false);
+  }
+
   function copyRedirect() {
     navigator.clipboard
       .writeText(status?.redirect_uri || '')
@@ -1070,6 +1081,9 @@ function GoogleSection() {
                 <a className="btn btn-small btn-ghost" href="/import?source=google">
                   Import contacts
                 </a>
+                <button className="btn btn-small btn-ghost" onClick={scanSuggestions} disabled={busy}>
+                  Scan for new contacts
+                </button>
                 <button className="btn btn-small btn-danger-ghost google-disconnect" onClick={disconnect}>
                   Disconnect
                 </button>

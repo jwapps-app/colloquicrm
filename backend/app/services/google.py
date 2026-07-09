@@ -30,6 +30,7 @@ from app.db import SessionLocal
 from app.models import (
     CalendarEvent,
     CalendarEventAttendee,
+    ContactSuggestion,
     EmailMessage,
     EmailParticipant,
     GoogleAccount,
@@ -872,6 +873,106 @@ async def run_sync_pass() -> None:
                 # leaves a stale status that looks like nothing changed.
                 log.warning("Google sync failed for %s: %s", account.email, exc)
                 await _record_sync_error(db, user_id, exc)
+
+
+# How many recent messages to scan per mailbox folder when suggesting contacts.
+SUGGESTION_SCAN_LIMIT = 400
+# Addresses that are obviously automated — never worth suggesting as a contact.
+SUGGESTION_BLOCKLIST = (
+    "noreply", "no-reply", "donotreply", "do-not-reply", "notifications",
+    "notification", "mailer-daemon", "postmaster", "bounce", "no_reply",
+    "automated", "alerts", "updates@", "news@", "newsletter", "support@",
+)
+
+
+def _looks_automated(email: str) -> bool:
+    e = email.lower()
+    return any(b in e for b in SUGGESTION_BLOCKLIST)
+
+
+async def scan_contact_suggestions(user_id: uuid.UUID) -> None:
+    """Scan recent sent/received mail for frequent correspondents who aren't
+    CRM contacts yet, and upsert them as suggestions. On-demand and bounded."""
+    async with SessionLocal() as db:
+        account = (
+            await db.execute(select(GoogleAccount).where(GoogleAccount.user_id == user_id))
+        ).scalar_one_or_none()
+        if account is None or not has_gmail_scope(account):
+            return
+        cfg = (
+            await db.execute(
+                select(GoogleIntegration).where(GoogleIntegration.org_id == account.org_id)
+            )
+        ).scalar_one_or_none()
+        if cfg is None:
+            return
+        try:
+            access = await ensure_access_token(db, cfg, account)
+            owner_email = normalize_email(account.email)
+            contact_map = await _crm_email_map(db, account.org_id)  # already-known addresses
+            existing = {
+                s.email: s
+                for s in (
+                    await db.execute(
+                        select(ContactSuggestion).where(
+                            ContactSuggestion.org_id == account.org_id
+                        )
+                    )
+                ).scalars()
+            }
+
+            tally: dict[str, dict] = {}
+            for query in ("in:sent", "in:inbox"):
+                ids = await _run_search(
+                    access, f"{query} -in:spam -in:trash", max_ids=SUGGESTION_SCAN_LIMIT
+                )
+                for i in range(0, len(ids), 10):
+                    chunk = ids[i : i + 10]
+                    items = await asyncio.gather(
+                        *[_fetch_message(access, g, False) for g in chunk],
+                        return_exceptions=True,
+                    )
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        parsed = _parse_message(item, owner_email)
+                        if parsed is None:
+                            continue
+                        sent_at = parsed["sent_at"]
+                        for _kind, email, name in parsed["participants"]:
+                            if not email or email == owner_email or "@" not in email:
+                                continue
+                            if _looks_automated(email):
+                                continue
+                            t = tally.setdefault(email, {"count": 0, "name": None, "last": None})
+                            t["count"] += 1
+                            if name and not t["name"]:
+                                t["name"] = name
+                            if sent_at and (t["last"] is None or sent_at > t["last"]):
+                                t["last"] = sent_at
+
+            for email, t in tally.items():
+                if email in contact_map:  # already a Person/Lead
+                    continue
+                s = existing.get(email)
+                if s is None:
+                    db.add(
+                        ContactSuggestion(
+                            org_id=account.org_id, email=email, display_name=t["name"],
+                            message_count=t["count"], last_seen_at=t["last"], status="pending",
+                        )
+                    )
+                else:
+                    # Keep ignored/added decisions; just refresh the stats.
+                    s.message_count = t["count"]
+                    if t["name"] and not s.display_name:
+                        s.display_name = t["name"]
+                    if t["last"] and (s.last_seen_at is None or t["last"] > s.last_seen_at):
+                        s.last_seen_at = t["last"]
+            await db.commit()
+            log.info("contact-suggestion scan for %s: %s candidates", account.email, len(tally))
+        except GoogleError as exc:
+            log.warning("suggestion scan failed for %s: %s", account.email, exc)
 
 
 async def recompute_all_person_metrics(org_id: uuid.UUID) -> None:
