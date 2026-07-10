@@ -20,7 +20,7 @@ from sqlalchemy import or_, select
 from app.config import settings
 from app.db import SessionLocal
 from app.models import ColloquiIntegration, Task, User, utcnow
-from app.services import apns
+from app.services import push
 
 log = logging.getLogger("colloqui")
 
@@ -254,7 +254,7 @@ def _wants_push(assignee: User | None) -> bool:
 
 
 async def _push_to_assignee(db, assignee: User, task: Task, title: str, kind: str) -> int:
-    return await apns.send_to_user(
+    return await push.send_to_user(
         db,
         assignee.id,
         title,
@@ -388,7 +388,7 @@ async def run_due_pass() -> None:
         )
         for task in due_tasks:
             row = integrations.get(task.org_id)
-            if not is_enabled(row) and not apns.is_configured():
+            if not is_enabled(row) and not push.is_configured():
                 continue  # nowhere to deliver; same skip as before push existed
             try:
                 if await _send_due_reminder(db, row, task):

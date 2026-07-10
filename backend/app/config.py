@@ -45,17 +45,14 @@ class Settings(BaseSettings):
     # archive that survives deletion in Gmail. Off = bodies fetched lazily on
     # first view only (lighter storage, not a permanent record).
     gmail_archive_bodies: bool = True
-    # APNs push for the iOS companion app (token-based auth). All of key id /
-    # team id / key must be set for push to be active; unset = feature dark,
-    # chat DMs keep working. apns_key is the contents of the .p8 file (use
-    # \n escapes for newlines when passing via env).
-    apns_key_id: str = ""
-    apns_team_id: str = ""
-    apns_key: str = ""
+    # Push for the iOS companion app, via the shared push relay — the same
+    # pattern as every other app in the fleet: the relay holds the Apple .p8;
+    # this server holds only a relay key scoped to its bundle id. All three
+    # must be set for push to be active; unset = feature dark, chat DMs keep
+    # working.
+    push_relay_url: str = ""
+    push_relay_api_key: str = ""
     apns_topic: str = "com.jworthington.colloquicrm"
-    # Overridable for tests; defaults are Apple's.
-    apns_production_host: str = "https://api.push.apple.com"
-    apns_sandbox_host: str = "https://api.sandbox.push.apple.com"
 
     @property
     def cors_origins(self) -> list[str]:
