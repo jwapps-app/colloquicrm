@@ -47,12 +47,21 @@ async def send_to_user(
     0 means the user has no (working) devices and the caller may fall back
     to another channel."""
     if not is_configured():
+        # The caller only gets here for a user who CHOSE app push — falling
+        # back silently made a missing env var look like a routing bug.
+        log.warning(
+            "User %s wants app push but PUSH_RELAY_URL/PUSH_RELAY_API_KEY "
+            "are not configured; falling back to chat",
+            user_id,
+        )
         return 0
     tokens = (
         (await db.execute(select(DeviceToken).where(DeviceToken.user_id == user_id)))
         .scalars()
         .all()
     )
+    if not tokens:
+        log.warning("User %s wants app push but has no registered devices", user_id)
     sent = 0
     for t in tokens:
         if await _send_one(db, t, title, body, extra or {}):
