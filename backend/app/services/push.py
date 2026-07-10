@@ -79,6 +79,7 @@ async def _send_one(db, device: DeviceToken, title: str, body: str, extra: dict)
         log.warning("Relay push to %s… failed: %s", device.token[:8], exc)
         return False
     if resp.status_code == 200:
+        log.info("Pushed '%s' to %s… (%s)", title, device.token[:8], device.environment)
         return True
     try:
         detail = str(resp.json().get("detail", ""))

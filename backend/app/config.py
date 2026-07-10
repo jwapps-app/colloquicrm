@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     push_relay_url: str = ""
     push_relay_api_key: str = ""
     apns_topic: str = "com.jworthington.colloquicrm"
+    # When a task has a due time but no explicit reminder, notify this many
+    # minutes BEFORE it's due (a reminder at the due moment is too late, and
+    # nobody wants to enter two datetimes). An explicit reminder_at overrides.
+    task_reminder_lead_minutes: int = 15
 
     @property
     def cors_origins(self) -> list[str]:

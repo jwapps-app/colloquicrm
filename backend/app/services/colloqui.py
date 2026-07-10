@@ -13,6 +13,7 @@ CRM action.
 import asyncio
 import logging
 import uuid
+from datetime import timedelta
 
 import httpx
 from sqlalchemy import or_, select
@@ -336,13 +337,13 @@ async def _send_due_reminder(db, row: ColloquiIntegration | None, task: Task) ->
             await db.execute(select(User).where(User.id == task.assignee_id))
         ).scalar_one_or_none()
     if _wants_push(assignee):
-        if await _push_to_assignee(db, assignee, task, "Task due", "task_due"):
+        if await _push_to_assignee(db, assignee, task, "Task reminder", "task_due"):
             return True
         # No working device — fall through to chat so the reminder isn't lost.
     if not is_enabled(row):
         return False
     client = _client_for(row)
-    content = f"⏰ Task due: **{task.name}**{_due_text(task)}\n{_task_link()}"
+    content = f"⏰ Reminder: **{task.name}**{_due_text(task)}\n{_task_link()}"
     if assignee is not None and assignee.colloqui_user_id:
         try:
             dm = await client.open_dm(str(assignee.colloqui_user_id))
@@ -354,22 +355,25 @@ async def _send_due_reminder(db, row: ColloquiIntegration | None, task: Task) ->
             log.warning("DM reminder for task %s failed (%s); posting to #tasks", task.id, exc)
     await client.send_message(
         str(row.tasks_channel_id),
-        f"⏰ {_mention(assignee)} — task due: **{task.name}**\n{_task_link()}",
+        f"⏰ {_mention(assignee)} — reminder: **{task.name}**{_due_text(task)}\n{_task_link()}",
     )
     return True
 
 
 async def run_due_pass() -> None:
-    """One sweep: notify every open task whose reminder/due time has passed
-    and that hasn't been notified yet — APNs push or chat DM per assignee.
-    Runs even when the chat integration is absent, so push-only installs
-    still get reminders."""
+    """One sweep: notify every open task whose reminder time has passed and
+    that hasn't been notified yet — APNs push or chat DM per assignee.
+    An explicit reminder_at fires at that moment; a task with only a due
+    time gets a default reminder task_reminder_lead_minutes BEFORE it's due
+    (a reminder at the due moment is too late). Runs even when the chat
+    integration is absent, so push-only installs still get reminders."""
     async with SessionLocal() as db:
         integrations = {
             r.org_id: r
             for r in (await db.execute(select(ColloquiIntegration))).scalars().all()
         }
         now = utcnow()
+        lead = timedelta(minutes=settings.task_reminder_lead_minutes)
         due_tasks = (
             (
                 await db.execute(
@@ -378,7 +382,7 @@ async def run_due_pass() -> None:
                         Task.due_notified_at.is_(None),
                         or_(
                             Task.reminder_at <= now,
-                            Task.reminder_at.is_(None) & (Task.due_at <= now),
+                            Task.reminder_at.is_(None) & (Task.due_at <= now + lead),
                         ),
                     )
                 )
