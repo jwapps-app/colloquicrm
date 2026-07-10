@@ -16,7 +16,7 @@ import uuid
 from datetime import timedelta
 
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from app.config import settings
 from app.db import SessionLocal
@@ -254,6 +254,23 @@ def _wants_push(assignee: User | None) -> bool:
     return assignee is not None and assignee.notify_channel == "crm_push"
 
 
+async def _attention_count(db, user_id: uuid.UUID) -> int:
+    """Open tasks needing this user's attention now — overdue or inside the
+    default reminder lead. Sent as the app badge with every push."""
+    horizon = utcnow() + timedelta(minutes=settings.task_reminder_lead_minutes)
+    return (
+        await db.execute(
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.assignee_id == user_id,
+                Task.status == "open",
+                Task.due_at <= horizon,
+            )
+        )
+    ).scalar_one()
+
+
 async def _push_to_assignee(db, assignee: User, task: Task, title: str, kind: str) -> int:
     return await push.send_to_user(
         db,
@@ -261,6 +278,7 @@ async def _push_to_assignee(db, assignee: User, task: Task, title: str, kind: st
         title,
         f"{task.name}{_due_text(task)}",
         {"task_id": str(task.id), "kind": kind},
+        badge=await _attention_count(db, assignee.id),
     )
 
 

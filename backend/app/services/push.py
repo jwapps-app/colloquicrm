@@ -41,7 +41,12 @@ def _get_client() -> httpx.AsyncClient:
 
 
 async def send_to_user(
-    db, user_id: uuid.UUID, title: str, body: str, extra: dict | None = None
+    db,
+    user_id: uuid.UUID,
+    title: str,
+    body: str,
+    extra: dict | None = None,
+    badge: int | None = None,
 ) -> int:
     """Push to every registered device of a user. Returns devices reached —
     0 means the user has no (working) devices and the caller may fall back
@@ -64,12 +69,14 @@ async def send_to_user(
         log.warning("User %s wants app push but has no registered devices", user_id)
     sent = 0
     for t in tokens:
-        if await _send_one(db, t, title, body, extra or {}):
+        if await _send_one(db, t, title, body, extra or {}, badge):
             sent += 1
     return sent
 
 
-async def _send_one(db, device: DeviceToken, title: str, body: str, extra: dict) -> bool:
+async def _send_one(
+    db, device: DeviceToken, title: str, body: str, extra: dict, badge: int | None = None
+) -> bool:
     payload = {
         "bundle_id": settings.apns_topic,
         "device_token": device.token,
@@ -78,6 +85,8 @@ async def _send_one(db, device: DeviceToken, title: str, body: str, extra: dict)
         "custom_data": extra,
         "sandbox": device.environment == "sandbox",
     }
+    if badge is not None:
+        payload["badge"] = badge
     try:
         resp = await _get_client().post(
             settings.push_relay_url.rstrip("/") + "/notify",
