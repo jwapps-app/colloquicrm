@@ -59,6 +59,7 @@ def user_out(user: User) -> dict:
         "display_name": user.display_name,
         "is_admin": user.is_admin,
         "totp_enabled": user.totp_enabled,
+        "notify_channel": user.notify_channel,
     }
 
 

@@ -22,6 +22,7 @@ def user_row(u: User) -> dict:
         "is_admin": u.is_admin,
         "is_active": u.is_active,
         "totp_enabled": u.totp_enabled,
+        "notify_channel": u.notify_channel,
     }
 
 
@@ -71,6 +72,10 @@ async def update_me(
     sess, user = session_user
     if body.display_name is not None:
         user.display_name = body.display_name.strip() or user.display_name
+    if body.notify_channel is not None:
+        if body.notify_channel not in ("colloqui_chat", "crm_push"):
+            raise HTTPException(status_code=422, detail="Unknown notification channel")
+        user.notify_channel = body.notify_channel
     if body.new_password:
         if not body.current_password or not verify_password(
             body.current_password, user.password_hash

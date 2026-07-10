@@ -49,6 +49,9 @@ class User(Base):
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     colloqui_user_id: Mapped[uuid.UUID | None] = mapped_column()
     colloqui_username: Mapped[str | None] = mapped_column(String(80))
+    # Where this user's personal task notifications go: a Colloqui chat DM or
+    # an APNs push to the CRM companion app — one channel, never both.
+    notify_channel: Mapped[str] = mapped_column(String(20), default="colloqui_chat")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -62,6 +65,25 @@ class Session(Base):
     totp_attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DeviceToken(Base):
+    """An APNs device registration from the iOS companion app. One row per
+    device; re-registering an existing token re-points it at the current
+    user (the device changed accounts)."""
+
+    __tablename__ = "device_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    platform: Mapped[str] = mapped_column(String(20), default="ios")
+    # "sandbox" for Xcode dev builds, "production" for TestFlight/App Store —
+    # routes the send to the matching APNs host.
+    environment: Mapped[str] = mapped_column(String(20), default="production")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

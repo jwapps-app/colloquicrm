@@ -38,6 +38,13 @@ class MeUpdateIn(BaseModel):
     display_name: str | None = None
     current_password: str | None = None
     new_password: str | None = None
+    notify_channel: str | None = None
+
+
+class DeviceIn(BaseModel):
+    token: str
+    platform: str = "ios"
+    environment: str = "production"
 
 
 class UserAdminUpdateIn(BaseModel):

@@ -20,6 +20,7 @@ from sqlalchemy import or_, select
 from app.config import settings
 from app.db import SessionLocal
 from app.models import ColloquiIntegration, Task, User, utcnow
+from app.services import apns
 
 log = logging.getLogger("colloqui")
 
@@ -248,7 +249,29 @@ def schedule(coro) -> None:
     asyncio.create_task(runner())
 
 
-async def notify_task_event(task_id: uuid.UUID, event: str) -> None:
+def _wants_push(assignee: User | None) -> bool:
+    return assignee is not None and assignee.notify_channel == "crm_push"
+
+
+async def _push_to_assignee(db, assignee: User, task: Task, title: str, kind: str) -> int:
+    return await apns.send_to_user(
+        db,
+        assignee.id,
+        title,
+        f"{task.name}{_due_text(task)}",
+        {"task_id": str(task.id), "kind": kind},
+    )
+
+
+async def notify_task_event(
+    task_id: uuid.UUID,
+    event: str,
+    actor_id: uuid.UUID | None = None,
+    assignee_id: uuid.UUID | None = None,
+) -> None:
+    """assignee_id is the assignee AT EVENT TIME, captured by the caller — the
+    task row is reloaded after a delay, and trusting its current assignee lets
+    a create-then-assign race double-notify."""
     # Runs outside the request's transaction; give the commit a moment to land.
     await asyncio.sleep(1.0)
     async with SessionLocal() as db:
@@ -256,35 +279,75 @@ async def notify_task_event(task_id: uuid.UUID, event: str) -> None:
         if task is None:
             return
         row = await get_integration(db, task.org_id)
-        if not is_enabled(row):
-            return
+        chat_enabled = is_enabled(row)
         assignee = None
-        if task.assignee_id:
+        if assignee_id:
             assignee = (
-                await db.execute(select(User).where(User.id == task.assignee_id))
+                await db.execute(select(User).where(User.id == assignee_id))
             ).scalar_one_or_none()
+        wants_push = _wants_push(assignee)
+
         if event == "created":
-            content = f"📋 New task for {_mention(assignee)}: **{task.name}**{_due_text(task)}\n{_task_link()}"
+            if chat_enabled:
+                # The #tasks post is team visibility and always happens — but a
+                # push-preferring assignee gets a plain name, not an @mention,
+                # so chat doesn't ping them on top of the APNs push.
+                who = assignee.display_name if wants_push else _mention(assignee)
+                content = f"📋 New task for {who}: **{task.name}**{_due_text(task)}\n{_task_link()}"
+                await _client_for(row).send_message(str(row.tasks_channel_id), content)
+            if wants_push and assignee.id != actor_id:
+                await _push_to_assignee(db, assignee, task, "New task assigned", "task_assigned")
+        elif event == "assigned":
+            if assignee is None or assignee.id == actor_id:
+                return
+            if wants_push and await _push_to_assignee(
+                db, assignee, task, "Task assigned to you", "task_assigned"
+            ):
+                return
+            if not chat_enabled:
+                return
+            client = _client_for(row)
+            content = f"📋 Task assigned to you: **{task.name}**{_due_text(task)}\n{_task_link()}"
+            if assignee.colloqui_user_id:
+                try:
+                    dm = await client.open_dm(str(assignee.colloqui_user_id))
+                    await client.send_message(dm["id"], content)
+                    return
+                except ColloquiError as exc:
+                    log.warning("Assignment DM for task %s failed (%s); posting to #tasks", task.id, exc)
+            await client.send_message(
+                str(row.tasks_channel_id),
+                f"📋 Task reassigned to {_mention(assignee)}: **{task.name}**{_due_text(task)}\n{_task_link()}",
+            )
         elif event == "completed":
-            content = f"✅ {_mention(assignee)} — task done: **{task.name}**"
-        else:
-            return
-        await _client_for(row).send_message(str(row.tasks_channel_id), content)
+            if chat_enabled:
+                content = f"✅ {_mention(assignee)} — task done: **{task.name}**"
+                await _client_for(row).send_message(str(row.tasks_channel_id), content)
 
 
-async def _send_due_reminder(db, row: ColloquiIntegration, task: Task) -> None:
+async def _send_due_reminder(db, row: ColloquiIntegration | None, task: Task) -> bool:
+    """Deliver one due reminder over the assignee's chosen channel. Returns
+    whether it was delivered anywhere (False = leave it pending for the next
+    pass, e.g. push-only user whose device hasn't registered yet and no chat
+    to fall back to)."""
     assignee = None
     if task.assignee_id:
         assignee = (
             await db.execute(select(User).where(User.id == task.assignee_id))
         ).scalar_one_or_none()
+    if _wants_push(assignee):
+        if await _push_to_assignee(db, assignee, task, "Task due", "task_due"):
+            return True
+        # No working device — fall through to chat so the reminder isn't lost.
+    if not is_enabled(row):
+        return False
     client = _client_for(row)
     content = f"⏰ Task due: **{task.name}**{_due_text(task)}\n{_task_link()}"
     if assignee is not None and assignee.colloqui_user_id:
         try:
             dm = await client.open_dm(str(assignee.colloqui_user_id))
             await client.send_message(dm["id"], content)
-            return
+            return True
         except ColloquiError as exc:
             # Stale/broken link must not strand the reminder — deliver it
             # where the team can see it instead of retrying forever.
@@ -293,44 +356,47 @@ async def _send_due_reminder(db, row: ColloquiIntegration, task: Task) -> None:
         str(row.tasks_channel_id),
         f"⏰ {_mention(assignee)} — task due: **{task.name}**\n{_task_link()}",
     )
+    return True
 
 
 async def run_due_pass() -> None:
-    """One sweep: DM (or post) a reminder for every open task whose
-    reminder/due time has passed and that hasn't been notified yet."""
+    """One sweep: notify every open task whose reminder/due time has passed
+    and that hasn't been notified yet — APNs push or chat DM per assignee.
+    Runs even when the chat integration is absent, so push-only installs
+    still get reminders."""
     async with SessionLocal() as db:
-        integrations = (
-            (await db.execute(select(ColloquiIntegration))).scalars().all()
-        )
+        integrations = {
+            r.org_id: r
+            for r in (await db.execute(select(ColloquiIntegration))).scalars().all()
+        }
         now = utcnow()
-        for row in integrations:
-            if not is_enabled(row):
-                continue
-            due_tasks = (
-                (
-                    await db.execute(
-                        select(Task).where(
-                            Task.org_id == row.org_id,
-                            Task.status == "open",
-                            Task.due_notified_at.is_(None),
-                            or_(
-                                Task.reminder_at <= now,
-                                Task.reminder_at.is_(None) & (Task.due_at <= now),
-                            ),
-                        )
+        due_tasks = (
+            (
+                await db.execute(
+                    select(Task).where(
+                        Task.status == "open",
+                        Task.due_notified_at.is_(None),
+                        or_(
+                            Task.reminder_at <= now,
+                            Task.reminder_at.is_(None) & (Task.due_at <= now),
+                        ),
                     )
                 )
-                .scalars()
-                .all()
             )
-            for task in due_tasks:
-                try:
-                    await _send_due_reminder(db, row, task)
+            .scalars()
+            .all()
+        )
+        for task in due_tasks:
+            row = integrations.get(task.org_id)
+            if not is_enabled(row) and not apns.is_configured():
+                continue  # nowhere to deliver; same skip as before push existed
+            try:
+                if await _send_due_reminder(db, row, task):
                     task.due_notified_at = utcnow()
                     await db.commit()
-                except ColloquiError as exc:
-                    log.warning("Due reminder for task %s failed: %s", task.id, exc)
-                    await db.rollback()
+            except ColloquiError as exc:
+                log.warning("Due reminder for task %s failed: %s", task.id, exc)
+                await db.rollback()
 
 
 async def reminder_loop() -> None:

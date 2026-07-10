@@ -72,7 +72,8 @@ def register_crud(
     required_any: list[str] | None = None,
     has_extras: bool = True,
     enrich: Enricher | None = None,
-    after_create: Callable | None = None,
+    after_create: Callable | None = None,  # (obj, actor) — post-flush, pre-commit
+    after_update: Callable | None = None,  # (obj, old_values, actor) — old_values = changed fields' prior values
     merge_refs: list[tuple] | None = None,  # (Model, fk attr name) to re-point on merge
     after_merge: Callable | None = None,
     extra_filter: Callable | None = None,  # (request, user, stmt) -> stmt
@@ -408,7 +409,7 @@ def register_crud(
         await apply_extras(db, user, obj, tags, cfs)
         await log_activity(db, user.org_id, entity_type, obj.id, "created", user.id)
         if after_create is not None:
-            after_create(obj)
+            after_create(obj, user)
         result = (await serialize(db, user, [obj]))[0]
         # The client acts on the response immediately (navigate, refetch); the
         # framework's commit lands after the response, which loses that race
@@ -436,6 +437,7 @@ def register_crud(
         data = body.model_dump(exclude_unset=True)
         tags = data.pop("tags", None)
         cfs = data.pop("custom_fields", None)
+        old_values = {key: getattr(obj, key, None) for key in data}
         for key, value in data.items():
             setattr(obj, key, value)
         if hasattr(obj, "updated_at"):
@@ -446,6 +448,8 @@ def register_crud(
                 db, user.org_id, entity_type, obj.id, "updated", user.id,
                 {"fields": sorted(data.keys())},
             )
+        if after_update is not None and data:
+            after_update(obj, old_values, user)
         result = (await serialize(db, user, [obj]))[0]
         await db.commit()
         return result

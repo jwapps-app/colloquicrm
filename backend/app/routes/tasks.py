@@ -24,6 +24,27 @@ async def enrich(db, user, dicts):
         d["created_by_name"] = names.get(d.get("created_by"))
 
 
+def _notify_created(task, actor):
+    colloqui.schedule(
+        colloqui.notify_task_event(
+            task.id, "created", actor_id=actor.id, assignee_id=task.assignee_id
+        )
+    )
+
+
+def _notify_assignment(task, old_values, actor):
+    # Reassignment (not initial creation — that's the "created" event) to
+    # someone other than the person making the change.
+    if "assignee_id" not in old_values:
+        return
+    if task.assignee_id and task.assignee_id != old_values["assignee_id"]:
+        colloqui.schedule(
+            colloqui.notify_task_event(
+                task.id, "assigned", actor_id=actor.id, assignee_id=task.assignee_id
+            )
+        )
+
+
 register_crud(
     router,
     model=Task,
@@ -47,7 +68,8 @@ register_crud(
     required_any=["name"],
     has_extras=False,
     enrich=enrich,
-    after_create=lambda task: colloqui.schedule(colloqui.notify_task_event(task.id, "created")),
+    after_create=_notify_created,
+    after_update=_notify_assignment,
 )
 
 

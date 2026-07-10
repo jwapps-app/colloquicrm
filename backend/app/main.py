@@ -18,6 +18,7 @@ from app.routes import (
     ringcentral as ringcentral_routes,
     colloqui as colloqui_routes,
     companies,
+    devices,
     google as google_routes,
     imports,
     leads,
@@ -143,6 +144,7 @@ async def health():
 API = "/api/v1"
 app.include_router(auth.router, prefix=f"{API}/auth", tags=["auth"])
 app.include_router(users.router, prefix=f"{API}/users", tags=["users"])
+app.include_router(devices.router, prefix=f"{API}/devices", tags=["devices"])
 app.include_router(companies.router, prefix=f"{API}/companies", tags=["companies"])
 app.include_router(people.router, prefix=f"{API}/people", tags=["people"])
 app.include_router(leads.router, prefix=f"{API}/leads", tags=["leads"])
