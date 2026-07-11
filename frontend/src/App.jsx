@@ -18,6 +18,7 @@ import OpportunitiesList from './pages/OpportunitiesList';
 import OpportunityDetail from './pages/OpportunityDetail';
 import TasksPage from './pages/TasksPage';
 import EmailSearch from './pages/EmailSearch';
+import Reports from './pages/Reports';
 import ImportWizard from './pages/ImportWizard';
 import Settings from './pages/Settings';
 
@@ -125,6 +126,7 @@ export default function App() {
               <Route path="/opportunities/:id" element={<OpportunityDetail />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/emails" element={<EmailSearch />} />
+              <Route path="/reports" element={<Reports />} />
               <Route path="/import" element={<ImportWizard />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />

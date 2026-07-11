@@ -27,6 +27,7 @@ from app.routes import (
     opportunities,
     people,
     pipelines,
+    reports,
     suggestions,
     tasks,
     users,
@@ -150,6 +151,7 @@ app.include_router(people.router, prefix=f"{API}/people", tags=["people"])
 app.include_router(leads.router, prefix=f"{API}/leads", tags=["leads"])
 app.include_router(opportunities.router, prefix=f"{API}/opportunities", tags=["opportunities"])
 app.include_router(pipelines.router, prefix=f"{API}/pipelines", tags=["pipelines"])
+app.include_router(reports.router, prefix=f"{API}/reports", tags=["reports"])
 app.include_router(tasks.router, prefix=f"{API}/tasks", tags=["tasks"])
 app.include_router(notes.router, prefix=f"{API}/notes", tags=["notes"])
 app.include_router(activities.router, prefix=f"{API}/activities", tags=["activities"])

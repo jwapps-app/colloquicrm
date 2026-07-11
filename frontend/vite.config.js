@@ -7,7 +7,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8010',
+        // Dev backend; override when the API runs elsewhere (e.g. a harness).
+        target: process.env.CRM_API_PROXY || 'http://localhost:8010',
         changeOrigin: true,
       },
     },
