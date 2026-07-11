@@ -237,6 +237,26 @@ class SavedFilterUpdateIn(BaseModel):
     is_public: bool | None = None
 
 
+class AutomationRuleIn(BaseModel):
+    name: str
+    entity_type: str
+    trigger_type: str
+    trigger_config: dict[str, Any] = {}
+    action_type: str
+    action_config: dict[str, Any] = {}
+    enabled: bool = True
+
+
+class AutomationRuleUpdateIn(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    entity_type: str | None = None
+    trigger_type: str | None = None
+    trigger_config: dict[str, Any] | None = None
+    action_type: str | None = None
+    action_config: dict[str, Any] | None = None
+
+
 class GoogleConfigIn(BaseModel):
     client_id: str
     client_secret: str

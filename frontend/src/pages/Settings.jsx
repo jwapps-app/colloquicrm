@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { del, get, patch, post } from '../api';
 import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
+import AutomationsSection from '../components/AutomationsSection';
 import FormModal from '../components/FormModal';
 import InlineField from '../components/InlineField';
 import { Loading } from '../components/ui';
@@ -1372,6 +1373,7 @@ export default function Settings() {
     { id: 'security', label: 'Security' },
     { id: 'fields', label: 'Custom Fields' },
     ...(user?.is_admin ? [{ id: 'users', label: 'Users' }] : []),
+    ...(user?.is_admin ? [{ id: 'automations', label: 'Automations' }] : []),
     { id: 'integrations', label: 'Integrations' },
     { id: 'trash', label: 'Trash' },
   ];
@@ -1392,6 +1394,7 @@ export default function Settings() {
       {tab === 'security' && <SecuritySection />}
       {tab === 'fields' && <CustomFieldsSection />}
       {tab === 'users' && user?.is_admin && <UsersSection />}
+      {tab === 'automations' && user?.is_admin && <AutomationsSection />}
       {tab === 'integrations' && <IntegrationsSection />}
       {tab === 'trash' && <TrashSection />}
     </div>

@@ -14,6 +14,7 @@ from app.models import Org, Pipeline, Stage
 from app.routes import (
     activities,
     auth,
+    automations,
     feed,
     ringcentral as ringcentral_routes,
     colloqui as colloqui_routes,
@@ -32,6 +33,7 @@ from app.routes import (
     tasks,
     users,
 )
+from app.services.automations import automations_loop
 from app.services.colloqui import reminder_loop
 from app.services.google import sync_loop as google_sync_loop
 from app.services.maintenance import purge_loop
@@ -87,6 +89,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(google_sync_loop()),
         asyncio.create_task(ringcentral_sync_loop()),
         asyncio.create_task(purge_loop()),
+        asyncio.create_task(automations_loop()),
     ]
     yield
     for task in background:
@@ -155,6 +158,7 @@ app.include_router(reports.router, prefix=f"{API}/reports", tags=["reports"])
 app.include_router(tasks.router, prefix=f"{API}/tasks", tags=["tasks"])
 app.include_router(notes.router, prefix=f"{API}/notes", tags=["notes"])
 app.include_router(activities.router, prefix=f"{API}/activities", tags=["activities"])
+app.include_router(automations.router, prefix=f"{API}/automations", tags=["automations"])
 app.include_router(meta.tags_router, prefix=f"{API}/tags", tags=["tags"])
 app.include_router(meta.options_router, prefix=f"{API}/options", tags=["options"])
 app.include_router(meta.custom_fields_router, prefix=f"{API}/custom-fields", tags=["custom-fields"])

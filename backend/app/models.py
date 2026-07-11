@@ -576,6 +576,46 @@ class ImportJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class AutomationRule(Base):
+    """A proactive rule: when <trigger_type> matches a record of entity_type,
+    run <action_type>. The engine sweeps periodically; see
+    services/automations.py for the trigger/action catalog."""
+
+    __tablename__ = "automation_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    entity_type: Mapped[str] = mapped_column(String(30))  # lead|opportunity|person|task
+    trigger_type: Mapped[str] = mapped_column(String(30))
+    trigger_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    action_type: Mapped[str] = mapped_column(String(30))
+    action_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AutomationFire(Base):
+    """One rule execution against one record. The unique constraint is the
+    idempotency guard (a rule fires once per record until re-armed); the rows
+    double as the visible audit log."""
+
+    __tablename__ = "automation_fires"
+    __table_args__ = (UniqueConstraint("rule_id", "entity_type", "entity_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("automation_rules.id", ondelete="CASCADE"), index=True
+    )
+    entity_type: Mapped[str] = mapped_column(String(30))
+    entity_id: Mapped[uuid.UUID] = mapped_column()
+    fired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    detail: Mapped[dict | None] = mapped_column(JSON)
+
+
 class SavedFilter(Base):
     __tablename__ = "saved_filters"
 

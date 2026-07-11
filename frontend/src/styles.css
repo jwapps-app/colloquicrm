@@ -2254,3 +2254,149 @@ th.col-check {
   font-size: 12.5px;
   margin: 10px 0 0;
 }
+
+/* Automations (Settings) */
+.auto-head-actions {
+  display: flex;
+  gap: 8px;
+}
+.auto-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.auto-rule {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.auto-rule-off {
+  background: var(--bg);
+}
+.auto-rule-off .auto-rule-text {
+  opacity: 0.65;
+}
+.auto-rule-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.auto-rule-text {
+  flex: 1;
+  min-width: 0;
+}
+.auto-rule-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.auto-summary {
+  font-size: 13px;
+  margin-top: 2px;
+}
+.auto-fire-count {
+  white-space: nowrap;
+  flex: none;
+}
+.auto-switch {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+  flex: none;
+  cursor: pointer;
+}
+.auto-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+.auto-switch-track {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 10px;
+  transition: background 0.15s;
+  pointer-events: none;
+}
+.auto-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: var(--shadow);
+  transition: transform 0.15s;
+}
+.auto-switch input:checked + .auto-switch-track {
+  background: var(--accent);
+}
+.auto-switch input:checked + .auto-switch-track::after {
+  transform: translateX(14px);
+}
+.auto-fires {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.auto-fire-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+.auto-fire-when {
+  flex: none;
+  width: 150px;
+}
+.auto-fire-label {
+  font-weight: 600;
+  flex: none;
+}
+.auto-fire-detail {
+  min-width: 0;
+}
+.auto-templates {
+  margin-top: 8px;
+}
+.auto-template-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.auto-wizard-step {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px 4px;
+  margin-bottom: 10px;
+}
+.auto-wizard-row {
+  display: flex;
+  gap: 10px;
+}
+.auto-wizard-row .field {
+  flex: 1;
+}
+.auto-days input {
+  max-width: 120px;
+}
+.auto-status-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 4px;
+}
+.auto-hint {
+  font-size: 12.5px;
+  margin: 0 0 8px;
+}
