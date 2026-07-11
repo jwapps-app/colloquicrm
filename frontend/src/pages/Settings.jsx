@@ -4,6 +4,7 @@ import { del, get, patch, post } from '../api';
 import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
 import AutomationsSection from '../components/AutomationsSection';
+import FormsSection from '../components/FormsSection';
 import FormModal from '../components/FormModal';
 import InlineField from '../components/InlineField';
 import { Loading } from '../components/ui';
@@ -1354,7 +1355,9 @@ export default function Settings() {
   const { user } = useAuth();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [tab, setTab] = useState(searchParams.get('google') ? 'integrations' : 'profile');
+  const [tab, setTab] = useState(
+    searchParams.get('tab') || (searchParams.get('google') ? 'integrations' : 'profile')
+  );
 
   useEffect(() => {
     const result = searchParams.get('google');
@@ -1374,6 +1377,7 @@ export default function Settings() {
     { id: 'fields', label: 'Custom Fields' },
     ...(user?.is_admin ? [{ id: 'users', label: 'Users' }] : []),
     ...(user?.is_admin ? [{ id: 'automations', label: 'Automations' }] : []),
+    ...(user?.is_admin ? [{ id: 'forms', label: 'Forms' }] : []),
     { id: 'integrations', label: 'Integrations' },
     { id: 'trash', label: 'Trash' },
   ];
@@ -1395,6 +1399,7 @@ export default function Settings() {
       {tab === 'fields' && <CustomFieldsSection />}
       {tab === 'users' && user?.is_admin && <UsersSection />}
       {tab === 'automations' && user?.is_admin && <AutomationsSection />}
+      {tab === 'forms' && user?.is_admin && <FormsSection />}
       {tab === 'integrations' && <IntegrationsSection />}
       {tab === 'trash' && <TrashSection />}
     </div>

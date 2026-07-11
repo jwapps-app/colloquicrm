@@ -616,6 +616,31 @@ class AutomationFire(Base):
     detail: Mapped[dict | None] = mapped_column(JSON)
 
 
+class LeadForm(Base):
+    """A public lead-capture form: an admin picks the fields, the app serves
+    the form at /f/{slug} with no auth, and submissions create Leads."""
+
+    __tablename__ = "lead_forms"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    # URL-safe handle with a random suffix so slugs can't be guessed from the
+    # form name alone. Immutable after creation — it's a published URL.
+    slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Ordered list of field keys to render; always includes first/last name.
+    fields: Mapped[list] = mapped_column(JSON, default=list)
+    require_email: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Stamped onto created leads' source column; defaults to the form name.
+    source: Mapped[str | None] = mapped_column(String(120))
+    success_message: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    submission_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class SavedFilter(Base):
     __tablename__ = "saved_filters"
 

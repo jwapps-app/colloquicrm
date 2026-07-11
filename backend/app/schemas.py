@@ -257,6 +257,24 @@ class AutomationRuleUpdateIn(BaseModel):
     action_config: dict[str, Any] | None = None
 
 
+class LeadFormIn(BaseModel):
+    name: str
+    fields: list[str] = []
+    require_email: bool = True
+    source: str | None = None
+    success_message: str | None = None
+    enabled: bool = True
+
+
+class LeadFormUpdateIn(BaseModel):
+    name: str | None = None
+    fields: list[str] | None = None
+    require_email: bool | None = None
+    source: str | None = None
+    success_message: str | None = None
+    enabled: bool | None = None
+
+
 class GoogleConfigIn(BaseModel):
     client_id: str
     client_secret: str

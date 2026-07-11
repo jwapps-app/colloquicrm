@@ -20,6 +20,7 @@ from app.routes import (
     colloqui as colloqui_routes,
     companies,
     devices,
+    forms,
     google as google_routes,
     imports,
     leads,
@@ -28,6 +29,7 @@ from app.routes import (
     opportunities,
     people,
     pipelines,
+    public_forms,
     reports,
     suggestions,
     tasks,
@@ -159,6 +161,7 @@ app.include_router(tasks.router, prefix=f"{API}/tasks", tags=["tasks"])
 app.include_router(notes.router, prefix=f"{API}/notes", tags=["notes"])
 app.include_router(activities.router, prefix=f"{API}/activities", tags=["activities"])
 app.include_router(automations.router, prefix=f"{API}/automations", tags=["automations"])
+app.include_router(forms.router, prefix=f"{API}/forms", tags=["forms"])
 app.include_router(meta.tags_router, prefix=f"{API}/tags", tags=["tags"])
 app.include_router(meta.options_router, prefix=f"{API}/options", tags=["options"])
 app.include_router(meta.custom_fields_router, prefix=f"{API}/custom-fields", tags=["custom-fields"])
@@ -181,6 +184,10 @@ app.include_router(feed.router, prefix=f"{API}/feed", tags=["feed"])
 app.include_router(
     ringcentral_routes.router, prefix=f"{API}/integrations/ringcentral", tags=["integrations"]
 )
+# Public lead-capture pages (/f/{slug}) — no auth by construction (the router
+# has no auth dependencies). Must register before the SPA catch-all below so
+# /f/ paths never fall through to index.html.
+app.include_router(public_forms.router, tags=["public-forms"])
 
 # Serve the built frontend when present (single-process deployment). API routes
 # above always win; anything else falls back to the SPA's index.html.
