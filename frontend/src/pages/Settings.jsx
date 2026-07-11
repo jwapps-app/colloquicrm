@@ -170,6 +170,25 @@ function ProfileSection() {
     }
   });
 
+  const [notifyChannel, setNotifyChannel] = useState(user?.notify_channel || 'colloqui_chat');
+
+  async function changeNotifyChannel(value) {
+    const previous = notifyChannel;
+    setNotifyChannel(value);
+    try {
+      await patch('/users/me', { notify_channel: value });
+      setUser({ ...user, notify_channel: value });
+      toast.success(
+        value === 'crm_push'
+          ? 'Task notifications will go to the iOS app'
+          : 'Task notifications will go to Colloqui chat'
+      );
+    } catch (err) {
+      setNotifyChannel(previous);
+      toast.error(err.message);
+    }
+  }
+
   function changeHideSelf(checked) {
     setHideSelf(checked);
     try {
@@ -205,6 +224,16 @@ function ProfileSection() {
             onChange={(e) => changeHideSelf(e.target.checked)}
           />
           <span>Hide my own contact from the People list</span>
+        </label>
+        <label className="field">
+          <span>Send task notifications to</span>
+          <select value={notifyChannel} onChange={(e) => changeNotifyChannel(e.target.value)}>
+            <option value="colloqui_chat">Colloqui chat</option>
+            <option value="crm_push">The iOS app (push)</option>
+          </select>
+          <span className="muted" style={{ fontSize: 12 }}>
+            Reminders and assignments arrive on exactly one channel.
+          </span>
         </label>
         <div className="form-actions">
           <button className="btn btn-primary" type="submit" disabled={busy}>
