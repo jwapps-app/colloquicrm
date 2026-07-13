@@ -11,6 +11,13 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str = "postgresql+asyncpg://app:app@localhost:5432/app"
     secret_key: str = "dev-secret-change-me"
+    # Fernet key (urlsafe base64 of 32 bytes) for encrypting sensitive secret
+    # columns at rest — Google/RingCentral tokens, the Colloqui api_key, TOTP
+    # seeds. Empty = derive deterministically from secret_key (works with no
+    # extra config). Setting this explicitly is recommended in production so
+    # encryption is decoupled from SECRET_KEY rotation. Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    secret_encryption_key: str = ""
     allowed_origins: str = "http://localhost:5173"
     session_ttl_days: int = 30
     # Comma-separated IPs/CIDRs of reverse proxies we trust to set

@@ -16,6 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.crypto import EncryptedString
 from app.db import Base
 
 
@@ -45,7 +46,9 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(120))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    totp_secret: Mapped[str | None] = mapped_column(String(64))
+    # Encrypted at rest; ciphertext of a base32 seed needs far more room than
+    # the raw 32-char seed, hence the widened column.
+    totp_secret: Mapped[str | None] = mapped_column(EncryptedString(255))
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     colloqui_user_id: Mapped[uuid.UUID | None] = mapped_column()
     colloqui_username: Mapped[str | None] = mapped_column(String(80))
@@ -280,7 +283,7 @@ class ColloquiIntegration(Base):
         ForeignKey("orgs.id", ondelete="CASCADE"), primary_key=True
     )
     base_url: Mapped[str] = mapped_column(String(500))
-    api_key: Mapped[str] = mapped_column(String(255))
+    api_key: Mapped[str] = mapped_column(EncryptedString(512))
     space_id: Mapped[uuid.UUID | None] = mapped_column()
     tasks_channel_id: Mapped[uuid.UUID | None] = mapped_column()
     connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -298,7 +301,7 @@ class GoogleIntegration(Base):
         ForeignKey("orgs.id", ondelete="CASCADE"), primary_key=True
     )
     client_id: Mapped[str] = mapped_column(String(255))
-    client_secret: Mapped[str] = mapped_column(String(255))
+    client_secret: Mapped[str] = mapped_column(EncryptedString(512))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -312,8 +315,8 @@ class GoogleAccount(Base):
     )
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
     email: Mapped[str] = mapped_column(String(255))
-    refresh_token: Mapped[str] = mapped_column(String(512))
-    access_token: Mapped[str | None] = mapped_column(String(2048))
+    refresh_token: Mapped[str] = mapped_column(EncryptedString(1024))
+    access_token: Mapped[str | None] = mapped_column(EncryptedString(4096))
     access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     scopes: Mapped[str | None] = mapped_column(String(500))
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -513,9 +516,9 @@ class RingCentralIntegration(Base):
         ForeignKey("orgs.id", ondelete="CASCADE"), primary_key=True
     )
     client_id: Mapped[str] = mapped_column(String(255))
-    client_secret: Mapped[str] = mapped_column(String(255))
-    jwt: Mapped[str] = mapped_column(Text)
-    access_token: Mapped[str | None] = mapped_column(Text)
+    client_secret: Mapped[str] = mapped_column(EncryptedString(512))
+    jwt: Mapped[str] = mapped_column(EncryptedString())
+    access_token: Mapped[str | None] = mapped_column(EncryptedString())
     access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     own_numbers: Mapped[list | None] = mapped_column(JSON)  # E.164 numbers of the account
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
