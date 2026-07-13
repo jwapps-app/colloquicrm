@@ -11,7 +11,7 @@ import TasksPanel from '../components/TasksPanel';
 import CalendarPanel from '../components/CalendarPanel';
 import RelatedPanel from '../components/RelatedPanel';
 import { Empty, Loading } from '../components/ui';
-import { fullName, humanize, money } from '../format';
+import { fullName, humanize, money, safeHref } from '../format';
 import { PERSON_FIELDS } from '../constants/fields';
 
 function PersonOpportunities({ personId }) {
@@ -101,7 +101,7 @@ function SocialFinder({ person, onSave }) {
       {suggestions.map((s) => (
         <div key={s.url} className="social-suggestion">
           <span className="badge badge-muted">{s.network === 'linkedin' ? 'LinkedIn' : 'Facebook'}</span>
-          <a href={s.url} target="_blank" rel="noreferrer" className="social-url">
+          <a href={safeHref(s.url)} target="_blank" rel="noreferrer" className="social-url">
             {s.url.replace(/^https?:\/\/(www\.)?/, '')}
           </a>
           <button className="btn btn-small btn-primary" onClick={() => onSave({ [s.network]: s.url })}>

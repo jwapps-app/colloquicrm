@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { get } from '../api';
-import { fmtDate, fmtDateTime } from '../format';
+import { fmtDate, fmtDateTime, safeHref } from '../format';
 
 /** Google Calendar events matched to this record by attendee email.
  * Renders nothing at all unless the Google integration has events to show. */
@@ -30,7 +30,7 @@ export default function CalendarPanel({ entityType, entityId }) {
             <div>
               <strong>{e.summary || '(no title)'}</strong>
               {e.html_link && (
-                <a href={e.html_link} target="_blank" rel="noreferrer" className="cal-link" title="Open in Google Calendar">
+                <a href={safeHref(e.html_link)} target="_blank" rel="noreferrer" className="cal-link" title="Open in Google Calendar">
                   ↗
                 </a>
               )}

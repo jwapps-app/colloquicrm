@@ -1,3 +1,13 @@
+/** Guard a server- or user-supplied URL before using it as an <a href>.
+ * Returns the trimmed URL only when it uses the http/https scheme, so a
+ * `javascript:` or `data:` URL can never execute in our origin. Returns
+ * undefined otherwise, which leaves the anchor inert (no navigable href). */
+export function safeHref(url) {
+  if (typeof url !== 'string') return undefined;
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : undefined;
+}
+
 export function money(value, currency) {
   if (value === null || value === undefined || value === '') return '—';
   const n = Number(value);
