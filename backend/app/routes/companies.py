@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.models import Company, Opportunity, Person
+from app.models import Company, Opportunity, Person, User
 from app.schemas import CompanyIn
 from app.services.common import display_name_map
 from app.services.crud import register_crud
@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 async def enrich(db, user, dicts):
-    owners = await display_name_map(db, {d.get("owner_id") for d in dicts})
+    owners = await display_name_map(db, {d.get("owner_id") for d in dicts}, user.org_id)
     for d in dicts:
         d["owner_name"] = owners.get(d.get("owner_id"))
 
@@ -31,6 +31,7 @@ register_crud(
     default_sort="name",
     required_any=["name"],
     enrich=enrich,
+    fk_checks={"owner_id": User},
     merge_refs=[(Person, "company_id"), (Opportunity, "company_id")],
     merge_pool=[["work_phone"], ["work_website"]],
 )

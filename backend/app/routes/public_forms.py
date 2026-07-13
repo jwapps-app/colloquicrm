@@ -20,7 +20,9 @@ HTML snippet (Settings -> Forms) that posts here directly.
 import html
 import re
 import time
+import uuid
 from collections import defaultdict
+from datetime import date
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -42,6 +44,11 @@ _SUBMIT_WINDOW_SECONDS = 900
 _SUBMIT_LIMIT = 10
 _submissions: dict[str, list[float]] = defaultdict(list)
 
+# Absolute per-form ceiling: how many accepted submissions one form takes in a
+# single UTC day, regardless of source IP. In-memory like the rate limiter
+# (resets on restart) — a blunt DoS cap, not an audit counter.
+_form_day_counts: dict[uuid.UUID, tuple[date, int]] = {}
+
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -57,6 +64,36 @@ def _rate_limited(request: Request) -> bool:
     if len(_submissions) > 10_000:  # bound memory under address-spraying
         _submissions.clear()
     return False
+
+
+def _body_too_large(request: Request) -> bool:
+    # Reject before request.form() ever reads the stream: a lead form is a
+    # handful of short text fields, so anything over the byte bound is abuse.
+    raw = request.headers.get("content-length")
+    if raw is None:
+        return False
+    try:
+        return int(raw) > settings.form_max_body_bytes
+    except ValueError:
+        return True
+
+
+def _form_cap_reached(form: LeadForm) -> bool:
+    today = utcnow().date()
+    day, count = _form_day_counts.get(form.id, (today, 0))
+    if day != today:
+        count = 0
+    return count >= settings.form_daily_submission_cap
+
+
+def _record_form_submission(form: LeadForm) -> None:
+    today = utcnow().date()
+    day, count = _form_day_counts.get(form.id, (today, 0))
+    if day != today:
+        count = 0
+    if len(_form_day_counts) > 10_000:  # bound memory across many forms
+        _form_day_counts.clear()
+    _form_day_counts[form.id] = (today, count + 1)
 
 
 # ---- rendering ----
@@ -172,11 +209,17 @@ def _not_found_page() -> HTMLResponse:
     return _page("Form not available", body, status_code=404)
 
 
-def _throttled_page(form: LeadForm) -> HTMLResponse:
+def _throttled_page(form: LeadForm, status_code: int = 429) -> HTMLResponse:
     body = f"""<h1>{_esc(form.name)}</h1>
 <p>You've sent quite a few submissions in a short time. Please wait a few
 minutes and try again.</p>"""
-    return _page(form.name, body, status_code=429)
+    return _page(form.name, body, status_code=status_code)
+
+
+def _too_large_page(form: LeadForm) -> HTMLResponse:
+    body = f"""<h1>{_esc(form.name)}</h1>
+<p>That submission was too large. Please shorten your message and try again.</p>"""
+    return _page(form.name, body, status_code=413)
 
 
 async def _lookup(db: AsyncSession, slug: str) -> LeadForm | None:
@@ -205,7 +248,12 @@ async def submit_form(slug: str, request: Request, db: AsyncSession = Depends(ge
     form = await _lookup(db, slug)
     if form is None:
         return _not_found_page()
+    if _body_too_large(request):
+        return _too_large_page(form)
     if _rate_limited(request):
+        return _throttled_page(form)
+    # Absolute daily ceiling for this form, on top of the per-IP limiter.
+    if _form_cap_reached(form):
         return _throttled_page(form)
 
     data = await request.form()
@@ -283,6 +331,7 @@ async def submit_form(slug: str, request: Request, db: AsyncSession = Depends(ge
         )
 
     form.submission_count += 1
+    _record_form_submission(form)
     # Commit before the redirect lands: the visitor (or the admin watching the
     # Leads list) may look immediately.
     await db.commit()

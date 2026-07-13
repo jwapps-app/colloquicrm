@@ -17,6 +17,8 @@ from app.models import (
     EntityTag,
     Note,
     PhoneEvent,
+    Pipeline,
+    Stage,
     Tag,
     Task,
     User,
@@ -78,6 +80,8 @@ def register_crud(
     after_merge: Callable | None = None,
     extra_filter: Callable | None = None,  # (request, user, stmt) -> stmt
     merge_pool: list[list[str]] | None = None,  # column groups pooled on merge
+    fk_checks: dict | None = None,  # {column_name: referenced Model} — must be in-org
+    body_validator: Callable | None = None,  # async (db, user, data) -> None, on create/update
 ) -> None:
     """Wires list/create/get/patch/delete endpoints for one entity onto a
     router. body_model serves both create and PATCH (exclude_unset)."""
@@ -126,6 +130,34 @@ def register_crud(
         raise HTTPException(
             status_code=422, detail=f"At least one of {', '.join(required_any)} is required"
         )
+
+    async def validate_body(db: AsyncSession, user: User, data: dict) -> None:
+        """Reject any FK in the body that points outside the caller's org (a
+        cross-tenant reference), and run any entity-specific body validator."""
+        for col, ref in (fk_checks or {}).items():
+            val = data.get(col)
+            if val is None:
+                continue
+            if ref is Stage:
+                # Stage has no org_id — validate it through its pipeline's org.
+                ok = (
+                    await db.execute(
+                        select(Stage.id)
+                        .join(Pipeline, Pipeline.id == Stage.pipeline_id)
+                        .where(Stage.id == val, Pipeline.org_id == user.org_id)
+                    )
+                ).first()
+            else:
+                conds = [ref.id == val, ref.org_id == user.org_id]
+                if hasattr(ref, "deleted_at"):
+                    conds.append(ref.deleted_at.is_(None))
+                ok = (await db.execute(select(ref.id).where(*conds))).first()
+            if ok is None:
+                raise HTTPException(
+                    status_code=422, detail=f"{col} does not reference a valid record"
+                )
+        if body_validator is not None:
+            await body_validator(db, user, data)
 
     async def apply_extras(db, user, obj, tags, cfs):
         if tags is not None:
@@ -399,6 +431,7 @@ def register_crud(
         tags = data.pop("tags", None)
         cfs = data.pop("custom_fields", None)
         check_required(data)
+        await validate_body(db, user, data)
         obj = model(org_id=user.org_id, **data)
         if hasattr(obj, "created_by") and obj.created_by is None:
             obj.created_by = user.id
@@ -437,6 +470,7 @@ def register_crud(
         data = body.model_dump(exclude_unset=True)
         tags = data.pop("tags", None)
         cfs = data.pop("custom_fields", None)
+        await validate_body(db, user, data)
         old_values = {key: getattr(obj, key, None) for key in data}
         for key, value in data.items():
             setattr(obj, key, value)

@@ -23,10 +23,19 @@ async def register_device(
     existing = (
         await db.execute(select(DeviceToken).where(DeviceToken.token == body.token))
     ).scalar_one_or_none()
+    if existing is not None and existing.user_id != user.id:
+        # The token is on record under a different user. Don't silently
+        # re-point another user's row (a stolen token would otherwise hijack
+        # their push registration): drop the old row and register fresh for the
+        # caller, so the attacker gains nothing beyond registering their own
+        # device. (iOS reissues a token per install, so a genuine token rarely
+        # crosses accounts anyway.)
+        await db.delete(existing)
+        await db.flush()
+        existing = None
     if existing is not None:
-        # Same device, possibly a different account now — re-point it.
+        # Same device, same user — refresh its metadata.
         existing.org_id = user.org_id
-        existing.user_id = user.id
         existing.platform = body.platform
         existing.environment = body.environment
         existing.last_seen_at = utcnow()

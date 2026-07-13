@@ -1,10 +1,12 @@
 import time
 from collections import defaultdict
 from datetime import timedelta
+from ipaddress import ip_address
 
 import pyotp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -16,6 +18,12 @@ from app.security import hash_password, hash_token, new_session_token, verify_pa
 
 router = APIRouter()
 
+# A fixed valid argon2 hash to verify against when the supplied email doesn't
+# exist, so a login for an unknown address does the same password-hashing work
+# as one for a real user — no timing oracle for account enumeration. The
+# plaintext is irrelevant; it just has to be a well-formed hash.
+_DECOY_HASH = hash_password("timing-oracle-decoy")
+
 # In-process throttle — single instance by design. Keyed by client IP and by
 # account email so neither one address hammering many accounts nor many
 # addresses hammering one account gets a free run.
@@ -25,11 +33,24 @@ _TOTP_ATTEMPT_LIMIT = 5
 _failures: dict[str, list[float]] = defaultdict(list)
 
 
+def _peer_is_trusted_proxy(peer: str) -> bool:
+    try:
+        addr = ip_address(peer)
+    except ValueError:
+        return False
+    return any(addr in net for net in settings.trusted_proxy_networks)
+
+
 def _client_ip(request: Request) -> str:
-    # cloudflared connects from localhost; the real client is in this header.
-    return request.headers.get("cf-connecting-ip") or (
-        request.client.host if request.client else "unknown"
-    )
+    # cloudflared (or another reverse proxy) puts the real client in
+    # cf-connecting-ip. Only believe it when the immediate peer is a proxy we
+    # trust — otherwise a directly-reachable client could spoof the header to
+    # dodge the per-IP throttle, so fall back to the peer address itself.
+    peer = request.client.host if request.client else "unknown"
+    forwarded = request.headers.get("cf-connecting-ip")
+    if forwarded and _peer_is_trusted_proxy(peer):
+        return forwarded.strip()
+    return peer
 
 
 def _throttle(keys: list[str]) -> None:
@@ -91,11 +112,18 @@ async def bootstrap(db: AsyncSession = Depends(get_db)):
 
 @router.post("/setup", status_code=201)
 async def setup(body: SetupIn, db: AsyncSession = Depends(get_db)):
+    if len(body.password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    # Serialize concurrent /setup calls: a transaction-scoped Postgres advisory
+    # lock means the second request blocks until the first commits, then sees
+    # count > 0 below. (sqlite dev runs single-writer, so the count check alone
+    # suffices there.) The IntegrityError catch is the final backstop — the
+    # users (org_id, email) unique constraint rejects a duplicate first admin.
+    if not settings.database_url.startswith("sqlite"):
+        await db.execute(select(func.pg_advisory_xact_lock(0xC0110071)))
     count = (await db.execute(select(func.count()).select_from(User))).scalar_one()
     if count > 0:
         raise HTTPException(status_code=403, detail="Setup already completed")
-    if len(body.password) < 8:
-        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
     org = (await db.execute(select(Org))).scalars().first()
     if org is None:
         org = Org(name="Default")
@@ -109,7 +137,11 @@ async def setup(body: SetupIn, db: AsyncSession = Depends(get_db)):
         is_admin=True,
     )
     db.add(user)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=403, detail="Setup already completed")
     token = await _create_session(db, user)
     await db.commit()
     return {"token": token, "user": user_out(user)}
@@ -125,12 +157,23 @@ async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_
     user = (
         await db.execute(select(User).where(User.email == email))
     ).scalar_one_or_none()
-    if user is None or not verify_password(body.password, user.password_hash):
+    if user is None:
+        # Do the same argon2 work an existing account would, so the response
+        # time doesn't reveal whether the email is registered.
+        verify_password(body.password, _DECOY_HASH)
+        _record_failure(throttle_keys)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not verify_password(body.password, user.password_hash):
         _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=401, detail="Account disabled")
     if user.totp_enabled:
+        # Minting a pending session is itself a throttled event: a stolen
+        # password otherwise buys unlimited pending sessions (each good for a
+        # fresh burst of TOTP guesses). Bound it by the same per-email + per-IP
+        # budget as an outright wrong password.
+        _record_failure(throttle_keys)
         pending = await _create_session(db, user, pending=True)
         await db.commit()
         return {"totp_required": True, "pending_token": pending}
@@ -141,19 +184,27 @@ async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_
 
 @router.post("/totp")
 async def totp_verify(body: TotpVerifyIn, request: Request, db: AsyncSession = Depends(get_db)):
-    throttle_keys = [f"ip:{_client_ip(request)}"]
+    # Keyed on IP AND the pending session itself, so neither a spoofable IP nor
+    # a rotated pending token alone grants unlimited guesses. The per-user key
+    # is added once the session resolves to a user (below).
+    pending_hash = hash_token(body.pending_token)
+    throttle_keys = [f"ip:{_client_ip(request)}", f"totp:{pending_hash}"]
     _throttle(throttle_keys)
     row = (
         await db.execute(
             select(DbSession, User)
             .join(User, DbSession.user_id == User.id)
-            .where(DbSession.token_hash == hash_token(body.pending_token))
+            .where(DbSession.token_hash == pending_hash)
         )
     ).first()
     if row is None:
         _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid session")
     sess, user = row
+    # Bound guessing per account across however many pending sessions the
+    # attacker mints, independent of the IP they arrive from.
+    throttle_keys.append(f"totpuser:{user.id}")
+    _throttle([f"totpuser:{user.id}"])
     if not sess.pending_totp or as_utc(sess.expires_at) < utcnow():
         raise HTTPException(status_code=401, detail="Verification window expired; log in again")
     if not user.totp_secret or not pyotp.TOTP(user.totp_secret).verify(

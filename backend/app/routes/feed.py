@@ -251,7 +251,7 @@ async def feed(
             .scalars()
             .all()
         )
-        authors = await display_name_map(db, {n.author_id for n in notes})
+        authors = await display_name_map(db, {n.author_id for n in notes}, user.org_id)
         for n in notes:
             d = row_to_dict(n)
             items.append(
@@ -282,7 +282,7 @@ async def feed(
             .scalars()
             .all()
         )
-        actors = await display_name_map(db, {a.actor_id for a in acts})
+        actors = await display_name_map(db, {a.actor_id for a in acts}, user.org_id)
         for a in acts:
             d = row_to_dict(a)
             items.append(

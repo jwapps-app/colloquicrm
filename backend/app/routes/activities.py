@@ -35,7 +35,7 @@ async def list_activities(
         .limit(page_size)
     )
     items = (await db.execute(stmt)).scalars().all()
-    names = await display_name_map(db, {a.actor_id for a in items})
+    names = await display_name_map(db, {a.actor_id for a in items}, user.org_id)
     dicts = []
     for a in items:
         d = row_to_dict(a)

@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter
 from sqlalchemy import func, select
 
-from app.models import Company, Lead, Opportunity, Person
+from app.models import Company, Lead, Opportunity, Person, User
 from app.schemas import PersonIn
 from app.services.common import display_name_map
 from app.services.crud import register_crud
@@ -27,17 +27,21 @@ def _hide_self_filter(request, user, stmt):
 router = APIRouter()
 
 
-async def company_name_map(db, ids: set) -> dict[str, str]:
+async def company_name_map(db, org_id, ids: set) -> dict[str, str]:
     ids = {uuid.UUID(i) for i in ids if i}
     if not ids:
         return {}
-    rows = await db.execute(select(Company.id, Company.name).where(Company.id.in_(ids)))
+    rows = await db.execute(
+        select(Company.id, Company.name).where(
+            Company.id.in_(ids), Company.org_id == org_id
+        )
+    )
     return {str(cid): name for cid, name in rows}
 
 
 async def enrich(db, user, dicts):
-    owners = await display_name_map(db, {d.get("owner_id") for d in dicts})
-    companies = await company_name_map(db, {d.get("company_id") for d in dicts})
+    owners = await display_name_map(db, {d.get("owner_id") for d in dicts}, user.org_id)
+    companies = await company_name_map(db, user.org_id, {d.get("company_id") for d in dicts})
     for d in dicts:
         d["owner_name"] = owners.get(d.get("owner_id"))
         d["company_name"] = companies.get(d.get("company_id"))
@@ -72,6 +76,7 @@ register_crud(
     default_sort="last_name",
     required_any=["first_name", "last_name"],
     enrich=enrich,
+    fk_checks={"company_id": Company, "owner_id": User},
     merge_refs=[(Opportunity, "primary_person_id"), (Lead, "converted_person_id")],
     after_merge=lambda db, user, target: update_person_aggregates(db, user.org_id, {target.id}),
     extra_filter=_hide_self_filter,

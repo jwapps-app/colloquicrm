@@ -9,7 +9,7 @@ from app.deps import get_current_user
 from app.models import Task, User, utcnow
 from app.schemas import TaskIn
 from app.services import colloqui
-from app.services.common import display_name_map, log_activity
+from app.services.common import display_name_map, log_activity, validate_entity_ref
 from app.services.crud import register_crud
 
 router = APIRouter()
@@ -17,11 +17,24 @@ router = APIRouter()
 
 async def enrich(db, user, dicts):
     names = await display_name_map(
-        db, {d.get("assignee_id") for d in dicts} | {d.get("created_by") for d in dicts}
+        db,
+        {d.get("assignee_id") for d in dicts} | {d.get("created_by") for d in dicts},
+        user.org_id,
     )
     for d in dicts:
         d["assignee_name"] = names.get(d.get("assignee_id"))
         d["created_by_name"] = names.get(d.get("created_by"))
+
+
+async def _validate_target(db, user, data):
+    # A task can hang off a person/company/opportunity/lead — make sure the
+    # target is a real in-org record before we store the pointer. Only act when
+    # both parts are supplied together (create always sends both, or neither);
+    # a partial PATCH of one alone isn't a link change to validate here.
+    if "entity_type" in data and "entity_id" in data:
+        await validate_entity_ref(
+            db, user.org_id, data.get("entity_type"), data.get("entity_id")
+        )
 
 
 def _notify_created(task, actor):
@@ -68,6 +81,8 @@ register_crud(
     required_any=["name"],
     has_extras=False,
     enrich=enrich,
+    fk_checks={"assignee_id": User},
+    body_validator=_validate_target,
     after_create=_notify_created,
     after_update=_notify_assignment,
 )

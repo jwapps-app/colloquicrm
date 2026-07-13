@@ -8,7 +8,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import Lead, Note, Person, PhoneEvent, User, utcnow
 from app.schemas import NoteAttachIn, NoteIn
-from app.services.common import display_name_map, row_to_dict
+from app.services.common import display_name_map, row_to_dict, validate_entity_ref
 from app.services.ringcentral import normalize_phone
 
 
@@ -28,8 +28,8 @@ async def _valid_phone_event(db, org_id, phone_event_id):
 router = APIRouter()
 
 
-async def _serialize(db, notes: list[Note]) -> list[dict]:
-    names = await display_name_map(db, {n.author_id for n in notes})
+async def _serialize(db, org_id, notes: list[Note]) -> list[dict]:
+    names = await display_name_map(db, {n.author_id for n in notes}, org_id)
     out = []
     for n in notes:
         d = row_to_dict(n)
@@ -60,7 +60,7 @@ async def list_notes(
         .scalars()
         .all()
     )
-    return {"items": await _serialize(db, list(notes))}
+    return {"items": await _serialize(db, user.org_id, list(notes))}
 
 
 @router.post("", status_code=201)
@@ -69,6 +69,10 @@ async def create_note(
 ):
     if not body.body.strip():
         raise HTTPException(status_code=422, detail="Note body is required")
+    # The note's target must be a real in-org record — don't let a caller
+    # attach a note to another org's row (or a bogus id). The log_call branch
+    # below re-checks person/lead specifically; this covers every entity type.
+    await validate_entity_ref(db, user.org_id, body.entity_type, body.entity_id)
     await _valid_phone_event(db, user.org_id, body.phone_event_id)
 
     phone_event_id = body.phone_event_id
@@ -111,7 +115,7 @@ async def create_note(
     )
     db.add(note)
     await db.flush()
-    result = (await _serialize(db, [note]))[0]
+    result = (await _serialize(db, user.org_id, [note]))[0]
     await db.commit()  # visible before the client refetches
     return result
 
@@ -132,7 +136,7 @@ async def attach_note(
         raise HTTPException(status_code=404, detail="Note not found")
     await _valid_phone_event(db, user.org_id, body.phone_event_id)
     note.phone_event_id = body.phone_event_id
-    result = (await _serialize(db, [note]))[0]
+    result = (await _serialize(db, user.org_id, [note]))[0]
     await db.commit()  # visible before the client refetches
     return result
 

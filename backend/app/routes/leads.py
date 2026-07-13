@@ -13,6 +13,7 @@ from app.models import (
     Lead,
     Opportunity,
     Person,
+    Pipeline,
     Stage,
     User,
     utcnow,
@@ -36,7 +37,7 @@ PERSON_FIELDS = [
 
 
 async def enrich(db, user, dicts):
-    owners = await display_name_map(db, {d.get("owner_id") for d in dicts})
+    owners = await display_name_map(db, {d.get("owner_id") for d in dicts}, user.org_id)
     for d in dicts:
         d["owner_name"] = owners.get(d.get("owner_id"))
 
@@ -59,6 +60,7 @@ register_crud(
     default_sort="last_name",
     required_any=["first_name", "last_name"],
     enrich=enrich,
+    fk_checks={"owner_id": User},
     merge_pool=[
         ["email"],
         ["work_phone", "mobile_phone"],
@@ -167,10 +169,21 @@ async def convert_lead(
 
     opportunity_id = None
     if body.pipeline_id is not None:
+        # Verify the pipeline belongs to this org before deriving a stage from
+        # it — never trust a client-supplied pipeline id to reach across orgs.
+        pipeline = (
+            await db.execute(
+                select(Pipeline).where(
+                    Pipeline.id == body.pipeline_id, Pipeline.org_id == user.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if pipeline is None:
+            raise HTTPException(status_code=404, detail="pipeline not found")
         first_stage = (
             await db.execute(
                 select(Stage)
-                .where(Stage.pipeline_id == body.pipeline_id)
+                .where(Stage.pipeline_id == pipeline.id)
                 .order_by(Stage.position)
                 .limit(1)
             )

@@ -102,7 +102,14 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+# Interactive docs and the OpenAPI schema are a dev convenience; in production
+# they needlessly advertise the whole API surface, so turn them off.
+_docs_kwargs = (
+    {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    if settings.environment == "production"
+    else {}
+)
+app = FastAPI(title=settings.app_name, lifespan=lifespan, **_docs_kwargs)
 
 app.add_middleware(
     CORSMiddleware,
@@ -110,6 +117,33 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+
+# CSP for the SPA + API. The app loads only its own hashed bundles ('self'),
+# may carry inline styles, renders avatars/QR from data: and remote https
+# images, and previews emails in a srcdoc iframe (frame-src 'self'). No
+# framing of the app itself (frame-ancestors 'none').
+_SPA_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: https:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-src 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+# The public /f/{slug} lead pages are self-contained server-rendered HTML with
+# one inline <style> and a form that posts to itself — nothing else is allowed.
+_FORM_CSP = (
+    "default-src 'none'; "
+    "style-src 'unsafe-inline'; "
+    "form-action 'self'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'none'"
 )
 
 
@@ -126,6 +160,11 @@ async def static_and_security_headers(request, call_next):
         response.headers.setdefault("Cache-Control", "no-cache")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if path.startswith("/f/"):
+        response.headers.setdefault("Content-Security-Policy", _FORM_CSP)
+    else:
+        response.headers.setdefault("Content-Security-Policy", _SPA_CSP)
     return response
 
 
@@ -199,10 +238,16 @@ _dist = (
 if _dist.is_dir():
     app.mount("/assets", StaticFiles(directory=_dist / "assets"), name="assets")
 
+    # In production the docs/schema routes are unregistered; without this they
+    # would fall through to the SPA shell (a 200) instead of a clean 404.
+    _DISABLED_DOCS = {"openapi.json", "docs", "redoc"}
+
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
         if path.startswith("api/") or path == "api":
             # Unknown API route: a JSON 404 beats silently serving the SPA.
+            raise HTTPException(status_code=404, detail="Not found")
+        if settings.environment == "production" and path in _DISABLED_DOCS:
             raise HTTPException(status_code=404, detail="Not found")
         candidate = (_dist / path).resolve()
         if path and candidate.is_file() and candidate.is_relative_to(_dist):

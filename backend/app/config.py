@@ -1,4 +1,5 @@
 from functools import lru_cache
+from ipaddress import ip_network
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,6 +13,20 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-change-me"
     allowed_origins: str = "http://localhost:5173"
     session_ttl_days: int = 30
+    # Comma-separated IPs/CIDRs of reverse proxies we trust to set
+    # cf-connecting-ip. Only when the immediate peer (request.client.host)
+    # falls inside this set do we believe that header for throttle keying;
+    # otherwise the peer address itself is used, so a public client can't spoof
+    # its way past the login/form rate limits. Defaults to loopback + the
+    # private ranges a docker/cloudflared front-end sits in. Tighten to your
+    # proxy's exact address if the app is otherwise reachable.
+    trusted_proxy_ips: str = "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    # Public lead form abuse ceilings. A single form only accepts this many
+    # submissions per UTC day (an absolute DoS cap on top of the per-IP
+    # limiter), and a submission whose Content-Length exceeds this byte bound
+    # is rejected before the body is parsed.
+    form_daily_submission_cap: int = 500
+    form_max_body_bytes: int = 65536
     # Public URL of this CRM's web app, used in links posted to chat and as
     # the base of the Google OAuth redirect URI.
     app_url: str = "http://localhost:5173"
@@ -61,6 +76,19 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def trusted_proxy_networks(self) -> list:
+        nets = []
+        for raw in self.trusted_proxy_ips.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                nets.append(ip_network(raw, strict=False))
+            except ValueError:
+                continue
+        return nets
 
 
 @lru_cache

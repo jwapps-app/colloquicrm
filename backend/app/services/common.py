@@ -184,12 +184,53 @@ async def log_activity(
     )
 
 
-async def display_name_map(db: AsyncSession, ids: set) -> dict[str, str]:
+async def display_name_map(
+    db: AsyncSession, ids: set, org_id: uuid.UUID
+) -> dict[str, str]:
     ids = {uuid.UUID(str(i)) for i in ids if i}
     if not ids:
         return {}
-    rows = await db.execute(select(User.id, User.display_name).where(User.id.in_(ids)))
+    rows = await db.execute(
+        select(User.id, User.display_name).where(
+            User.id.in_(ids), User.org_id == org_id
+        )
+    )
     return {str(uid): name for uid, name in rows}
+
+
+ENTITY_MODELS = {
+    "person": "Person",
+    "company": "Company",
+    "opportunity": "Opportunity",
+    "lead": "Lead",
+}
+
+
+async def validate_entity_ref(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    entity_type: str | None,
+    entity_id: uuid.UUID | None,
+) -> None:
+    """Confirm a polymorphic (entity_type, entity_id) target names a real
+    in-org record. Used by notes and tasks so a caller can't hang a note or
+    task off another org's record (or a bogus id). Both None = no target."""
+    if entity_type is None and entity_id is None:
+        return
+    if entity_type is None or entity_id is None:
+        raise HTTPException(status_code=422, detail="entity_type and entity_id go together")
+    import app.models as models
+
+    name = ENTITY_MODELS.get(entity_type)
+    if name is None:
+        raise HTTPException(status_code=422, detail=f"Unknown entity type: {entity_type}")
+    model = getattr(models, name)
+    conds = [model.id == entity_id, model.org_id == org_id]
+    if hasattr(model, "deleted_at"):
+        conds.append(model.deleted_at.is_(None))
+    exists = (await db.execute(select(model.id).where(*conds))).first()
+    if exists is None:
+        raise HTTPException(status_code=404, detail=f"{entity_type} not found")
 
 
 async def cleanup_entity(db: AsyncSession, entity_type: str, entity_id: uuid.UUID) -> None:
