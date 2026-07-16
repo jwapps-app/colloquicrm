@@ -1,4 +1,5 @@
 import csv
+import inspect
 import io
 import uuid
 from collections.abc import Awaitable, Callable
@@ -27,6 +28,7 @@ from app.models import (
 from app.services.common import (
     add_tags,
     cleanup_entity,
+    entity_label,
     get_cf_maps,
     get_or_create_tag,
     get_tag_maps,
@@ -442,7 +444,9 @@ def register_crud(
         await apply_extras(db, user, obj, tags, cfs)
         await log_activity(db, user.org_id, entity_type, obj.id, "created", user.id)
         if after_create is not None:
-            after_create(obj, user)
+            r = after_create(obj, user)
+            if inspect.iscoroutine(r):
+                await r
         result = (await serialize(db, user, [obj]))[0]
         # The client acts on the response immediately (navigate, refetch); the
         # framework's commit lands after the response, which loses that race
@@ -483,7 +487,9 @@ def register_crud(
                 {"fields": sorted(data.keys())},
             )
         if after_update is not None and data:
-            after_update(obj, old_values, user)
+            r = after_update(obj, old_values, user)
+            if inspect.iscoroutine(r):
+                await r
         result = (await serialize(db, user, [obj]))[0]
         await db.commit()
         return result
@@ -495,9 +501,7 @@ def register_crud(
         db: AsyncSession = Depends(get_db),
     ):
         obj = await get_owned(db, user, item_id)
-        label = getattr(obj, "name", None) or " ".join(
-            filter(None, [getattr(obj, "first_name", None), getattr(obj, "last_name", None)])
-        )
+        label = entity_label(obj)
         if soft_delete:
             # To Trash — recoverable for the retention window. Satellites stay
             # attached so a restore brings the record back whole.
@@ -530,9 +534,7 @@ def register_crud(
             )
             out = []
             for r in rows:
-                label = getattr(r, "name", None) or " ".join(
-                    filter(None, [getattr(r, "first_name", None), getattr(r, "last_name", None)])
-                )
+                label = entity_label(r)
                 out.append(
                     {
                         "id": str(r.id),
@@ -584,9 +586,7 @@ def register_crud(
         target = await get_owned(db, user, item_id)
         source = await get_owned(db, user, body.source_id)
 
-        source_label = getattr(source, "name", None) or " ".join(
-            filter(None, [getattr(source, "first_name", None), getattr(source, "last_name", None)])
-        )
+        source_label = entity_label(source)
 
         # Multi-slot fields (a person's two emails, two phones, …) pool ALL
         # distinct values from both records instead of only filling blanks, so

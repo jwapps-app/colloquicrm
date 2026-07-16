@@ -1,13 +1,17 @@
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import get_db
+from app.deps import get_current_user
 from app.models import Company, Lead, Opportunity, Person, User
 from app.schemas import PersonIn
 from app.services.common import display_name_map
 from app.services.crud import register_crud
 from app.services.interactions import update_person_aggregates
+from app.services.socials import find_for_person
 
 
 def _hide_self_filter(request, user, stmt):
@@ -86,15 +90,6 @@ register_crud(
         ["work_website", "personal_website"],
     ],
 )
-
-
-from fastapi import Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.db import get_db
-from app.deps import get_current_user
-from app.models import User
-from app.services.socials import find_for_person
 
 
 @router.post("/{person_id}/find-socials")

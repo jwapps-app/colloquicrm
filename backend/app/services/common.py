@@ -9,6 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Activity, CustomField, CustomFieldValue, EntityTag, Tag, User
 
 
+def entity_label(obj) -> str:
+    """Human label for any CRM record: companies and opportunities carry a
+    `name`; people and leads a first/last name. Empty string when neither
+    yields anything (callers supply their own fallback)."""
+    return getattr(obj, "name", None) or " ".join(
+        filter(None, [getattr(obj, "first_name", None), getattr(obj, "last_name", None)])
+    )
+
+
 def row_to_dict(obj) -> dict:
     out = {}
     for attr in sa_inspect(obj).mapper.column_attrs:

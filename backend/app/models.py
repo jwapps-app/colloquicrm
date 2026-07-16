@@ -251,7 +251,12 @@ class Opportunity(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
-    __table_args__ = (Index("ix_tasks_entity", "entity_type", "entity_id"),)
+    __table_args__ = (
+        Index("ix_tasks_entity", "entity_type", "entity_id"),
+        # Backs the badge/attention count (run on every push), the reminder
+        # sweep, the assignee list filter, and the activity report group-by.
+        Index("ix_tasks_assignee_status_due", "assignee_id", "status", "due_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
@@ -425,7 +430,12 @@ class ContactSuggestion(Base):
 
 class Note(Base):
     __tablename__ = "notes"
-    __table_args__ = (Index("ix_notes_entity", "entity_type", "entity_id"),)
+    __table_args__ = (
+        Index("ix_notes_entity", "entity_type", "entity_id"),
+        # The feed orders notes by created_at; the activity report filters and
+        # groups notes by org and date.
+        Index("ix_notes_org_created", "org_id", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)

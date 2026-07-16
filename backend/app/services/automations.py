@@ -44,7 +44,7 @@ from app.models import (
 )
 from app.services import colloqui, push
 from app.services.colloqui import ColloquiError
-from app.services.common import add_tags
+from app.services.common import add_tags, entity_label
 
 log = logging.getLogger("automations")
 
@@ -78,7 +78,7 @@ def record_label(entity_type: str, obj) -> str:
     """Display label for a record, used by {name} placeholders and fire logs."""
     if entity_type in ("opportunity", "task"):
         return obj.name or "(unnamed)"
-    name = " ".join(filter(None, [obj.first_name, obj.last_name]))
+    name = entity_label(obj)
     return name or getattr(obj, "company_name", None) or getattr(obj, "email", None) or "(unnamed)"
 
 
@@ -315,7 +315,7 @@ async def _act_notify(db, rule: AutomationRule, obj, label: str) -> dict:
     return detail
 
 
-async def _act_add_tag(db, rule: AutomationRule, obj, label: str) -> dict:
+async def _act_add_tag(db, rule: AutomationRule, obj, _label: str) -> dict:
     tag = str((rule.action_config or {}).get("tag") or "").strip()
     if tag:
         await add_tags(db, rule.org_id, rule.entity_type, obj.id, [tag])
