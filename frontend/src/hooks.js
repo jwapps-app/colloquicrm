@@ -39,7 +39,29 @@ export function useEntity(apiPath, id) {
   }
 
   const refresh = () => setVersion((v) => v + 1);
-  return { entity, setEntity, save, error, refresh };
+  return { entity, save, error, refresh };
+}
+
+// Load a related list for a detail page (up to 100 rows). `deps` controls
+// when it refetches — typically the parent entity id.
+export function useRelated(apiPath, params, deps) {
+  const [items, setItems] = useState(null);
+  useEffect(() => {
+    let on = true;
+    setItems(null);
+    get(apiPath, { ...params, page: 1, page_size: 100 })
+      .then((d) => {
+        if (on) setItems(d?.items || []);
+      })
+      .catch(() => {
+        if (on) setItems([]);
+      });
+    return () => {
+      on = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return items;
 }
 
 export function useUsers() {

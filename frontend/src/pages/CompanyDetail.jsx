@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { del, get } from '../api';
-import { useContactTypes, useEntity, useUsers } from '../hooks';
+import { del } from '../api';
+import { useContactTypes, useEntity, useRelated, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
 import MergeButton from '../components/MergeButton';
@@ -13,26 +12,6 @@ import RelatedPanel from '../components/RelatedPanel';
 import { Empty, Loading } from '../components/ui';
 import { fullName, humanize, money } from '../format';
 import { COMPANY_FIELDS } from '../constants/fields';
-
-function useRelated(apiPath, params, deps) {
-  const [items, setItems] = useState(null);
-  useEffect(() => {
-    let on = true;
-    setItems(null);
-    get(apiPath, { ...params, page: 1, page_size: 100 })
-      .then((d) => {
-        if (on) setItems(d?.items || []);
-      })
-      .catch(() => {
-        if (on) setItems([]);
-      });
-    return () => {
-      on = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-  return items;
-}
 
 export default function CompanyDetail() {
   const { id } = useParams();

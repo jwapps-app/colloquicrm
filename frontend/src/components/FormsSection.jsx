@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { del, get, patch, post } from '../api';
 import { useToast } from './Toast';
 import Modal from './Modal';
+import ToggleListRow from './ToggleListRow';
 import { Loading } from './ui';
 
 // Mirrors the backend field catalog (routes/forms.py). Order is render order.
@@ -296,51 +297,43 @@ export default function FormsSection() {
       ) : forms.length === 0 ? (
         <div className="muted panel-empty">No forms yet — create one and share its link.</div>
       ) : (
-        <div className="auto-rules">
+        <div className="toggle-rows">
           {forms.map((f) => (
-            <div key={f.id} className={'auto-rule' + (f.enabled ? '' : ' auto-rule-off')}>
-              <div className="auto-rule-main">
-                <label
-                  className="auto-switch"
-                  title={f.enabled ? 'Live — click to disable' : 'Disabled — click to enable'}
-                >
-                  <input type="checkbox" checked={f.enabled} onChange={() => toggle(f)} />
-                  <span className="auto-switch-track" />
-                </label>
-                <div className="auto-rule-text">
-                  <div className="auto-rule-name">
-                    <strong>{f.name}</strong>
-                    {!f.enabled && <span className="badge badge-muted">Disabled</span>}
-                  </div>
-                  <div className="secret-row leadform-url">
-                    <code>{f.public_url}</code>
-                    <button type="button" className="btn btn-small" onClick={() => copyUrl(f)}>
-                      Copy
-                    </button>
-                  </div>
+            <ToggleListRow
+              key={f.id}
+              enabled={f.enabled}
+              onToggle={() => toggle(f)}
+              switchTitle={f.enabled ? 'Live — click to disable' : 'Disabled — click to enable'}
+              title={f.name}
+              badge={!f.enabled && <span className="badge badge-muted">Disabled</span>}
+              subtitle={
+                <div className="secret-row leadform-url">
+                  <code>{f.public_url}</code>
+                  <button type="button" className="btn btn-small" onClick={() => copyUrl(f)}>
+                    Copy
+                  </button>
                 </div>
-                <button
-                  className="btn btn-small auto-fire-count"
-                  onClick={() => setExpanded(expanded === f.id ? null : f.id)}
-                  title="Edit form"
-                >
+              }
+              meta={
+                <>
                   {f.submission_count} submission{f.submission_count === 1 ? '' : 's'}
                   {expanded === f.id ? ' ▴' : ' ▾'}
-                </button>
-                <button className="icon-btn tiny" onClick={() => remove(f)} title="Delete form">
-                  ×
-                </button>
-              </div>
-              {expanded === f.id && (
-                <FormEditor
-                  key={f.updated_at}
-                  form={f}
-                  onSaved={(updated) =>
-                    setForms((fs) => fs.map((x) => (x.id === updated.id ? updated : x)))
-                  }
-                />
-              )}
-            </div>
+                </>
+              }
+              metaTitle="Edit form"
+              expanded={expanded === f.id}
+              onToggleExpand={() => setExpanded(expanded === f.id ? null : f.id)}
+              onDelete={() => remove(f)}
+              deleteTitle="Delete form"
+            >
+              <FormEditor
+                key={f.updated_at}
+                form={f}
+                onSaved={(updated) =>
+                  setForms((fs) => fs.map((x) => (x.id === updated.id ? updated : x)))
+                }
+              />
+            </ToggleListRow>
           ))}
         </div>
       )}

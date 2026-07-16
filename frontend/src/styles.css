@@ -275,6 +275,14 @@ textarea {
 .chip-filter:hover {
   background: #e6d9fc;
 }
+.chip-label {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
 .chip-x {
   border: none;
   background: transparent;
@@ -840,9 +848,6 @@ th.col-check {
   max-width: 480px;
   box-shadow: 0 20px 60px rgba(16, 10, 30, 0.3);
   animation: toast-in 0.15s ease-out;
-}
-.modal-wide {
-  max-width: 720px;
 }
 .modal-head {
   display: flex;
@@ -2260,33 +2265,33 @@ th.col-check {
   display: flex;
   gap: 8px;
 }
-.auto-rules {
+.toggle-rows {
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin-top: 10px;
 }
-.auto-rule {
+.toggle-row {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
 }
-.auto-rule-off {
+.toggle-row-off {
   background: var(--bg);
 }
-.auto-rule-off .auto-rule-text {
+.toggle-row-off .toggle-row-text {
   opacity: 0.65;
 }
-.auto-rule-main {
+.toggle-row-main {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-.auto-rule-text {
+.toggle-row-text {
   flex: 1;
   min-width: 0;
 }
-.auto-rule-name {
+.toggle-row-name {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2295,11 +2300,11 @@ th.col-check {
   font-size: 13px;
   margin-top: 2px;
 }
-.auto-fire-count {
+.toggle-row-meta {
   white-space: nowrap;
   flex: none;
 }
-.auto-switch {
+.toggle-switch {
   position: relative;
   display: inline-block;
   width: 34px;
@@ -2307,7 +2312,7 @@ th.col-check {
   flex: none;
   cursor: pointer;
 }
-.auto-switch input {
+.toggle-switch input {
   position: absolute;
   opacity: 0;
   width: 100%;
@@ -2315,7 +2320,7 @@ th.col-check {
   margin: 0;
   cursor: pointer;
 }
-.auto-switch-track {
+.toggle-switch-track {
   position: absolute;
   inset: 0;
   background: var(--border);
@@ -2323,7 +2328,7 @@ th.col-check {
   transition: background 0.15s;
   pointer-events: none;
 }
-.auto-switch-track::after {
+.toggle-switch-track::after {
   content: '';
   position: absolute;
   top: 2px;
@@ -2335,10 +2340,10 @@ th.col-check {
   box-shadow: var(--shadow);
   transition: transform 0.15s;
 }
-.auto-switch input:checked + .auto-switch-track {
+.toggle-switch input:checked + .toggle-switch-track {
   background: var(--accent);
 }
-.auto-switch input:checked + .auto-switch-track::after {
+.toggle-switch input:checked + .toggle-switch-track::after {
   transform: translateX(14px);
 }
 .auto-fires {

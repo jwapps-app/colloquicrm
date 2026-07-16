@@ -8,16 +8,21 @@ export function safeHref(url) {
   return /^https?:\/\//i.test(trimmed) ? trimmed : undefined;
 }
 
-export function money(value, currency) {
+export function money(value, currency, { maxFractionDigits } = {}) {
   if (value === null || value === undefined || value === '') return '—';
   const n = Number(value);
   if (Number.isNaN(n)) return String(value);
+  const opts = { style: 'currency', currency: currency || 'USD' };
+  if (maxFractionDigits !== undefined) opts.maximumFractionDigits = maxFractionDigits;
   try {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: currency || 'USD' }).format(n);
+    return new Intl.NumberFormat('en-US', opts).format(n);
   } catch {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
+    return new Intl.NumberFormat('en-US', { ...opts, currency: 'USD' }).format(n);
   }
 }
+
+/** Whole-dollar money — no cents. Used for report totals. */
+export const money0 = (value) => money(value, 'USD', { maxFractionDigits: 0 });
 
 /** Parse a server timestamp. Naive datetimes (no zone suffix) are UTC —
  * SQLite dev returns them that way; Postgres sends +00:00. Date-only
@@ -75,7 +80,7 @@ export function humanize(s) {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
-export const ENTITY_ROUTES = {
+const ENTITY_ROUTES = {
   person: 'people',
   lead: 'leads',
   company: 'companies',

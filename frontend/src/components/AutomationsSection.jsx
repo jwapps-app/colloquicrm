@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { cachedGet, del, get, patch, post } from '../api';
 import { useToast } from './Toast';
 import Modal from './Modal';
+import ToggleListRow from './ToggleListRow';
 import { Loading } from './ui';
 import { fmtDateTime } from '../format';
 import { LEAD_STATUSES, OPPORTUNITY_STATUSES } from '../constants/options';
@@ -484,35 +485,30 @@ export default function AutomationsSection() {
           </div>
         </div>
       ) : (
-        <div className="auto-rules">
+        <div className="toggle-rows">
           {rules.map((r) => (
-            <div key={r.id} className={'auto-rule' + (r.enabled ? '' : ' auto-rule-off')}>
-              <div className="auto-rule-main">
-                <label className="auto-switch" title={r.enabled ? 'Enabled — click to pause' : 'Paused — click to enable'}>
-                  <input type="checkbox" checked={r.enabled} onChange={() => toggle(r)} />
-                  <span className="auto-switch-track" />
-                </label>
-                <div className="auto-rule-text">
-                  <div className="auto-rule-name">
-                    <strong>{r.name}</strong>
-                    {!r.enabled && <span className="badge badge-muted">Paused</span>}
-                  </div>
-                  <div className="muted auto-summary">{ruleSummary(r, users, pipelines)}</div>
-                </div>
-                <button
-                  className="btn btn-small auto-fire-count"
-                  onClick={() => setExpanded(expanded === r.id ? null : r.id)}
-                  title="Show recent fires"
-                >
+            <ToggleListRow
+              key={r.id}
+              enabled={r.enabled}
+              onToggle={() => toggle(r)}
+              switchTitle={r.enabled ? 'Enabled — click to pause' : 'Paused — click to enable'}
+              title={r.name}
+              badge={!r.enabled && <span className="badge badge-muted">Paused</span>}
+              subtitle={<div className="muted auto-summary">{ruleSummary(r, users, pipelines)}</div>}
+              meta={
+                <>
                   {r.fire_count} fire{r.fire_count === 1 ? '' : 's'}
                   {r.last_fired_at ? ` · last ${fmtDateTime(r.last_fired_at)}` : ''}
-                </button>
-                <button className="icon-btn tiny" onClick={() => remove(r)} title="Delete automation">
-                  ×
-                </button>
-              </div>
-              {expanded === r.id && <FiresLog ruleId={r.id} />}
-            </div>
+                </>
+              }
+              metaTitle="Show recent fires"
+              expanded={expanded === r.id}
+              onToggleExpand={() => setExpanded(expanded === r.id ? null : r.id)}
+              onDelete={() => remove(r)}
+              deleteTitle="Delete automation"
+            >
+              <FiresLog ruleId={r.id} />
+            </ToggleListRow>
           ))}
         </div>
       )}

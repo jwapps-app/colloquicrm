@@ -558,7 +558,7 @@ function CustomFieldsSection() {
                 </span>
               )}
               {isAdmin && (
-                <button className="icon-btn tiny" onClick={() => remove(f)} title="Delete field">
+                <button className="icon-btn tiny" onClick={() => remove(f)} title="Delete field" aria-label="Delete field">
                   ×
                 </button>
               )}

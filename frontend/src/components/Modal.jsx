@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 
-export default function Modal({ title, onClose, children, wide }) {
+export default function Modal({ title, onClose, children }) {
   useEffect(() => {
     function onKey(e) {
       if (e.key === 'Escape') onClose();
@@ -16,7 +16,7 @@ export default function Modal({ title, onClose, children, wide }) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className={'modal' + (wide ? ' modal-wide' : '')} role="dialog" aria-modal="true">
+      <div className="modal" role="dialog" aria-modal="true">
         <div className="modal-head">
           <h3>{title}</h3>
           <button className="icon-btn" onClick={onClose} aria-label="Close">

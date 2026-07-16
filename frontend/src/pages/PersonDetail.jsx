@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { del, get, post } from '../api';
-import { useContactTypes, useEntity, useUsers } from '../hooks';
+import { del, post } from '../api';
+import { useContactTypes, useEntity, useRelated, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
 import MergeButton from '../components/MergeButton';
@@ -15,22 +15,7 @@ import { fullName, humanize, money, safeHref } from '../format';
 import { PERSON_FIELDS } from '../constants/fields';
 
 function PersonOpportunities({ personId }) {
-  const [items, setItems] = useState(null);
-  useEffect(() => {
-    let on = true;
-    // The list endpoint has no person filter in the contract; we pass
-    // primary_person_id anyway and also filter client-side as a safety net.
-    get('/opportunities', { primary_person_id: personId, page: 1, page_size: 100 })
-      .then((d) => {
-        if (on) setItems((d?.items || []).filter((o) => o.primary_person_id === personId));
-      })
-      .catch(() => {
-        if (on) setItems([]);
-      });
-    return () => {
-      on = false;
-    };
-  }, [personId]);
+  const items = useRelated('/opportunities', { primary_person_id: personId }, [personId]);
 
   return (
     <RelatedPanel

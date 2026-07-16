@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { get } from '../api';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';
+import { money0 } from '../format';
 
 const RANGES = [
   { id: '30d', label: '30d' },
@@ -12,13 +13,6 @@ const RANGES = [
 
 // Stage segment colors — accent family, darkest first (earliest stage).
 const STAGE_COLORS = ['#6d28d9', '#7c3aed', '#9d6ef0', '#b794f6', '#d0bcf9', '#e5d8fc'];
-
-const money0 = (v) =>
-  new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(Number(v) || 0);
 
 function compact(n) {
   n = Number(n) || 0;

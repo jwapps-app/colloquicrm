@@ -150,7 +150,18 @@ export default function Feed() {
                       <div key={`e-${it.id}`} className={'feed-item feed-email' + (open ? ' open' : '')}>
                         <span className="email-dir">{it.is_outgoing ? '↗' : '↘'}</span>
                         <div className="feed-body">
-                          <div className="email-toggle" onClick={() => toggleEmail(it.id)} role="button" tabIndex={0}>
+                          <div
+                            className="email-toggle"
+                            onClick={() => toggleEmail(it.id)}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                toggleEmail(it.id);
+                              }
+                            }}
+                          >
                             <strong>
                               {it.is_outgoing ? 'Email sent' : `Email from ${it.from_name || it.from_email || 'unknown'}`}
                             </strong>

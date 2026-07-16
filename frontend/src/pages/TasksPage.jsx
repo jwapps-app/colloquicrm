@@ -160,7 +160,7 @@ export default function TasksPage() {
                     </Link>
                   )}
                   {t.assignee_name && <span className="muted task-assignee">{t.assignee_name}</span>}
-                  <button className="icon-btn tiny" onClick={() => remove(t)} title="Delete task">
+                  <button className="icon-btn tiny" onClick={() => remove(t)} title="Delete task" aria-label="Delete task">
                     ×
                   </button>
                 </div>

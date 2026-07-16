@@ -316,7 +316,18 @@ export default function NotesTimeline({ entityType, entityId }) {
               </div>
             ) : item._type === 'email' ? (
               <div key={`e-${item.id}`} className={'timeline-item email-item' + (openEmail === item.id ? ' open' : '')}>
-                <div className="timeline-head email-toggle" onClick={() => toggleEmail(item.id)} role="button" tabIndex={0}>
+                <div
+                  className="timeline-head email-toggle"
+                  onClick={() => toggleEmail(item.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      toggleEmail(item.id);
+                    }
+                  }}
+                >
                   <span className="email-dir">{item.is_outgoing ? '↗' : '↘'}</span>
                   <strong>{item.is_outgoing ? 'Email sent' : `Email from ${item.from_name || item.from_email || 'unknown'}`}</strong>
                   <span className="muted"> · {fmtDateTime(item._at)}</span>
@@ -346,7 +357,7 @@ export default function NotesTimeline({ entityType, entityId }) {
                   <strong>{item.author_name || 'Someone'}</strong>
                   <span className="muted"> added a note · {fmtDateTime(item.created_at)}</span>
                   {(user?.is_admin || user?.id === item.author_id) && (
-                    <button className="icon-btn tiny" onClick={() => deleteNote(item.id)} title="Delete note">
+                    <button className="icon-btn tiny" onClick={() => deleteNote(item.id)} title="Delete note" aria-label="Delete note">
                       ×
                     </button>
                   )}

@@ -331,12 +331,24 @@ export default function ListPage({
 
       <div className="saved-filters">
         {saved.map((sf) => (
-          <button key={sf.id} className="chip chip-filter" onClick={() => applySaved(sf)} title="Apply this filter">
-            {sf.name}
-            <span className="chip-x" onClick={(e) => deleteSaved(e, sf)} role="button" aria-label="Delete filter">
+          <span key={sf.id} className="chip chip-filter">
+            <button
+              type="button"
+              className="chip-label"
+              onClick={() => applySaved(sf)}
+              title="Apply this filter"
+            >
+              {sf.name}
+            </button>
+            <button
+              type="button"
+              className="chip-x"
+              onClick={(e) => deleteSaved(e, sf)}
+              aria-label="Delete filter"
+            >
               ×
-            </span>
-          </button>
+            </button>
+          </span>
         ))}
         {hasFilters && (
           <button className="btn btn-ghost btn-small" onClick={saveCurrent}>
@@ -419,7 +431,18 @@ export default function ListPage({
                 </thead>
                 <tbody>
                   {items.map((row) => (
-                    <tr key={row.id} onClick={() => nav(`${route}/${row.id}`)}>
+                    <tr
+                      key={row.id}
+                      onClick={() => nav(`${route}/${row.id}`)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          nav(`${route}/${row.id}`);
+                        }
+                      }}
+                    >
                       <td className="col-check" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
