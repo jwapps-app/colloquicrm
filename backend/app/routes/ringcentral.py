@@ -1,14 +1,15 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user, require_admin
-from app.models import Lead, Person, PhoneEvent, RingCentralIntegration, User, utcnow
+from app.models import Company, Lead, Person, PhoneEvent, RingCentralIntegration, User, utcnow
 from app.schemas import RingCentralConnectIn
 from app.services import ringcentral as rc
+from app.services.common import company_people
 
 router = APIRouter()
 
@@ -153,7 +154,7 @@ async def diagnose_number(
     }
 
 
-PHONE_ENTITY_MODELS = {"person": Person, "lead": Lead}
+PHONE_ENTITY_MODELS = {"person": Person, "lead": Lead, "company": Company}
 
 
 @router.get("/events")
@@ -166,23 +167,46 @@ async def phone_events(
 ):
     model = PHONE_ENTITY_MODELS.get(entity_type)
     if model is None:
-        raise HTTPException(status_code=422, detail="entity_type must be person or lead")
+        raise HTTPException(status_code=422, detail="entity_type must be person, lead or company")
     obj = (
         await db.execute(select(model).where(model.id == entity_id, model.org_id == user.org_id))
     ).scalar_one_or_none()
     if obj is None:
         raise HTTPException(status_code=404, detail=f"{entity_type} not found")
-    numbers = [
-        n
-        for n in (rc.normalize_phone(obj.work_phone), rc.normalize_phone(obj.mobile_phone))
-        if n
-    ]
-    conditions = [
-        (PhoneEvent.entity_type == entity_type) & (PhoneEvent.entity_id == entity_id)
-    ]
-    if numbers:
-        conditions.append(PhoneEvent.other_number.in_(numbers))
-    from sqlalchemy import or_
+
+    if entity_type == "company":
+        # A company's call/text history is everyone associated with it: events
+        # matched to any person's number, events logged directly on those
+        # people, plus anything logged on the company itself.
+        people = await company_people(db, user.org_id, entity_id)
+        numbers = {
+            n
+            for p in people
+            for n in (rc.normalize_phone(p.work_phone), rc.normalize_phone(p.mobile_phone))
+            if n
+        }
+        conditions = [
+            (PhoneEvent.entity_type == "company") & (PhoneEvent.entity_id == entity_id)
+        ]
+        if numbers:
+            conditions.append(PhoneEvent.other_number.in_(numbers))
+        person_ids = [p.id for p in people]
+        if person_ids:
+            conditions.append(
+                (PhoneEvent.entity_type == "person")
+                & (PhoneEvent.entity_id.in_(person_ids))
+            )
+    else:
+        numbers = [
+            n
+            for n in (rc.normalize_phone(obj.work_phone), rc.normalize_phone(obj.mobile_phone))
+            if n
+        ]
+        conditions = [
+            (PhoneEvent.entity_type == entity_type) & (PhoneEvent.entity_id == entity_id)
+        ]
+        if numbers:
+            conditions.append(PhoneEvent.other_number.in_(numbers))
 
     events = (
         (

@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Activity, CustomField, CustomFieldValue, EntityTag, Tag, User
+from app.models import Activity, CustomField, CustomFieldValue, EntityTag, Person, Tag, User
 
 
 def entity_label(obj) -> str:
@@ -213,6 +213,26 @@ ENTITY_MODELS = {
     "opportunity": "Opportunity",
     "lead": "Lead",
 }
+
+
+async def company_people(db: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID):
+    """Non-deleted people linked to a company, with just the columns needed to
+    roll their correspondence (emails + phone events) up onto the company
+    timeline. One query; caller normalizes the emails/numbers it uses."""
+    rows = await db.execute(
+        select(
+            Person.id,
+            Person.work_email,
+            Person.personal_email,
+            Person.work_phone,
+            Person.mobile_phone,
+        ).where(
+            Person.org_id == org_id,
+            Person.company_id == company_id,
+            Person.deleted_at.is_(None),
+        )
+    )
+    return rows.all()
 
 
 async def validate_entity_ref(

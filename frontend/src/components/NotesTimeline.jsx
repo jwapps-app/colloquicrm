@@ -35,7 +35,7 @@ export default function NotesTimeline({ entityType, entityId }) {
   async function load() {
     const epoch = ++loadEpoch.current;
     try {
-      const phoneable = entityType === 'person' || entityType === 'lead';
+      const phoneable = entityType === 'person' || entityType === 'lead' || entityType === 'company';
       const [n, a, em, ph] = await Promise.all([
         get('/notes', { entity_type: entityType, entity_id: entityId }),
         get('/activities', { entity_type: entityType, entity_id: entityId, page: 1, page_size: 50 }),

@@ -26,6 +26,7 @@ from sqlalchemy import func
 
 from app.schemas import GoogleConfigIn
 from app.services import google as g
+from app.services.common import company_people
 from app.services.importer import find_duplicates
 
 router = APIRouter()
@@ -632,10 +633,26 @@ async def emails_for_entity(
         .distinct()
     )
     if entity_type == "company":
+        # A company's correspondence is the union of everyone associated with
+        # it: any address at the company's email_domain, PLUS every work/
+        # personal address on the people linked to the company (this catches a
+        # contact's personal Gmail, which the domain filter alone misses).
+        conds = []
         domain = (obj.email_domain or "").lower().strip()
-        if not domain:
+        if domain:
+            conds.append(EmailParticipant.email.like(f"%@{domain}"))
+        people = await company_people(db, user.org_id, entity_id)
+        people_emails = {
+            g.normalize_email(e)
+            for p in people
+            for e in (p.work_email, p.personal_email)
+            if e
+        }
+        if people_emails:
+            conds.append(EmailParticipant.email.in_(people_emails))
+        if not conds:
             return {"items": []}
-        stmt = stmt.where(EmailParticipant.email.like(f"%@{domain}"))
+        stmt = stmt.where(or_(*conds))
     else:
         emails = []
         if entity_type == "person":
