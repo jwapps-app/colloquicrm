@@ -72,7 +72,8 @@ the export includes.
 
 One image serves API + web app; `alembic upgrade head` runs at container
 start. CI builds and publishes `ghcr.io/jwapps-app/colloquicrm` on every push to
-main.
+main. The image is public — pull it without authentication, or build from this
+repo with the included `Dockerfile`.
 
 NAS/Portainer: use `docker-compose.portainer.yml` (postgres + api + nightly
 pg_dump sidecar with retention). Create `/volume1/docker/colloquicrm/{postgres,backups}`
@@ -113,6 +114,14 @@ file already sets the required ones.
 | `GMAIL_BACKFILL_LEADS` | `false` | backfill searches People only unless enabled — leads can mean thousands of extra Gmail queries |
 | `GMAIL_ARCHIVE_BODIES` | `true` | store each synced email's full body so the CRM is a permanent archive; `false` fetches bodies lazily on first view only |
 | `RINGCENTRAL_BACKFILL_DAYS` | `365` | call/SMS history window |
+| `SECRET_ENCRYPTION_KEY` | derived from `SECRET_KEY` | Fernet key encrypting integration tokens + TOTP secrets at rest. Set it explicitly to keep it independent of `SECRET_KEY` — rotating `SECRET_KEY` otherwise orphans the encrypted secrets. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `PUSH_RELAY_URL` | unset | push-relay base URL for the iOS companion app. Unset = push off; task reminders go to Colloqui chat only |
+| `PUSH_RELAY_API_KEY` | unset | relay key scoped to the app's bundle id |
+| `APNS_TOPIC` | companion-app bundle id | topic the relay routes push on |
+| `TRUSTED_PROXY_IPS` | loopback + private ranges | proxy IPs/CIDRs trusted to set `cf-connecting-ip`; others fall back to the peer address for rate-limit keying |
+| `TASK_REMINDER_LEAD_MINUTES` | `15` | default reminder lead before a task's due time when no explicit reminder is set |
+| `FORM_DAILY_SUBMISSION_CAP` | `500` | max public lead-form submissions per form per UTC day |
+| `FORM_MAX_BODY_BYTES` | `65536` | max public lead-form request body |
 
 ### Upgrades
 
@@ -128,9 +137,13 @@ The `backup` sidecar writes a nightly `pg_dump -Fc` to
 `BACKUP_RETENTION_DAYS`, and touches `backups/last-success` on every good run —
 if that file goes stale, backups are failing (see `backups/failures.log`).
 
-Dumps contain **all CRM data plus live integration credentials** (Google
-refresh tokens, RingCentral JWT, Colloqui API key) unencrypted — treat the
-backups directory like the database itself.
+Dumps contain **all CRM data**. Integration credentials (Google refresh
+tokens, RingCentral JWT, Colloqui API key) and TOTP secrets are stored
+**encrypted at rest** (see `SECRET_ENCRYPTION_KEY`), so those fields in a dump
+are ciphertext — a restore only decrypts them if `SECRET_ENCRYPTION_KEY` (or
+the `SECRET_KEY` it was derived from) matches the source instance. Everything
+else in the dump is plaintext, so still treat the backups directory like the
+database itself.
 
 Restore (into a scratch or fresh stack):
 
