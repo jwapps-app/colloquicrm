@@ -87,6 +87,7 @@ register_crud(
         "priority": Task.priority,
         "status": Task.status,
         "created_at": Task.created_at,
+        "completed_at": Task.completed_at,
     },
     filterable={
         "status": Task.status,
@@ -128,7 +129,11 @@ async def complete_task(
             db, user.org_id, t.entity_type, t.entity_id, "task_completed", user.id,
             {"task_id": str(t.id), "name": t.name},
         )
-        colloqui.schedule(colloqui.notify_task_event(t.id, "completed"))
+        colloqui.schedule(
+            colloqui.notify_task_event(
+                t.id, "completed", actor_id=user.id, assignee_id=t.assignee_id
+            )
+        )
     await db.commit()  # visible before the client refetches
     return {"id": str(t.id), "status": t.status, "completed_at": t.completed_at.isoformat()}
 

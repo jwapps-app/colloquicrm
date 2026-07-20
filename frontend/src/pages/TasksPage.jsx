@@ -22,7 +22,12 @@ export default function TasksPage() {
   useEffect(() => {
     let on = true;
     setData(null);
-    get('/tasks', { status: tab, page, page_size: PAGE_SIZE, sort: 'due_at', order: 'asc' })
+    // Open tasks read best soonest-due first; Done reads best most-recently
+    // finished first.
+    const sort = tab === 'done'
+      ? { sort: 'completed_at', order: 'desc' }
+      : { sort: 'due_at', order: 'asc' };
+    get('/tasks', { status: tab, page, page_size: PAGE_SIZE, ...sort })
       .then((d) => {
         if (on) setData(d);
       })

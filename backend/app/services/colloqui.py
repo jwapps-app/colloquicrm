@@ -339,6 +339,11 @@ async def notify_task_event(
                 f"📋 Task reassigned to {_mention(assignee)}: **{task.name}**{_due_text(task)}\n{_task_link()}",
             )
         elif event == "completed":
+            # Only worth a #tasks post when someone finishes a task that was on
+            # SOMEONE ELSE's plate — completing your own (or an unassigned) task
+            # is not news you need announced back to you.
+            if assignee is None or assignee.id == actor_id:
+                return
             if chat_enabled:
                 content = f"✅ {_mention(assignee)} — task done: **{task.name}**"
                 await _client_for(row).send_message(str(row.tasks_channel_id), content)
