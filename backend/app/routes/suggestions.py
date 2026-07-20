@@ -73,6 +73,12 @@ async def _get_pending(db, user, sug_id):
     ).scalar_one_or_none()
     if s is None:
         raise HTTPException(status_code=404, detail="Suggestion not found")
+    if s.status != "pending":
+        # A double-click (or stale list) must not mint a second Person or
+        # silently flip an earlier decision.
+        raise HTTPException(
+            status_code=409, detail=f"Suggestion was already {s.status}"
+        )
     return s
 
 

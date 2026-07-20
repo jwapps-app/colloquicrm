@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -180,6 +180,9 @@ async def delete_custom_field(
     db: AsyncSession = Depends(get_db),
 ):
     field = await _get_field(db, user, field_id)
+    # Explicit value cleanup: the FK cascade covers Postgres, but SQLite dev
+    # runs without PRAGMA foreign_keys.
+    await db.execute(delete(CustomFieldValue).where(CustomFieldValue.field_id == field.id))
     await db.delete(field)
     await db.commit()  # visible before the client refetches
 

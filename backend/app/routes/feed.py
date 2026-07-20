@@ -9,18 +9,15 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
     Activity,
-    Company,
     EmailMessage,
     EmailParticipant,
     Lead,
     Note,
-    Opportunity,
     Person,
     PhoneEvent,
-    Task,
     User,
 )
-from app.services.common import display_name_map, row_to_dict
+from app.services.common import display_name_map, entity_labels_map, row_to_dict
 from app.services.google import normalize_email
 from app.services.ringcentral import normalize_phone
 
@@ -77,40 +74,6 @@ async def _org_contact_maps(db: AsyncSession, org_id: uuid.UUID) -> tuple[dict, 
 
     _maps_cache[org_id] = (time.monotonic(), addr_map, phone_map)
     return addr_map, phone_map
-
-
-async def _entity_labels(db: AsyncSession, org_id: uuid.UUID, refs: set) -> dict:
-    """(entity_type, id) -> display label, batched per type."""
-    out: dict = {}
-    by_type: dict[str, list[uuid.UUID]] = {}
-    for etype, eid in refs:
-        if etype and eid:
-            by_type.setdefault(etype, []).append(uuid.UUID(str(eid)))
-    for etype, model, label_cols in (
-        ("person", Person, None),
-        ("lead", Lead, None),
-        ("company", Company, Company.name),
-        ("opportunity", Opportunity, Opportunity.name),
-        ("task", Task, Task.name),
-    ):
-        ids = by_type.get(etype)
-        if not ids:
-            continue
-        if label_cols is None:
-            rows = await db.execute(
-                select(model.id, model.first_name, model.last_name).where(
-                    model.org_id == org_id, model.id.in_(ids)
-                )
-            )
-            for rid, first, last in rows:
-                out[(etype, str(rid))] = " ".join(filter(None, [first, last])) or "(unnamed)"
-        else:
-            rows = await db.execute(
-                select(model.id, label_cols).where(model.org_id == org_id, model.id.in_(ids))
-            )
-            for rid, name in rows:
-                out[(etype, str(rid))] = name
-    return out
 
 
 @router.get("")
@@ -271,10 +234,7 @@ async def feed(
             (
                 await db.execute(
                     select(Activity)
-                    .where(
-                        Activity.org_id == user.org_id,
-                        Activity.kind != "note_added",  # the note shows directly
-                    )
+                    .where(Activity.org_id == user.org_id)
                     .order_by(Activity.created_at.desc())
                     .limit(need)
                 )
@@ -308,7 +268,7 @@ async def feed(
         for i in page_items
         if i["type"] in ("note", "activity", "call", "sms")
     }
-    labels = await _entity_labels(db, user.org_id, refs)
+    labels = await entity_labels_map(db, user.org_id, refs, unnamed="(unnamed)")
     for i in page_items:
         if i["type"] in ("call", "sms") and i.get("entity_type") and i.get("entity_id") and not i["related"]:
             label = labels.get((i["entity_type"], i["entity_id"]))

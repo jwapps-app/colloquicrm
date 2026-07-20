@@ -20,8 +20,9 @@ from sqlalchemy import func, or_, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import ColloquiIntegration, Task, User, utcnow
+from app.models import ColloquiIntegration, DeviceToken, Task, User, utcnow
 from app.services import push
+from app.services.background import spawn
 
 log = logging.getLogger("colloqui")
 
@@ -247,7 +248,7 @@ def schedule(coro) -> None:
         except Exception:
             log.exception("Colloqui notification failed")
 
-    asyncio.create_task(runner())
+    spawn(runner())
 
 
 def _wants_push(assignee: User | None) -> bool:
@@ -364,6 +365,11 @@ async def _send_due_reminder(db, row: ColloquiIntegration | None, task: Task) ->
             return True
         # No working device — fall through to chat so the reminder isn't lost.
     if not is_enabled(row):
+        # The same fallback mirrored: a chat-preferring assignee on an
+        # install without chat still gets the reminder over APNs if they can.
+        if assignee is not None and not _wants_push(assignee):
+            if await _push_to_assignee(db, assignee, task, "Task reminder", "task_due"):
+                return True
         return False
     client = _client_for(row)
     content = f"⏰ Reminder: **{task.name}**{_due_text(task)}\n{_task_link()}"
@@ -381,6 +387,22 @@ async def _send_due_reminder(db, row: ColloquiIntegration | None, task: Task) ->
         f"⏰ {_mention(assignee)} — reminder: **{task.name}**{_due_text(task)}\n{_task_link()}",
     )
     return True
+
+
+async def _reminder_channel_exists(db, row: ColloquiIntegration | None, task: Task) -> bool:
+    """Whether ANY channel could carry this task's reminder right now: the
+    org's chat integration, or (for a push install) a registered device of the
+    assignee. False means the reminder has nowhere to EVER land, as opposed to
+    a channel that exists but transiently failed."""
+    if is_enabled(row):
+        return True
+    if not push.is_configured() or task.assignee_id is None:
+        return False
+    return (
+        await db.execute(
+            select(DeviceToken.id).where(DeviceToken.user_id == task.assignee_id).limit(1)
+        )
+    ).first() is not None
 
 
 async def run_due_pass() -> None:
@@ -419,6 +441,16 @@ async def run_due_pass() -> None:
                 continue  # nowhere to deliver; same skip as before push existed
             try:
                 if await _send_due_reminder(db, row, task):
+                    task.due_notified_at = utcnow()
+                    await db.commit()
+                elif not await _reminder_channel_exists(db, row, task):
+                    # Undeliverable, not transient — no chat and no device.
+                    # Stamp it so it stops retrying every pass; editing the
+                    # due/reminder time re-arms it once a channel appears.
+                    log.warning(
+                        "Reminder for task %s has no deliverable channel; marking notified",
+                        task.id,
+                    )
                     task.due_notified_at = utcnow()
                     await db.commit()
             except ColloquiError as exc:

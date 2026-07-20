@@ -1,4 +1,3 @@
-import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -9,6 +8,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import ImportJob, User
 from app.schemas import ImportCommitIn
+from app.services.background import spawn
 from app.services.importer import IMPORT_TYPES, find_duplicates, parse_csv, run_import_job
 
 router = APIRouter()
@@ -75,7 +75,7 @@ async def commit_import(
     )
     db.add(job)
     await db.commit()  # the job must exist before the worker looks for it
-    asyncio.create_task(run_import_job(job.id))
+    spawn(run_import_job(job.id))
     return {"job_id": str(job.id), "total": job.total}
 
 

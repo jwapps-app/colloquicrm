@@ -77,13 +77,14 @@ def register_crud(
     has_extras: bool = True,
     enrich: Enricher | None = None,
     after_create: Callable | None = None,  # (obj, actor) — post-flush, pre-commit
-    after_update: Callable | None = None,  # (obj, old_values, actor) — old_values = changed fields' prior values
+    after_update: Callable | None = None,  # (db, obj, old_values, actor) — old_values = changed fields' prior values; runs pre-commit
     merge_refs: list[tuple] | None = None,  # (Model, fk attr name) to re-point on merge
     after_merge: Callable | None = None,
     extra_filter: Callable | None = None,  # (request, user, stmt) -> stmt
     merge_pool: list[list[str]] | None = None,  # column groups pooled on merge
     fk_checks: dict | None = None,  # {column_name: referenced Model} — must be in-org
     body_validator: Callable | None = None,  # async (db, user, data) -> None, on create/update
+    enable_merge: bool = True,  # register POST /{id}/merge (off for entities nothing merges)
 ) -> None:
     """Wires list/create/get/patch/delete endpoints for one entity onto a
     router. body_model serves both create and PATCH (exclude_unset)."""
@@ -478,6 +479,10 @@ def register_crud(
         old_values = {key: getattr(obj, key, None) for key in data}
         for key, value in data.items():
             setattr(obj, key, value)
+        # A PATCH must not blank out what create requires — re-check the
+        # required-any rule against the record as it now stands.
+        if required_any:
+            check_required({key: getattr(obj, key, None) for key in required_any})
         if hasattr(obj, "updated_at"):
             obj.updated_at = utcnow()
         await apply_extras(db, user, obj, tags, cfs)
@@ -487,7 +492,7 @@ def register_crud(
                 {"fields": sorted(data.keys())},
             )
         if after_update is not None and data:
-            r = after_update(obj, old_values, user)
+            r = after_update(db, obj, old_values, user)
             if inspect.iscoroutine(r):
                 await r
         result = (await serialize(db, user, [obj]))[0]
@@ -567,6 +572,11 @@ def register_crud(
             await log_activity(db, user.org_id, entity_type, obj.id, "restored", user.id)
             await db.commit()
             return {"id": str(obj.id), "restored": True}
+
+    if not enable_merge:
+        # Some entities (tasks) have nothing to merge — leave the
+        # endpoint unregistered rather than shipping an unused hard-delete.
+        return
 
     MERGE_SKIP = {"id", "org_id", "created_at", "updated_at", "interaction_count",
                   "last_contacted_at"}

@@ -88,7 +88,11 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
         result = await rc.sync_org(db, cfg)
     except rc.RingCentralError as exc:
         cfg.sync_error = str(exc)[:500]
+        # The raise makes get_db roll back — commit or the recorded error
+        # (the whole point of sync_error) never lands.
+        await db.commit()
         raise HTTPException(status_code=502, detail=str(exc))
+    await db.commit()  # visible before the client refetches
     return {**result, "last_synced_at": cfg.last_synced_at.isoformat()}
 
 

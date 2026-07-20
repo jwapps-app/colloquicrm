@@ -136,7 +136,10 @@ async def send_test(admin: User = Depends(require_admin), db: AsyncSession = Dep
             "👋 Test message from the CRM — the integration is working.",
         )
     except ColloquiError as exc:
-        row.last_error = str(exc)
+        row.last_error = str(exc)[:500]
+        # The raise makes get_db roll back — commit or the recorded error
+        # never lands in last_error.
+        await db.commit()
         raise HTTPException(status_code=502, detail=str(exc))
     return {"sent": True}
 

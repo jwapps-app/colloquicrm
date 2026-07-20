@@ -330,7 +330,9 @@ async def submit_form(slug: str, request: Request, db: AsyncSession = Depends(ge
             db, form.org_id, "lead", lead.id, "created", None, {"form": form.name}
         )
 
-    form.submission_count += 1
+    # SQL-side increment: two concurrent submissions with a Python += would
+    # each write stale-value+1 and lose a count.
+    form.submission_count = LeadForm.submission_count + 1
     _record_form_submission(form)
     # Commit before the redirect lands: the visitor (or the admin watching the
     # Leads list) may look immediately.

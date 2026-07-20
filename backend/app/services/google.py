@@ -358,7 +358,9 @@ async def sync_calendar(db, cfg: GoogleIntegration, account: GoogleAccount) -> i
             )
             seen: set[str] = set()
             for att in item.get("attendees", []) or []:
-                email = (att.get("email") or "").lower().strip()
+                # Stored normalized (gmail dots/+suffixes stripped) — the
+                # entity-matching queries look attendees up by normalize_email.
+                email = normalize_email(att.get("email") or "")
                 if not email or email in seen:
                     continue
                 seen.add(email)

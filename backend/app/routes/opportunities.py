@@ -43,6 +43,22 @@ async def enrich(db, user, dicts):
         d["person_name"] = people.get(d.get("primary_person_id"))
 
 
+async def _refresh_stage_probability(db, opp, old_values, actor):
+    # Moving stage refreshes the win_probability snapshot from the new stage —
+    # otherwise the number shown (and every weighted forecast) is the OLD
+    # stage's. An explicit win_probability in the same PATCH wins. Runs
+    # pre-commit, so the refresh lands with the stage change.
+    if "stage_id" not in old_values or old_values["stage_id"] == opp.stage_id:
+        return
+    if "win_probability" in old_values or opp.stage_id is None:
+        return
+    stage = (
+        await db.execute(select(Stage).where(Stage.id == opp.stage_id))
+    ).scalar_one_or_none()
+    if stage is not None:
+        opp.win_probability = stage.win_probability
+
+
 register_crud(
     router,
     model=Opportunity,
@@ -69,6 +85,7 @@ register_crud(
     default_sort="created_at",
     required_any=["name"],
     enrich=enrich,
+    after_update=_refresh_stage_probability,
     fk_checks={
         "company_id": Company,
         "primary_person_id": Person,

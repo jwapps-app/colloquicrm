@@ -312,26 +312,28 @@ async def activity_report(
     tasks_completed = await grouped(Task.assignee_id, *task_where)
 
     # Phone events: credit the linked note's author; leftovers -> "Team".
+    # An event with notes from several users is credited ONCE, to the author
+    # of the earliest note — otherwise one call counts for everybody who
+    # documented it and the Team remainder goes negative.
     phone_where = [PhoneEvent.org_id == user.org_id]
     if since is not None:
         phone_where.append(PhoneEvent.happened_at >= since)
-    attributed = await db.execute(
-        select(
-            Note.author_id,
-            PhoneEvent.kind,
-            func.count(func.distinct(PhoneEvent.id)),
-        )
+    note_rows = await db.execute(
+        select(Note.author_id, PhoneEvent.id, PhoneEvent.kind)
         .join(PhoneEvent, Note.phone_event_id == PhoneEvent.id)
         .where(Note.author_id.is_not(None), *phone_where)
-        .group_by(Note.author_id, PhoneEvent.kind)
+        .order_by(Note.created_at, Note.id)
     )
+    credited: dict[uuid.UUID, tuple[uuid.UUID, str]] = {}
+    for author_id, event_id, kind in note_rows:
+        credited.setdefault(event_id, (author_id, kind))
     calls: dict[uuid.UUID, int] = {}
     texts: dict[uuid.UUID, int] = {}
     attributed_by_kind = {"call": 0, "sms": 0}
-    for author_id, kind, count in attributed:
+    for author_id, kind in credited.values():
         target = calls if kind == "call" else texts
-        target[author_id] = target.get(author_id, 0) + count
-        attributed_by_kind[kind] = attributed_by_kind.get(kind, 0) + count
+        target[author_id] = target.get(author_id, 0) + 1
+        attributed_by_kind[kind] = attributed_by_kind.get(kind, 0) + 1
     totals_by_kind = {
         k: v
         for k, v in (
@@ -342,8 +344,9 @@ async def activity_report(
             )
         )
     }
-    team_calls = max(0, totals_by_kind.get("call", 0) - attributed_by_kind.get("call", 0))
-    team_texts = max(0, totals_by_kind.get("sms", 0) - attributed_by_kind.get("sms", 0))
+    # Each event is attributed at most once, so the remainder can't go negative.
+    team_calls = totals_by_kind.get("call", 0) - attributed_by_kind.get("call", 0)
+    team_texts = totals_by_kind.get("sms", 0) - attributed_by_kind.get("sms", 0)
 
     users = (
         (

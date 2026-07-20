@@ -169,10 +169,22 @@ async def _known_rc_ids(db, org_id: uuid.UUID, ids: list[str]) -> set[str]:
     return {r for (r,) in rows}
 
 
+def _sync_window_start(cfg: RingCentralIntegration) -> str:
+    """dateFrom for a sync pass. First sync walks the whole backfill window;
+    after that, resume from the last pass minus a 24h overlap so late-written
+    records aren't missed — the rc_id dedup absorbs the repeats."""
+    last = cfg.last_synced_at
+    if last is None:
+        return (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (last - timedelta(hours=24)).isoformat()
+
+
 async def sync_calls(
-    db, cfg: RingCentralIntegration, access: str, phone_map: dict, touched: set[str]
+    db, cfg: RingCentralIntegration, access: str, phone_map: dict, touched: set[str],
+    date_from: str,
 ) -> int:
-    date_from = (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
     stored = 0
     page = 1
     while True:
@@ -218,9 +230,9 @@ async def sync_calls(
 
 
 async def sync_sms(
-    db, cfg: RingCentralIntegration, access: str, phone_map: dict, touched: set[str]
+    db, cfg: RingCentralIntegration, access: str, phone_map: dict, touched: set[str],
+    date_from: str,
 ) -> int:
-    date_from = (utcnow() - timedelta(days=settings.ringcentral_backfill_days)).isoformat()
     stored = 0
     page = 1
     while True:
@@ -279,8 +291,9 @@ async def sync_org(db, cfg: RingCentralIntegration) -> dict:
         cfg.sync_error = None
         return {"calls_synced": 0, "sms_synced": 0}
     touched: set[str] = set()
-    calls = await sync_calls(db, cfg, access, phone_map, touched)
-    sms = await sync_sms(db, cfg, access, phone_map, touched)
+    date_from = _sync_window_start(cfg)
+    calls = await sync_calls(db, cfg, access, phone_map, touched, date_from)
+    sms = await sync_sms(db, cfg, access, phone_map, touched, date_from)
     # Recompute relationship metrics only for people with NEW events this
     # pass — recomputing everyone with any history burned thousands of
     # queries every cycle once real call logs existed.
@@ -296,17 +309,40 @@ async def sync_org(db, cfg: RingCentralIntegration) -> dict:
     return {"calls_synced": calls, "sms_synced": sms}
 
 
+def _sync_error_text(exc: Exception) -> str:
+    # RingCentralError messages are already curated; anything else gets its
+    # type named so the status is never a mystery.
+    if isinstance(exc, RingCentralError):
+        return str(exc)[:500]
+    return f"Sync failed: {type(exc).__name__}: {exc}"[:500]
+
+
 async def run_sync_pass() -> None:
     async with SessionLocal() as db:
         configs = (await db.execute(select(RingCentralIntegration))).scalars().all()
         for cfg in configs:
+            org_id = cfg.org_id
             try:
                 await sync_org(db, cfg)
                 await db.commit()
-            except RingCentralError as exc:
-                cfg.sync_error = str(exc)[:500]
+            except Exception as exc:
+                # Record ANY failure, not just RingCentralError — an unrecorded
+                # crash leaves a stale status, and one broken org must not stop
+                # the pass for the rest.
                 log.warning("RingCentral sync failed: %s", exc)
-                await db.commit()
+                # The failure may have left the session mid-transaction; roll
+                # back, then re-load the config cleanly to stamp the error.
+                await db.rollback()
+                fresh = (
+                    await db.execute(
+                        select(RingCentralIntegration).where(
+                            RingCentralIntegration.org_id == org_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if fresh is not None:
+                    fresh.sync_error = _sync_error_text(exc)
+                    await db.commit()
 
 
 async def sync_loop() -> None:

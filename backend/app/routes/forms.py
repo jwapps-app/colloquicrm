@@ -22,6 +22,8 @@ router = APIRouter()
 # The v1 field catalog: key -> label, widget, and max length (mirrors the Lead
 # column widths so a valid submission can never overflow the insert). Order
 # here is the render order on the public page.
+# KEEP IN SYNC with frontend/src/components/FormsSection.jsx FORM_FIELDS —
+# the settings UI hand-mirrors this catalog for the embed snippet.
 FORM_FIELD_DEFS: dict[str, dict] = {
     "first_name": {"label": "First name", "widget": "text", "max": 120},
     "last_name": {"label": "Last name", "widget": "text", "max": 120},

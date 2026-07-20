@@ -62,7 +62,15 @@ def _notify_created(task, actor):
         )
 
 
-def _notify_assignment(task, old_values, actor):
+def _after_update(db, task, old_values, actor):
+    # Re-arm the reminder when the schedule moves: the sweep only notifies
+    # tasks with due_notified_at unset, so a fired reminder would otherwise
+    # never fire again for the new due/reminder time. Runs pre-commit, so the
+    # clear lands in the same transaction as the PATCH.
+    for key in ("due_at", "reminder_at"):
+        if key in old_values and getattr(task, key) != old_values[key]:
+            task.due_notified_at = None
+            break
     # Reassignment (not initial creation — that's the "created" event) to
     # someone other than the person making the change.
     if "assignee_id" not in old_values:
@@ -102,7 +110,8 @@ register_crud(
     fk_checks={"assignee_id": User},
     body_validator=_validate_target,
     after_create=_notify_created,
-    after_update=_notify_assignment,
+    after_update=_after_update,
+    enable_merge=False,  # nothing merges tasks; don't expose a hard-delete
 )
 
 
@@ -147,5 +156,8 @@ async def reopen_task(
     t = await _get_task(db, user, task_id)
     t.status = "open"
     t.completed_at = None
+    # Re-arm the reminder — a reopened task is due again, and the sweep skips
+    # anything already stamped as notified.
+    t.due_notified_at = None
     await db.commit()  # visible before the client refetches
     return {"id": str(t.id), "status": t.status, "completed_at": None}

@@ -154,9 +154,15 @@ async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_
     _throttle(throttle_keys)
     # Opportunistic hygiene: expired sessions otherwise accumulate forever.
     await db.execute(delete(DbSession).where(DbSession.expires_at < utcnow()))
+    # Uniqueness is per (org_id, email) — the same address may exist in more
+    # than one org, and scalar_one_or_none would 500 on it. This install is
+    # single-org, so take the oldest match deterministically; true multi-org
+    # login needs an org discriminator on the form.
     user = (
-        await db.execute(select(User).where(User.email == email))
-    ).scalar_one_or_none()
+        (await db.execute(select(User).where(User.email == email).order_by(User.created_at)))
+        .scalars()
+        .first()
+    )
     if user is None:
         # Do the same argon2 work an existing account would, so the response
         # time doesn't reveal whether the email is registered.
@@ -239,6 +245,43 @@ async def logout(request: Request, db: AsyncSession = Depends(get_db)):
 @router.get("/me")
 async def me(user: User = Depends(get_current_user)):
     return user_out(user)
+
+
+@router.get("/sessions")
+async def list_sessions(
+    session_user=Depends(get_session_and_user), db: AsyncSession = Depends(get_db)
+):
+    """The caller's active sessions for the Settings security view — where
+    else you're signed in and when each session was last used (last_seen_at
+    is refreshed at most hourly, so it's a coarse activity marker)."""
+    sess, user = session_user
+    rows = (
+        (
+            await db.execute(
+                select(DbSession)
+                .where(
+                    DbSession.user_id == user.id,
+                    DbSession.pending_totp.is_(False),
+                    DbSession.expires_at >= utcnow(),
+                )
+                .order_by(DbSession.last_seen_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": str(s.id),
+                "current": s.id == sess.id,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
+                "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+            }
+            for s in rows
+        ]
+    }
 
 
 @router.post("/totp/setup")

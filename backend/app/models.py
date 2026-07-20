@@ -370,6 +370,8 @@ class EmailMessage(Base):
         ForeignKey("users.id", ondelete="SET NULL")
     )
     gmail_id: Mapped[str] = mapped_column(String(32))
+    # Not read yet — retained for future thread grouping; re-syncing it from
+    # Gmail after the fact would cost a full re-fetch.
     gmail_thread_id: Mapped[str | None] = mapped_column(String(32))
     rfc_message_id: Mapped[str] = mapped_column(String(255))
     subject: Mapped[str | None] = mapped_column(String(500))

@@ -26,6 +26,7 @@ from sqlalchemy import func
 
 from app.schemas import GoogleConfigIn
 from app.services import google as g
+from app.services.background import spawn
 from app.services.common import company_people
 from app.services.importer import find_duplicates
 
@@ -177,12 +178,10 @@ async def unlink(user: User = Depends(get_current_user), db: AsyncSession = Depe
 async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Kicks a full sync (including contact-history backfill) in the
     background — the backfill alone can outlive any request timeout."""
-    import asyncio
-
     account = await _account(db, user.id)
     if account is None:
         raise HTTPException(status_code=400, detail="No Google account connected")
-    asyncio.create_task(g.sync_account_background(user.id, force_backfill=True))
+    spawn(g.sync_account_background(user.id, force_backfill=True))
     return {"status": "started"}
 
 
@@ -304,21 +303,17 @@ async def diagnose_backfill(admin: User = Depends(require_admin), db: AsyncSessi
 async def recompute_metrics(admin: User = Depends(require_admin)):
     """Rebuild every person's interaction count and last-contacted date from
     stored emails and calls, in the background."""
-    import asyncio
-
-    asyncio.create_task(g.recompute_all_person_metrics(admin.org_id))
+    spawn(g.recompute_all_person_metrics(admin.org_id))
     return {"status": "started"}
 
 
 @router.post("/scan-suggestions", status_code=202)
 async def scan_suggestions(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Scan recent mail for frequent correspondents not yet in the CRM."""
-    import asyncio
-
     account = await _account(db, user.id)
     if account is None or not g.has_gmail_scope(account):
         raise HTTPException(status_code=400, detail="Connect Google with email access first")
-    asyncio.create_task(g.scan_contact_suggestions(user.id))
+    spawn(g.scan_contact_suggestions(user.id))
     return {"status": "started"}
 
 

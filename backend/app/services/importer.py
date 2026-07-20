@@ -945,9 +945,8 @@ async def run_import_job(job_id: uuid.UUID) -> None:
 async def resume_interrupted_imports() -> None:
     """Called at startup: any job still marked running was cut off by a
     restart — pick it up from its committed offset."""
-    import asyncio
-
     from app.db import SessionLocal
+    from app.services.background import spawn
 
     async with SessionLocal() as db:
         stale = (
@@ -955,4 +954,4 @@ async def resume_interrupted_imports() -> None:
         ).scalars().all()
     for job_id in stale:
         log.info("resuming interrupted import %s", job_id)
-        asyncio.create_task(run_import_job(job_id))
+        spawn(run_import_job(job_id))
