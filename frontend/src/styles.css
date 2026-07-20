@@ -777,10 +777,10 @@ th.col-check {
 }
 /* Records with an open, past-due task get a light-red row so they stand out. */
 .table tbody tr.row-overdue {
-  background: #fef2f2;
+  background: #fbdcdc;
 }
 .table tbody tr.row-overdue:hover {
-  background: #fde8e8;
+  background: #f7cccc;
 }
 .table tbody tr:last-child td {
   border-bottom: none;
