@@ -1,13 +1,19 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 export default function Modal({ title, onClose, children }) {
+  // Callers pass inline arrows for onClose; route Escape through a ref so the
+  // keydown listener registers once instead of on every parent render.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
   useEffect(() => {
     function onKey(e) {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     }
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, []);
 
   return (
     <div

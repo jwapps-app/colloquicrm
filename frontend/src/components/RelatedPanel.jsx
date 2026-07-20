@@ -9,6 +9,8 @@ export default function RelatedPanel({ title, items, empty = 'None yet.', render
       </div>
       {items === null ? (
         <Loading small label="Loading…" />
+      ) : items === 'error' ? (
+        <div className="muted panel-empty">Couldn&apos;t load these — reload to try again.</div>
       ) : items.length === 0 ? (
         <div className="muted panel-empty">{empty}</div>
       ) : (

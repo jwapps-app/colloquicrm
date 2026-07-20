@@ -75,7 +75,16 @@ export default function SuggestionsPanel({ onAdded }) {
     setBusyId(null);
   }
 
-  if (items.length === 0) return null;
+  if (items.length === 0) {
+    // Quiet affordance so a rescan is still reachable when the list is empty.
+    return (
+      <div className="suggestions-rescan muted">
+        <button className="linklike" onClick={scan} disabled={scanning}>
+          {scanning ? 'Scanning your email…' : 'Rescan email for suggested contacts'}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="card suggestions">

@@ -5,7 +5,10 @@ import Modal from './Modal';
 import ToggleListRow from './ToggleListRow';
 import { Loading } from './ui';
 
-// Mirrors the backend field catalog (routes/forms.py). Order is render order.
+// KEEP IN SYNC with the backend field catalog (backend/app/routes/forms.py,
+// FORM_FIELD_DEFS): same keys, labels, widgets, and max lengths, in the same
+// order — this list drives the embed snippet and the field toggles, the
+// backend one validates submissions. Order is render order.
 const FORM_FIELDS = [
   { key: 'first_name', label: 'First name', always: true, max: 120 },
   { key: 'last_name', label: 'Last name', always: true, max: 120 },

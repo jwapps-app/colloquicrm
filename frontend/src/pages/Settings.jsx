@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { del, get, patch, post } from '../api';
+import { bustCache, del, get, patch, post } from '../api';
 import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
 import AutomationsSection from '../components/AutomationsSection';
@@ -8,7 +8,7 @@ import FormsSection from '../components/FormsSection';
 import FormModal from '../components/FormModal';
 import InlineField from '../components/InlineField';
 import { Loading } from '../components/ui';
-import { fmtDate } from '../format';
+import { fmtDate, fmtDateTime } from '../format';
 import { CF_ENTITY_TYPES, CUSTOM_FIELD_TYPES } from '../constants/options';
 
 /* ---------- Trash ---------- */
@@ -23,6 +23,7 @@ const TRASH_TYPES = [
 function TrashSection() {
   const toast = useToast();
   const [groups, setGroups] = useState(null);
+  const [loadError, setLoadError] = useState(false);
   const [busyId, setBusyId] = useState(null);
 
   async function load() {
@@ -35,6 +36,8 @@ function TrashSection() {
         out[TRASH_TYPES[i].api] = { label: TRASH_TYPES[i].label, items: r.value.items };
       }
     });
+    // A failed list must not masquerade as an empty Trash.
+    setLoadError(results.some((r) => r.status === 'rejected'));
     setGroups(out);
   }
 
@@ -71,6 +74,19 @@ function TrashSection() {
       </p>
       {groups === null ? (
         <Loading small />
+      ) : loadError ? (
+        <div className="muted panel-empty">
+          Couldn&apos;t load the Trash.{' '}
+          <button
+            className="linklike"
+            onClick={() => {
+              setGroups(null);
+              load();
+            }}
+          >
+            Retry
+          </button>
+        </div>
       ) : total === 0 ? (
         <div className="muted panel-empty">Trash is empty.</div>
       ) : (
@@ -412,6 +428,48 @@ function SecuritySection() {
   );
 }
 
+/* ---------- Sessions ---------- */
+
+function SessionsSection() {
+  const [sessions, setSessions] = useState(null);
+
+  useEffect(() => {
+    let on = true;
+    get('/auth/sessions')
+      .then((d) => {
+        if (on) setSessions(Array.isArray(d) ? d : d?.items || []);
+      })
+      .catch(() => {
+        // Older backend without the sessions endpoint — hide the card.
+        if (on) setSessions([]);
+      });
+    return () => {
+      on = false;
+    };
+  }, []);
+
+  if (!sessions || sessions.length === 0) return null;
+
+  return (
+    <div className="card settings-card">
+      <h3>Active sessions</h3>
+      <p className="muted">Where this account is currently signed in.</p>
+      <div className="cf-list">
+        {sessions.map((s) => (
+          <div key={s.id} className="cf-row">
+            <div className="cf-name">
+              {s.current ? 'This session' : 'Session'}
+              {s.created_at && <span className="muted"> — signed in {fmtDateTime(s.created_at)}</span>}
+            </div>
+            {/* last_seen_at may be absent on an older backend — show nothing then */}
+            {s.last_seen_at && <span className="muted">Last active {fmtDateTime(s.last_seen_at)}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Custom fields ---------- */
 
 function CustomFieldsSection() {
@@ -454,6 +512,7 @@ function CustomFieldsSection() {
           : null,
     };
     await post('/custom-fields', body);
+    bustCache('/custom-fields');
     setShowAdd(false);
     setVersion((v) => v + 1);
     toast.success('Custom field added');
@@ -462,6 +521,7 @@ function CustomFieldsSection() {
   async function rename(f, name) {
     try {
       await patch(`/custom-fields/${f.id}`, { name });
+      bustCache('/custom-fields');
       setVersion((v) => v + 1);
     } catch (e) {
       toast.error(e.message);
@@ -471,6 +531,7 @@ function CustomFieldsSection() {
   async function changeType(f, field_type) {
     try {
       await patch(`/custom-fields/${f.id}`, { field_type });
+      bustCache('/custom-fields');
       setVersion((v) => v + 1);
       toast.success(field_type === 'date' ? 'Type changed — existing values converted to dates' : 'Type changed');
     } catch (e) {
@@ -482,6 +543,7 @@ function CustomFieldsSection() {
     const options = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
     try {
       await patch(`/custom-fields/${f.id}`, { options });
+      bustCache('/custom-fields');
       setVersion((v) => v + 1);
     } catch (e) {
       toast.error(e.message);
@@ -492,6 +554,7 @@ function CustomFieldsSection() {
     if (!window.confirm(`Delete custom field "${f.name}"? Values on records will be lost.`)) return;
     try {
       await del(`/custom-fields/${f.id}`);
+      bustCache('/custom-fields');
       setVersion((v) => v + 1);
     } catch (e) {
       toast.error(e.message);
@@ -620,6 +683,7 @@ function UsersSection() {
       display_name: values.display_name,
       is_admin: !!values.is_admin,
     });
+    bustCache('/users');
     setShowAdd(false);
     setVersion((v) => v + 1);
     toast.success('User created');
@@ -628,6 +692,7 @@ function UsersSection() {
   async function toggleAdmin(u) {
     try {
       await patch(`/users/${u.id}`, { is_admin: !u.is_admin });
+      bustCache('/users');
       setVersion((v) => v + 1);
     } catch (e) {
       toast.error(e.message);
@@ -667,6 +732,7 @@ function UsersSection() {
       return;
     try {
       await patch(`/users/${u.id}`, { is_active: !deactivating ? true : false });
+      bustCache('/users');
       setVersion((v) => v + 1);
       toast.success(deactivating ? `${u.display_name} deactivated` : `${u.display_name} reactivated`);
     } catch (e) {
@@ -755,6 +821,21 @@ function UsersSection() {
 
 /* ---------- Integrations ---------- */
 
+/** Failure card for an integration whose status fetch didn't come back. */
+function IntegrationErrorCard({ title, onRetry }) {
+  return (
+    <div className="card settings-card integration-card">
+      <h3>{title}</h3>
+      <div className="muted panel-empty">
+        Couldn&apos;t load the integration status.{' '}
+        <button className="linklike" onClick={onRetry}>
+          Retry
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ColloquiSection() {
   const { user } = useAuth();
   const toast = useToast();
@@ -768,6 +849,7 @@ function ColloquiSection() {
 
   useEffect(() => {
     let on = true;
+    setStatus(null);
     get('/integrations/colloqui/status')
       .then((s) => {
         if (!on) return;
@@ -779,7 +861,11 @@ function ColloquiSection() {
             .catch(() => on && setColloquiUsers([]));
         }
       })
-      .catch((e) => toast.error(e.message));
+      .catch((e) => {
+        toast.error(e.message);
+        // Error sentinel — a permanent spinner would otherwise sit here.
+        if (on) setStatus({ load_error: true });
+      });
     return () => {
       on = false;
     };
@@ -862,6 +948,9 @@ function ColloquiSection() {
         <Loading small />
       </div>
     );
+  }
+  if (status.load_error) {
+    return <IntegrationErrorCard title="Connect to Colloqui" onRetry={() => setVersion((v) => v + 1)} />;
   }
 
   return (
@@ -998,13 +1087,18 @@ function GoogleSection() {
 
   useEffect(() => {
     let on = true;
+    setStatus(null);
     get('/integrations/google/status')
       .then((s) => {
         if (!on) return;
         setStatus(s);
         setClientId(s.client_id || '');
       })
-      .catch((e) => toast.error(e.message));
+      .catch((e) => {
+        toast.error(e.message);
+        // Error sentinel — a permanent spinner would otherwise sit here.
+        if (on) setStatus({ load_error: true });
+      });
     return () => {
       on = false;
     };
@@ -1085,6 +1179,11 @@ function GoogleSection() {
         <h3>Connect to Google Workspace</h3>
         <Loading small />
       </div>
+    );
+  }
+  if (status.load_error) {
+    return (
+      <IntegrationErrorCard title="Connect to Google Workspace" onRetry={() => setVersion((v) => v + 1)} />
     );
   }
 
@@ -1235,9 +1334,14 @@ function RingCentralSection() {
 
   useEffect(() => {
     let on = true;
+    setStatus(null);
     get('/integrations/ringcentral/status')
       .then((s) => on && setStatus(s))
-      .catch((e) => toast.error(e.message));
+      .catch((e) => {
+        toast.error(e.message);
+        // Error sentinel — a permanent spinner would otherwise sit here.
+        if (on) setStatus({ load_error: true });
+      });
     return () => {
       on = false;
     };
@@ -1287,6 +1391,11 @@ function RingCentralSection() {
         <h3>Connect to RingCentral</h3>
         <Loading small />
       </div>
+    );
+  }
+  if (status.load_error) {
+    return (
+      <IntegrationErrorCard title="Connect to RingCentral" onRetry={() => setVersion((v) => v + 1)} />
     );
   }
 
@@ -1424,7 +1533,12 @@ export default function Settings() {
         ))}
       </div>
       {tab === 'profile' && <ProfileSection />}
-      {tab === 'security' && <SecuritySection />}
+      {tab === 'security' && (
+        <>
+          <SecuritySection />
+          <SessionsSection />
+        </>
+      )}
       {tab === 'fields' && <CustomFieldsSection />}
       {tab === 'users' && user?.is_admin && <UsersSection />}
       {tab === 'automations' && user?.is_admin && <AutomationsSection />}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { get } from '../api';
 import { EmailBody, useEmailBodies } from '../components/EmailBody';
@@ -51,8 +51,16 @@ export default function Feed() {
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
   const { open: openEmail, toggle: toggleEmail, bodies, close: closeEmail } = useEmailBodies();
+  // Set when a failed load-more rolls the page back: that page's data is
+  // already loaded, so the effect run the rollback triggers must not append
+  // it again. Clicking "Load more" then re-requests the failed page.
+  const skipNextFetch = useRef(false);
 
   useEffect(() => {
+    if (skipNextFetch.current) {
+      skipNextFetch.current = false;
+      return;
+    }
     let on = true;
     setLoadingMore(true);
     get('/feed', { page, page_size: PAGE_SIZE, kind: tab })
@@ -63,7 +71,12 @@ export default function Feed() {
       })
       .catch((e) => {
         toast.error(e.message);
-        if (on) setItems((prev) => prev || []);
+        if (!on) return;
+        setItems((prev) => prev || []);
+        if (page > 1) {
+          skipNextFetch.current = true;
+          setPage((p) => p - 1);
+        }
       })
       .finally(() => {
         if (on) setLoadingMore(false);

@@ -1915,6 +1915,11 @@ th.col-check {
   color: var(--accent);
   font-size: 12px;
 }
+/* Quiet rescan line shown when there are no suggestions */
+.suggestions-rescan {
+  margin-bottom: 10px;
+  font-size: 13px;
+}
 .suggestion-type-select {
   font-size: 13px;
   padding: 3px 6px;
@@ -2079,7 +2084,7 @@ th.col-check {
   font-size: 12px;
 }
 
-/* Reminder when-picker */
+/* Task when-picker */
 .when-row {
   margin-top: 8px;
 }

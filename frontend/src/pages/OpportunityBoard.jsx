@@ -38,13 +38,14 @@ export default function OpportunityBoard({ pipelines }) {
 
   async function move(opp, stageId) {
     if (!stageId || opp.stage_id === stageId) return;
-    const prev = opps;
+    const prevStageId = opp.stage_id;
     setOpps((os) => os.map((o) => (o.id === opp.id ? { ...o, stage_id: stageId } : o)));
     try {
       await patch(`/opportunities/${opp.id}`, { stage_id: stageId });
     } catch (e) {
       toast.error(e.message);
-      setOpps(prev);
+      // Roll back only this card — other moves made meanwhile stay put.
+      setOpps((os) => os && os.map((o) => (o.id === opp.id ? { ...o, stage_id: prevStageId } : o)));
     }
   }
 

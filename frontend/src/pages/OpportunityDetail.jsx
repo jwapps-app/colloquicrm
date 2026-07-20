@@ -1,5 +1,5 @@
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { del } from '../api';
+import { bustCache, del } from '../api';
 import { useEntity, usePipelines, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
@@ -102,7 +102,7 @@ export default function OpportunityDetail() {
           <ProfilePanel entity={opp} entityType="opportunity" fields={OPPORTUNITY_FIELDS} users={users} onSave={save} />
           <div className="card">
             <h4 className="panel-title">Tags</h4>
-            <TagEditor tags={opp.tags || []} onChange={(tags) => save({ tags })} />
+            <TagEditor tags={opp.tags || []} onChange={(tags) => save({ tags }).then(() => bustCache('/tags'))} />
           </div>
         </>
       }

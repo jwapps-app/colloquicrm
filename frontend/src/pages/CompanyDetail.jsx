@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { del } from '../api';
+import { bustCache, del } from '../api';
 import { useContactTypes, useEntity, useRelated, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
@@ -20,8 +21,11 @@ export default function CompanyDetail() {
   const users = useUsers();
   const contactTypes = useContactTypes();
   const { entity: company, save, error, refresh } = useEntity('/companies', id);
-  const people = useRelated('/people', { company_id: id }, [id]);
-  const opps = useRelated('/opportunities', { company_id: id }, [id]);
+  // Bumped after a merge so the absorbed record's people and opportunities
+  // appear without a manual reload.
+  const [relatedKey, setRelatedKey] = useState(0);
+  const people = useRelated('/people', { company_id: id }, [id, relatedKey]);
+  const opps = useRelated('/opportunities', { company_id: id }, [id, relatedKey]);
 
   if (error) return <div className="page"><Empty label="Company not found." hint={error} /></div>;
   if (!company) return <Loading label="Loading company…" />;
@@ -43,7 +47,17 @@ export default function CompanyDetail() {
       backLabel="Companies"
       title={company.name}
       subtitle={[company.email_domain, company.city].filter(Boolean).join(' · ')}
-      actions={<MergeButton apiPath="/companies" entityId={id} label={company.name} onMerged={refresh} />}
+      actions={
+        <MergeButton
+          apiPath="/companies"
+          entityId={id}
+          label={company.name}
+          onMerged={() => {
+            refresh();
+            setRelatedKey((k) => k + 1);
+          }}
+        />
+      }
       onDelete={remove}
       entityType="company"
       entityId={id}
@@ -52,7 +66,7 @@ export default function CompanyDetail() {
           <ProfilePanel entity={company} entityType="company" fields={COMPANY_FIELDS} users={users} contactTypes={contactTypes} onSave={save} />
           <div className="card">
             <h4 className="panel-title">Tags</h4>
-            <TagEditor tags={company.tags || []} onChange={(tags) => save({ tags })} />
+            <TagEditor tags={company.tags || []} onChange={(tags) => save({ tags }).then(() => bustCache('/tags'))} />
           </div>
         </>
       }

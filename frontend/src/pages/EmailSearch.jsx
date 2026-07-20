@@ -32,7 +32,16 @@ export default function EmailSearch() {
     return () => clearTimeout(t);
   }, [input]);
 
+  // Set when a failed load-more rolls the page back: that page's data is
+  // already loaded, so the effect run the rollback triggers must not append
+  // it again. Clicking "Load more" then re-requests the failed page.
+  const skipNextFetch = useRef(false);
+
   useEffect(() => {
+    if (skipNextFetch.current) {
+      skipNextFetch.current = false;
+      return;
+    }
     if (q.length < 2) {
       setItems(null);
       setHasMore(false);
@@ -48,7 +57,12 @@ export default function EmailSearch() {
       })
       .catch((e) => {
         toast.error(e.message);
-        if (on) setItems((prev) => prev || []);
+        if (!on) return;
+        setItems((prev) => prev || []);
+        if (page > 1) {
+          skipNextFetch.current = true;
+          setPage((p) => p - 1);
+        }
       })
       .finally(() => on && setLoading(false));
     return () => {

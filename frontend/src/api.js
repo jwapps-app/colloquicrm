@@ -28,6 +28,24 @@ function buildUrl(path, params) {
   return url;
 }
 
+// A 401 outside the auth flows means the session is gone: drop the token,
+// leave a breadcrumb for the login page, and send the user there.
+function unauthorized(method, path) {
+  clearToken();
+  try {
+    // Breadcrumb for the login page: which request ended the session.
+    sessionStorage.setItem('crm_signout_reason', `${method} ${path}`);
+  } catch {
+    // storage unavailable — the redirect still happens
+  }
+  if (!window.location.pathname.startsWith('/login')) {
+    window.location.assign('/login');
+  }
+  const err = new Error('Session expired. Please sign in again.');
+  err.status = 401;
+  return err;
+}
+
 async function request(method, path, { params, body, formData } = {}) {
   const url = buildUrl(path, params);
 
@@ -51,19 +69,7 @@ async function request(method, path, { params, body, formData } = {}) {
   }
 
   if (res.status === 401 && !NO_REDIRECT_PATHS.includes(path)) {
-    clearToken();
-    try {
-      // Breadcrumb for the login page: which request ended the session.
-      sessionStorage.setItem('crm_signout_reason', `${method} ${path}`);
-    } catch {
-      // storage unavailable — the redirect still happens
-    }
-    if (!window.location.pathname.startsWith('/login')) {
-      window.location.assign('/login');
-    }
-    const err = new Error('Session expired. Please sign in again.');
-    err.status = 401;
-    throw err;
+    throw unauthorized(method, path);
   }
 
   if (res.status === 204) return null;
@@ -101,6 +107,9 @@ export async function download(path, params) {
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(buildUrl(path, params), { headers, cache: 'no-store' });
+  if (res.status === 401) {
+    throw unauthorized('GET', path);
+  }
   if (!res.ok) {
     let msg = `Download failed (${res.status})`;
     try {
@@ -138,6 +147,17 @@ export function cachedGet(path, params, ttlMs = 60000) {
   });
   _getCache.set(url, { at: Date.now(), promise });
   return promise;
+}
+
+/** Drop cached GETs whose path starts with `pathPrefix` (query strings
+ * included), so the next cachedGet refetches. Call after a mutation that
+ * invalidates one of the cached lookups — e.g. bustCache('/tags') after
+ * adding a tag, bustCache('/custom-fields') after editing fields. */
+export function bustCache(pathPrefix) {
+  const prefix = BASE + pathPrefix;
+  for (const key of [..._getCache.keys()]) {
+    if (key.startsWith(prefix)) _getCache.delete(key);
+  }
 }
 
 export const get = (path, params) => request('GET', path, { params });

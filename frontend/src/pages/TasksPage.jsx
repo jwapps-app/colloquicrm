@@ -29,7 +29,14 @@ export default function TasksPage() {
       : { sort: 'due_at', order: 'asc' };
     get('/tasks', { status: tab, page, page_size: PAGE_SIZE, ...sort })
       .then((d) => {
-        if (on) setData(d);
+        if (!on) return;
+        // Completing/deleting the last task on a later page leaves it empty —
+        // step back so the user isn't stranded on a blank page.
+        if ((d?.items || []).length === 0 && (d?.total || 0) > 0 && page > 1) {
+          setPage((p) => p - 1);
+          return;
+        }
+        setData(d);
       })
       .catch((e) => {
         toast.error(e.message);
@@ -48,7 +55,12 @@ export default function TasksPage() {
     setBusy(true);
     try {
       const body = { name: n };
-      if (due) body.due_at = `${due}T09:00:00`;
+      if (due) {
+        // 9 AM local on the chosen day, sent as a real instant — a naive
+        // wall-time string would be stored as UTC and fire hours early.
+        const [y, m, d] = due.split('-').map(Number);
+        body.due_at = new Date(y, m - 1, d, 9).toISOString();
+      }
       if (priority) body.priority = priority;
       await post('/tasks', body);
       setName('');

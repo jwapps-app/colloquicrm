@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { cachedGet, del, download, get, post } from '../api';
+import { bustCache, cachedGet, del, download, get, post } from '../api';
 import { useToast } from './Toast';
 import FormModal from './FormModal';
 import { Empty, Loading } from './ui';
@@ -70,6 +70,10 @@ export default function ListPage({
     return () => clearTimeout(t);
   }, [qInput]);
 
+  // Serialized so callers passing a fresh object literal each render don't
+  // cause identity churn, while dynamic extraParams still trigger a refetch.
+  const extraParamsKey = JSON.stringify(extraParams);
+
   // Main fetch.
   useEffect(() => {
     let on = true;
@@ -89,7 +93,7 @@ export default function ListPage({
       on = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiPath, q, page, sort, order, filters, refresh, refreshToken]);
+  }, [apiPath, q, page, sort, order, filters, refresh, refreshToken, extraParamsKey]);
 
   // A different result set makes the old selection meaningless.
   useEffect(() => {
@@ -230,6 +234,8 @@ export default function ListPage({
         ? { ...body, select_all: true }
         : { ...body, ids: [...selected] };
       const res = await post(`${apiPath}/bulk`, payload, allMatching ? listParams : undefined);
+      // Bulk-tagging can mint new tags — the cached /tags list is now stale.
+      if (body.action === 'add_tags') bustCache('/tags');
       toast.success(`${res.affected} record${res.affected === 1 ? '' : 's'} ${body.action === 'delete' ? 'moved to Trash' : 'updated'}`);
       setSelected(new Set());
       setAllMatching(false);

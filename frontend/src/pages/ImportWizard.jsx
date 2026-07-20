@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { get, post, upload } from '../api';
 import { useToast } from '../components/Toast';
@@ -21,6 +21,17 @@ export default function ImportWizard() {
   const [result, setResult] = useState(null);
   const [progress, setProgress] = useState(null);
   const [dupsOnly, setDupsOnly] = useState(false);
+
+  // Guards the commit poll loop: cleared on unmount so it stops polling and
+  // never sets state on an unmounted page. The import itself keeps running
+  // server-side.
+  const on = useRef(true);
+  useEffect(() => {
+    on.current = true;
+    return () => {
+      on.current = false;
+    };
+  }, []);
 
   function applyPreview(p) {
     setPreview(p);
@@ -88,11 +99,13 @@ export default function ImportWizard() {
         })),
       };
       const { job_id } = await post('/imports/commit', body);
-      // The import runs server-side; poll until it lands.
+      // The import runs server-side; poll until it lands (or the page is left).
       let job = null;
       for (;;) {
         await new Promise((r) => setTimeout(r, 1500));
+        if (!on.current) return;
         job = await get(`/imports/jobs/${job_id}`);
+        if (!on.current) return;
         setProgress(job);
         if (job.status !== 'running') break;
       }
@@ -102,9 +115,11 @@ export default function ImportWizard() {
       setResult(job);
       toast.success('Import complete');
     } catch (err) {
+      if (!on.current) return;
       toast.error(err.message);
       setStep(2);
     }
+    if (!on.current) return;
     setBusy(false);
     setProgress(null);
   }

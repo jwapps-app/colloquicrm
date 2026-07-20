@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { del, post } from '../api';
+import { bustCache, del, post } from '../api';
 import { useContactTypes, useEntity, usePipelines, useRelated, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
@@ -13,15 +13,18 @@ import CalendarPanel from '../components/CalendarPanel';
 import RelatedPanel from '../components/RelatedPanel';
 import { Empty, Loading } from '../components/ui';
 import { fullName, humanize, money, safeHref } from '../format';
+import { applyFirstStage } from '../pipelines';
 import { PERSON_FIELDS } from '../constants/fields';
 import { CURRENCIES } from '../constants/options';
 
-function PersonOpportunities({ personId, companyId }) {
+function PersonOpportunities({ personId, companyId, refreshKey = 0 }) {
   const toast = useToast();
   const pipelines = usePipelines();
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [localKey, setLocalKey] = useState(0);
   const [creating, setCreating] = useState(false);
-  const items = useRelated('/opportunities', { primary_person_id: personId }, [personId, refreshKey]);
+  // refreshKey comes from the parent (bumped after a merge) so absorbed
+  // opportunities appear without a manual reload.
+  const items = useRelated('/opportunities', { primary_person_id: personId }, [personId, refreshKey, localKey]);
 
   const createFields = [
     { key: 'name', label: 'Name', required: true },
@@ -29,9 +32,13 @@ function PersonOpportunities({ personId, companyId }) {
     { key: 'currency', label: 'Currency', type: 'select', options: CURRENCIES, default: 'USD' },
     { key: 'close_date', label: 'Close date', type: 'date' },
     {
+      // Required so an opportunity can never be created without a pipeline —
+      // if the modal opens before /pipelines resolves, the empty select
+      // blocks submit until a pipeline is picked.
       key: 'pipeline_id',
       label: 'Pipeline',
       type: 'select',
+      required: true,
       options: pipelines.map((p) => ({ value: p.id, label: p.name })),
       default: pipelines[0]?.id,
     },
@@ -47,14 +54,10 @@ function PersonOpportunities({ personId, companyId }) {
     });
     body.primary_person_id = personId;
     if (companyId) body.company_id = companyId;
-    if (body.pipeline_id) {
-      const p = pipelines.find((x) => x.id === body.pipeline_id);
-      const first = p?.stages?.slice().sort((a, b) => a.position - b.position)[0];
-      if (first) body.stage_id = first.id;
-    }
+    applyFirstStage(body, pipelines);
     await post('/opportunities', body);
     setCreating(false);
-    setRefreshKey((k) => k + 1);
+    setLocalKey((k) => k + 1);
     toast.success('Opportunity created');
   }
 
@@ -162,6 +165,8 @@ export default function PersonDetail() {
   const users = useUsers();
   const contactTypes = useContactTypes();
   const { entity: person, save, error, refresh } = useEntity('/people', id);
+  // Bumped after a merge so the related panels refetch too.
+  const [relatedKey, setRelatedKey] = useState(0);
 
   if (error) return <div className="page"><Empty label="Person not found." hint={error} /></div>;
   if (!person) return <Loading label="Loading person…" />;
@@ -183,7 +188,17 @@ export default function PersonDetail() {
       backLabel="People"
       title={fullName(person)}
       subtitle={[person.title, person.company_name].filter(Boolean).join(' · ')}
-      actions={<MergeButton apiPath="/people" entityId={id} label={fullName(person)} onMerged={refresh} />}
+      actions={
+        <MergeButton
+          apiPath="/people"
+          entityId={id}
+          label={fullName(person)}
+          onMerged={() => {
+            refresh();
+            setRelatedKey((k) => k + 1);
+          }}
+        />
+      }
       onDelete={remove}
       entityType="person"
       entityId={id}
@@ -192,7 +207,7 @@ export default function PersonDetail() {
           <ProfilePanel entity={person} entityType="person" fields={PERSON_FIELDS} users={users} contactTypes={contactTypes} onSave={save} />
           <div className="card">
             <h4 className="panel-title">Tags</h4>
-            <TagEditor tags={person.tags || []} onChange={(tags) => save({ tags })} />
+            <TagEditor tags={person.tags || []} onChange={(tags) => save({ tags }).then(() => bustCache('/tags'))} />
           </div>
           <SocialFinder person={person} onSave={save} />
         </>
@@ -201,7 +216,7 @@ export default function PersonDetail() {
         <>
           <TasksPanel entityType="person" entityId={id} />
           <CalendarPanel entityType="person" entityId={id} />
-          <PersonOpportunities personId={id} companyId={person.company_id} />
+          <PersonOpportunities personId={id} companyId={person.company_id} refreshKey={relatedKey} />
           {person.company_id && (
             <div className="card">
               <h4 className="panel-title">Company</h4>

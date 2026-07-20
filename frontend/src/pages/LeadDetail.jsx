@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { del, post } from '../api';
+import { bustCache, del, post } from '../api';
 import { useEntity, usePipelines, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
@@ -144,7 +144,7 @@ export default function LeadDetail() {
             <ProfilePanel entity={lead} entityType="lead" fields={LEAD_FIELDS} users={users} onSave={save} />
             <div className="card">
               <h4 className="panel-title">Tags</h4>
-              <TagEditor tags={lead.tags || []} onChange={(tags) => save({ tags })} />
+              <TagEditor tags={lead.tags || []} onChange={(tags) => save({ tags }).then(() => bustCache('/tags'))} />
             </div>
           </>
         }

@@ -3,6 +3,7 @@ import ListPage from '../components/ListPage';
 import OpportunityBoard from './OpportunityBoard';
 import { usePipelines } from '../hooks';
 import { fmtDate, humanize, money } from '../format';
+import { applyFirstStage } from '../pipelines';
 import { CURRENCIES, OPPORTUNITY_STATUSES } from '../constants/options';
 
 export default function OpportunitiesList() {
@@ -46,9 +47,13 @@ export default function OpportunitiesList() {
       { key: 'currency', label: 'Currency', type: 'select', options: CURRENCIES, default: 'USD' },
       { key: 'close_date', label: 'Close date', type: 'date' },
       {
+        // Required so an opportunity can never be created without a pipeline —
+        // if the modal opens before /pipelines resolves, the empty select
+        // blocks submit until a pipeline is picked.
         key: 'pipeline_id',
         label: 'Pipeline',
         type: 'select',
+        required: true,
         options: pipelines.map((p) => ({ value: p.id, label: p.name })),
         default: pipelines[0]?.id,
       },
@@ -57,12 +62,7 @@ export default function OpportunitiesList() {
   );
 
   function transformCreate(body) {
-    if (body.pipeline_id) {
-      const p = pipelines.find((x) => x.id === body.pipeline_id);
-      const first = p?.stages?.slice().sort((a, b) => a.position - b.position)[0];
-      if (first) body.stage_id = first.id;
-    }
-    return body;
+    return applyFirstStage(body, pipelines);
   }
 
   const toggle = (

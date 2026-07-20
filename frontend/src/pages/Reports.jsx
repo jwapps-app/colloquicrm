@@ -24,6 +24,18 @@ function compact(n) {
 const compactMoney = (n) => '$' + compact(n);
 const pct = (x) => (x === null || x === undefined ? '—' : Math.round(x * 100) + '%');
 
+/** Inline failure state for one report section, with a retry affordance. */
+function SectionError({ onRetry }) {
+  return (
+    <div className="state empty">
+      <span>Couldn&apos;t load this report.</span>
+      <button className="btn btn-small" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
 function Tiles({ tiles }) {
   return (
     <div className="report-tiles">
@@ -380,17 +392,24 @@ export default function Reports() {
   const [sales, setSales] = useState(null);
   const [activity, setActivity] = useState(null);
   const [leads, setLeads] = useState(null);
+  const [pipelineVersion, setPipelineVersion] = useState(0);
+  const [rangeVersion, setRangeVersion] = useState(0);
 
   useEffect(() => {
     let on = true;
+    setPipeline(null);
     get('/reports/pipeline')
       .then((d) => on && setPipeline(d))
-      .catch((e) => toast.error(e.message));
+      .catch((e) => {
+        toast.error(e.message);
+        // Error sentinel — a permanent spinner would otherwise sit here.
+        if (on) setPipeline({ error: true });
+      });
     return () => {
       on = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [pipelineVersion]);
 
   useEffect(() => {
     let on = true;
@@ -400,7 +419,10 @@ export default function Reports() {
     const load = (path, set) =>
       get(path, { range })
         .then((d) => on && set(d))
-        .catch((e) => toast.error(e.message));
+        .catch((e) => {
+          toast.error(e.message);
+          if (on) set({ error: true });
+        });
     load('/reports/sales', setSales);
     load('/reports/activity', setActivity);
     load('/reports/leads', setLeads);
@@ -408,7 +430,9 @@ export default function Reports() {
       on = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+  }, [range, rangeVersion]);
+
+  const retryRange = () => setRangeVersion((v) => v + 1);
 
   return (
     <div className="page">
@@ -434,22 +458,26 @@ export default function Reports() {
           <h2>Pipeline</h2>
           <span className="muted">Live snapshot</span>
         </div>
-        <PipelineSection data={pipeline} />
+        {pipeline?.error ? (
+          <SectionError onRetry={() => setPipelineVersion((v) => v + 1)} />
+        ) : (
+          <PipelineSection data={pipeline} />
+        )}
       </div>
 
       <div className="card report-section">
         <h2>Sales</h2>
-        <SalesSection data={sales} />
+        {sales?.error ? <SectionError onRetry={retryRange} /> : <SalesSection data={sales} />}
       </div>
 
       <div className="card report-section">
         <h2>Activity</h2>
-        <ActivitySection data={activity} />
+        {activity?.error ? <SectionError onRetry={retryRange} /> : <ActivitySection data={activity} />}
       </div>
 
       <div className="card report-section">
         <h2>Leads funnel</h2>
-        <LeadsSection data={leads} />
+        {leads?.error ? <SectionError onRetry={retryRange} /> : <LeadsSection data={leads} />}
       </div>
     </div>
   );

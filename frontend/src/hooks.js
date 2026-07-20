@@ -43,7 +43,9 @@ export function useEntity(apiPath, id) {
 }
 
 // Load a related list for a detail page (up to 100 rows). `deps` controls
-// when it refetches — typically the parent entity id.
+// when it refetches — typically the parent entity id. Returns null while
+// loading, the items on success, or the string 'error' when the fetch
+// failed — so a failure doesn't masquerade as an empty list.
 export function useRelated(apiPath, params, deps) {
   const [items, setItems] = useState(null);
   useEffect(() => {
@@ -54,7 +56,7 @@ export function useRelated(apiPath, params, deps) {
         if (on) setItems(d?.items || []);
       })
       .catch(() => {
-        if (on) setItems([]);
+        if (on) setItems('error');
       });
     return () => {
       on = false;

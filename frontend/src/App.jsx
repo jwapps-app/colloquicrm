@@ -40,6 +40,26 @@ export default function App() {
   const [boot, setBoot] = useState(null);
   const [user, setUser] = useState(null);
   const [ready, setReady] = useState(false);
+  const [bootError, setBootError] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+
+  // Re-runnable /auth/me check: called at boot and by the error screen's
+  // Retry button. Only a real 401 invalidates the token — a network blip or
+  // tunnel hiccup at boot must not log the user out, but it also must not
+  // strand the app on the Protected spinner forever.
+  async function checkMe() {
+    try {
+      setUser(await get('/auth/me'));
+      setBootError(false);
+    } catch (err) {
+      if (err.status === 401) {
+        clearToken();
+        setBootError(false); // falls through to /login
+      } else {
+        setBootError(true);
+      }
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -51,17 +71,18 @@ export default function App() {
       }
       setBoot(b);
       if (!b.needs_setup && getToken()) {
-        try {
-          setUser(await get('/auth/me'));
-        } catch (err) {
-          // Only a real rejection invalidates the token — a network blip or
-          // tunnel hiccup at boot must not log the user out.
-          if (err.status === 401) clearToken();
-        }
+        await checkMe();
       }
       setReady(true);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function retryBoot() {
+    setRetrying(true);
+    await checkMe();
+    setRetrying(false);
+  }
 
   const appName = boot?.app_name || APP_NAME;
 
@@ -73,6 +94,22 @@ export default function App() {
     return (
       <div className="app-loading">
         <div className="spinner" />
+      </div>
+    );
+  }
+
+  // Signed in (token present) but the server couldn't be reached at boot —
+  // show a way out instead of the Protected spinner forever.
+  if (bootError && !user && getToken()) {
+    return (
+      <div className="app-loading">
+        <div className="state empty">
+          <span>Can&apos;t reach the server.</span>
+          <span className="muted">Check your connection, then try again.</span>
+          <button className="btn btn-primary" onClick={retryBoot} disabled={retrying}>
+            {retrying ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
       </div>
     );
   }
