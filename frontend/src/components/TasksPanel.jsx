@@ -8,8 +8,8 @@ import { Loading } from './ui';
 const HOURS = Array.from({ length: 11 }, (_, i) => i + 8); // 8 AM – 6 PM
 const MINUTES = [0, 15, 30, 45];
 
-// Colloqui's reminder default: an hour from now rounded up to the quarter
-// hour, clamped into the 8 AM–6 PM window (else tomorrow morning).
+// Default task time: an hour from now rounded up to the quarter hour,
+// clamped into the 8 AM–6 PM window (else tomorrow morning).
 function suggestWhen() {
   const d = new Date(Date.now() + 3600000);
   d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15, 0, 0);
@@ -73,7 +73,7 @@ export default function TasksPanel({ entityType, entityId }) {
     setPicking(true);
   }
 
-  async function setReminder() {
+  async function addTask() {
     const n = name.trim();
     if (!n || !whenDate) return;
     const [y, m, d] = whenDate.split('-').map(Number);
@@ -90,7 +90,7 @@ export default function TasksPanel({ entityType, entityId }) {
       setName('');
       setPicking(false);
       await load();
-      toast.success(`Reminder set for ${due.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`);
+      toast.success(`Task added, due ${due.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`);
     } catch (err) {
       toast.error(err.message);
     }
@@ -112,11 +112,11 @@ export default function TasksPanel({ entityType, entityId }) {
 
   return (
     <div className="card">
-      <h4 className="panel-title">Reminders</h4>
+      <h4 className="panel-title">Tasks</h4>
       {tasks === null ? (
         <Loading small label="Loading…" />
       ) : tasks.length === 0 ? (
-        <div className="muted panel-empty">No reminders.</div>
+        <div className="muted panel-empty">No tasks yet.</div>
       ) : (
         <div className="mini-tasks">
           {tasks.map((t) => {
@@ -136,7 +136,7 @@ export default function TasksPanel({ entityType, entityId }) {
 
       {!picking ? (
         <form className="quick-add" onSubmit={openPicker}>
-          <input placeholder="Remind me to…" value={name} onChange={(e) => setName(e.target.value)} />
+          <input placeholder="Add a task…" value={name} onChange={(e) => setName(e.target.value)} />
           <button className="btn btn-small" type="submit" disabled={busy || !name.trim()}>
             When…
           </button>
@@ -164,8 +164,8 @@ export default function TasksPanel({ entityType, entityId }) {
             <button className="btn btn-small" onClick={() => setPicking(false)} disabled={busy}>
               Cancel
             </button>
-            <button className="btn btn-small btn-primary" onClick={setReminder} disabled={busy || !whenDate}>
-              Set reminder
+            <button className="btn btn-small btn-primary" onClick={addTask} disabled={busy || !whenDate}>
+              Add task
             </button>
           </div>
         </div>
