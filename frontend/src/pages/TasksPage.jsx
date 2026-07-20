@@ -155,9 +155,10 @@ export default function TasksPage() {
                     </span>
                   )}
                   {link && (
-                    <Link className="task-entity" to={link}>
-                      {humanize(t.entity_type)} →
-                    </Link>
+                    <span className="task-entity muted">
+                      Related to{' '}
+                      <Link to={link}>{t.entity_label || humanize(t.entity_type)}</Link>
+                    </span>
                   )}
                   {t.assignee_name && <span className="muted task-assignee">{t.assignee_name}</span>}
                   <button className="icon-btn tiny" onClick={() => remove(t)} title="Delete task" aria-label="Delete task">

@@ -9,7 +9,12 @@ from app.deps import get_current_user
 from app.models import Task, User, utcnow
 from app.schemas import TaskIn
 from app.services import colloqui
-from app.services.common import display_name_map, log_activity, validate_entity_ref
+from app.services.common import (
+    display_name_map,
+    entity_labels_map,
+    log_activity,
+    validate_entity_ref,
+)
 from app.services.crud import register_crud
 
 router = APIRouter()
@@ -21,9 +26,17 @@ async def enrich(db, user, dicts):
         {d.get("assignee_id") for d in dicts} | {d.get("created_by") for d in dicts},
         user.org_id,
     )
+    labels = await entity_labels_map(
+        db,
+        user.org_id,
+        {(d.get("entity_type"), d.get("entity_id")) for d in dicts},
+    )
     for d in dicts:
         d["assignee_name"] = names.get(d.get("assignee_id"))
         d["created_by_name"] = names.get(d.get("created_by"))
+        # The record this task hangs off, by name — clients show "Related to
+        # <name>" and fall back to the type when the record is gone (null).
+        d["entity_label"] = labels.get((d.get("entity_type"), d.get("entity_id")))
 
 
 async def _validate_target(db, user, data):

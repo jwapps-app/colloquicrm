@@ -215,6 +215,37 @@ ENTITY_MODELS = {
 }
 
 
+async def entity_labels_map(db: AsyncSession, org_id: uuid.UUID, refs: set) -> dict:
+    """(entity_type, id) -> display label, batched one query per type.
+
+    `refs` is a set of (entity_type, entity_id) pairs; entity_id may be a str or
+    UUID. Resolves person/lead/company/opportunity names in-org, including
+    trashed records (a task can still point at a since-deleted record). Keys are
+    (entity_type, str(id)); a ref whose record is gone simply won't appear, so
+    callers fall back to the type. Bounded: at most one SELECT per entity type."""
+    import app.models as models
+
+    out: dict = {}
+    by_type: dict[str, list[uuid.UUID]] = {}
+    for etype, eid in refs:
+        if etype and eid:
+            try:
+                by_type.setdefault(etype, []).append(uuid.UUID(str(eid)))
+            except ValueError:
+                continue
+    for etype, ids in by_type.items():
+        name = ENTITY_MODELS.get(etype)
+        if name is None:
+            continue
+        model = getattr(models, name)
+        rows = await db.execute(
+            select(model).where(model.org_id == org_id, model.id.in_(ids))
+        )
+        for obj in rows.scalars():
+            out[(etype, str(obj.id))] = entity_label(obj) or None
+    return out
+
+
 async def company_people(db: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID):
     """Non-deleted people linked to a company, with just the columns needed to
     roll their correspondence (emails + phone events) up onto the company
