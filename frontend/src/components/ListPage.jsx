@@ -433,6 +433,7 @@ export default function ListPage({
                   {items.map((row) => (
                     <tr
                       key={row.id}
+                      className={row.has_overdue_task ? 'row-overdue' : undefined}
                       onClick={() => nav(`${route}/${row.id}`)}
                       role="button"
                       tabIndex={0}

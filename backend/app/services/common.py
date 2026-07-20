@@ -3,10 +3,20 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import delete, inspect as sa_inspect, select
+from sqlalchemy import delete, distinct, inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Activity, CustomField, CustomFieldValue, EntityTag, Person, Tag, User
+from app.models import (
+    Activity,
+    CustomField,
+    CustomFieldValue,
+    EntityTag,
+    Person,
+    Tag,
+    Task,
+    User,
+    utcnow,
+)
 
 
 def entity_label(obj) -> str:
@@ -244,6 +254,29 @@ async def entity_labels_map(db: AsyncSession, org_id: uuid.UUID, refs: set) -> d
         for obj in rows.scalars():
             out[(etype, str(obj.id))] = entity_label(obj) or None
     return out
+
+
+async def overdue_task_entity_ids(
+    db: AsyncSession, org_id: uuid.UUID, entity_type: str, ids: set
+) -> set[str]:
+    """Subset of `ids` that have at least one open, past-due task hanging off
+    them. Used to flag list rows (people/leads) that need attention. `ids` are
+    the current page's record ids (str or UUID); returns a set of str ids so a
+    caller can test `d["id"] in result`. One bounded SELECT; empty page skips
+    the query entirely."""
+    uuid_ids = {uuid.UUID(str(i)) for i in ids if i}
+    if not uuid_ids:
+        return set()
+    rows = await db.execute(
+        select(distinct(Task.entity_id)).where(
+            Task.org_id == org_id,
+            Task.entity_type == entity_type,
+            Task.status == "open",
+            Task.due_at < utcnow(),
+            Task.entity_id.in_(uuid_ids),
+        )
+    )
+    return {str(eid) for (eid,) in rows}
 
 
 async def company_people(db: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID):

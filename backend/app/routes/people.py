@@ -8,7 +8,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import Company, Lead, Opportunity, Person, User
 from app.schemas import PersonIn
-from app.services.common import display_name_map
+from app.services.common import display_name_map, overdue_task_entity_ids
 from app.services.crud import register_crud
 from app.services.interactions import update_person_aggregates
 from app.services.socials import find_for_person
@@ -46,9 +46,13 @@ async def company_name_map(db, org_id, ids: set) -> dict[str, str]:
 async def enrich(db, user, dicts):
     owners = await display_name_map(db, {d.get("owner_id") for d in dicts}, user.org_id)
     companies = await company_name_map(db, user.org_id, {d.get("company_id") for d in dicts})
+    overdue = await overdue_task_entity_ids(
+        db, user.org_id, "person", {d.get("id") for d in dicts}
+    )
     for d in dicts:
         d["owner_name"] = owners.get(d.get("owner_id"))
         d["company_name"] = companies.get(d.get("company_id"))
+        d["has_overdue_task"] = d.get("id") in overdue
 
 
 register_crud(

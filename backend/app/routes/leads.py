@@ -24,6 +24,7 @@ from app.services.common import (
     display_name_map,
     get_tag_maps,
     log_activity,
+    overdue_task_entity_ids,
 )
 from app.services.crud import register_crud
 
@@ -38,8 +39,12 @@ PERSON_FIELDS = [
 
 async def enrich(db, user, dicts):
     owners = await display_name_map(db, {d.get("owner_id") for d in dicts}, user.org_id)
+    overdue = await overdue_task_entity_ids(
+        db, user.org_id, "lead", {d.get("id") for d in dicts}
+    )
     for d in dicts:
         d["owner_name"] = owners.get(d.get("owner_id"))
+        d["has_overdue_task"] = d.get("id") in overdue
 
 
 register_crud(

@@ -775,6 +775,13 @@ th.col-check {
 .table tbody tr.import-row {
   cursor: default;
 }
+/* Records with an open, past-due task get a light-red row so they stand out. */
+.table tbody tr.row-overdue {
+  background: #fef2f2;
+}
+.table tbody tr.row-overdue:hover {
+  background: #fde8e8;
+}
 .table tbody tr:last-child td {
   border-bottom: none;
 }
