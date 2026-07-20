@@ -51,11 +51,15 @@ async def _validate_target(db, user, data):
 
 
 def _notify_created(task, actor):
-    colloqui.schedule(
-        colloqui.notify_task_event(
-            task.id, "created", actor_id=actor.id, assignee_id=task.assignee_id
+    # Only a genuine hand-off notifies. A task you create for yourself (or leave
+    # unassigned) needs no "you were assigned" ping and no team #tasks post —
+    # only assigning it to someone else does.
+    if task.assignee_id and task.assignee_id != actor.id:
+        colloqui.schedule(
+            colloqui.notify_task_event(
+                task.id, "created", actor_id=actor.id, assignee_id=task.assignee_id
+            )
         )
-    )
 
 
 def _notify_assignment(task, old_values, actor):
