@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { del, post } from '../api';
-import { useContactTypes, useEntity, useRelated, useUsers } from '../hooks';
+import { useContactTypes, useEntity, usePipelines, useRelated, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';
 import DetailShell from '../components/DetailShell';
+import FormModal from '../components/FormModal';
 import MergeButton from '../components/MergeButton';
 import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
@@ -13,24 +14,80 @@ import RelatedPanel from '../components/RelatedPanel';
 import { Empty, Loading } from '../components/ui';
 import { fullName, humanize, money, safeHref } from '../format';
 import { PERSON_FIELDS } from '../constants/fields';
+import { CURRENCIES } from '../constants/options';
 
-function PersonOpportunities({ personId }) {
-  const items = useRelated('/opportunities', { primary_person_id: personId }, [personId]);
+function PersonOpportunities({ personId, companyId }) {
+  const toast = useToast();
+  const pipelines = usePipelines();
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const items = useRelated('/opportunities', { primary_person_id: personId }, [personId, refreshKey]);
+
+  const createFields = [
+    { key: 'name', label: 'Name', required: true },
+    { key: 'value', label: 'Value', type: 'number' },
+    { key: 'currency', label: 'Currency', type: 'select', options: CURRENCIES, default: 'USD' },
+    { key: 'close_date', label: 'Close date', type: 'date' },
+    {
+      key: 'pipeline_id',
+      label: 'Pipeline',
+      type: 'select',
+      options: pipelines.map((p) => ({ value: p.id, label: p.name })),
+      default: pipelines[0]?.id,
+    },
+  ];
+
+  async function create(values) {
+    const body = {};
+    createFields.forEach((f) => {
+      let v = values[f.key];
+      if (v === '' || v === undefined) return;
+      if (f.type === 'number') v = Number(v);
+      body[f.key] = v;
+    });
+    body.primary_person_id = personId;
+    if (companyId) body.company_id = companyId;
+    if (body.pipeline_id) {
+      const p = pipelines.find((x) => x.id === body.pipeline_id);
+      const first = p?.stages?.slice().sort((a, b) => a.position - b.position)[0];
+      if (first) body.stage_id = first.id;
+    }
+    await post('/opportunities', body);
+    setCreating(false);
+    setRefreshKey((k) => k + 1);
+    toast.success('Opportunity created');
+  }
 
   return (
-    <RelatedPanel
-      title="Opportunities"
-      items={items}
-      empty="No opportunities."
-      renderItem={(o) => (
-        <Link key={o.id} to={`/opportunities/${o.id}`} className="related-item">
-          <span>{o.name}</span>
-          <span className="muted">
-            {money(o.value, o.currency)} · {humanize(o.status)}
-          </span>
-        </Link>
+    <>
+      <RelatedPanel
+        title="Opportunities"
+        items={items}
+        empty="No opportunities."
+        action={
+          <button className="btn btn-small" onClick={() => setCreating(true)}>
+            + New
+          </button>
+        }
+        renderItem={(o) => (
+          <Link key={o.id} to={`/opportunities/${o.id}`} className="related-item">
+            <span>{o.name}</span>
+            <span className="muted">
+              {money(o.value, o.currency)} · {humanize(o.status)}
+            </span>
+          </Link>
+        )}
+      />
+      {creating && (
+        <FormModal
+          title="New opportunity"
+          fields={createFields}
+          submitLabel="Create"
+          onSubmit={create}
+          onClose={() => setCreating(false)}
+        />
       )}
-    />
+    </>
   );
 }
 
@@ -144,7 +201,7 @@ export default function PersonDetail() {
         <>
           <TasksPanel entityType="person" entityId={id} />
           <CalendarPanel entityType="person" entityId={id} />
-          <PersonOpportunities personId={id} />
+          <PersonOpportunities personId={id} companyId={person.company_id} />
           {person.company_id && (
             <div className="card">
               <h4 className="panel-title">Company</h4>
