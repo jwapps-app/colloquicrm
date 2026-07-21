@@ -11,6 +11,7 @@ from sqlalchemy import delete, select
 
 from app.config import settings
 from app.db import SessionLocal
+from app.services.common import prune_orphan_tags
 from app.models import (
     Company,
     CustomFieldValue,
@@ -64,6 +65,10 @@ async def purge_expired_trash() -> int:
                 await db.commit()
             purged += len(ids)
             log.info("purged %s expired %s records from trash", len(ids), entity_type)
+        if purged:
+            # Purging removed tag links across orgs — sweep out unused tags.
+            await prune_orphan_tags(db)
+            await db.commit()
     return purged
 
 

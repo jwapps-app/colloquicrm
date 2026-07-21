@@ -33,6 +33,7 @@ from app.services.common import (
     get_or_create_tag,
     get_tag_maps,
     log_activity,
+    prune_orphan_tags,
     row_to_dict,
     set_custom_fields,
     set_tags,
@@ -167,6 +168,9 @@ def register_crud(
             await set_tags(db, user.org_id, entity_type, obj.id, tags)
         if cfs is not None:
             await set_custom_fields(db, user.org_id, entity_type, obj.id, cfs)
+            # Session autoflush is off — flush so the response serializer's
+            # custom-field SELECT sees these pending writes, not the old rows.
+            await db.flush()
 
     def filtered_stmt(request: Request, user: User, q: str | None) -> Select:
         """The list query minus sort/pagination — shared by list, export, and
@@ -371,6 +375,8 @@ def register_crud(
                 await db.execute(
                     delete(model).where(model.org_id == user.org_id, model.id.in_(chunk))
                 )
+            # Tag links just went away — drop any tags left with no uses.
+            await prune_orphan_tags(db, user.org_id)
             await log_activity(
                 db, user.org_id, None, None, f"{entity_type}_bulk_deleted", user.id,
                 {"count": len(ids)},

@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import delete, distinct, inspect as sa_inspect, select
+from sqlalchemy import delete, distinct, exists, inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -107,6 +107,23 @@ async def set_tags(
     for name in clean:
         tag = await get_or_create_tag(db, org_id, name)
         db.add(EntityTag(tag_id=tag.id, entity_type=entity_type, entity_id=entity_id))
+    # The delete above ran against the DB while the re-adds are still pending —
+    # flush so anything reading tags later in this transaction (the PATCH
+    # response serializer) sees the new state, not an empty window.
+    await db.flush()
+    await prune_orphan_tags(db, org_id)
+
+
+async def prune_orphan_tags(db: AsyncSession, org_id: uuid.UUID | None = None) -> None:
+    """Drop tags nothing references anymore, so removing a tag's last use also
+    removes it from the org's tag list — there is no manage-tags UI to clean
+    them up by hand. Org-scoped normally; org_id=None sweeps all orgs (purge)."""
+    stmt = delete(Tag).where(
+        ~exists(select(EntityTag.tag_id).where(EntityTag.tag_id == Tag.id))
+    )
+    if org_id is not None:
+        stmt = stmt.where(Tag.org_id == org_id)
+    await db.execute(stmt)
 
 
 async def add_tags(
