@@ -55,23 +55,33 @@ async def contact_types(user: User = Depends(get_current_user), db: AsyncSession
 
 
 @tags_router.get("")
-async def list_tags(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def list_tags(
+    entity_type: str | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Org tags with usage counts. Trashed records keep their tag links so a
     restore brings the tags back, but they must not count here — and a tag
-    whose every use is in the Trash is hidden until a restore revives it."""
+    whose every use is in the Trash is hidden until a restore revives it.
+    entity_type scopes both visibility and counts to one record type, so a
+    list page's filter only offers tags that actually match something there."""
     from app.models import Company, Lead, Opportunity, Person
 
+    sources = [
+        (Person, "person"),
+        (Lead, "lead"),
+        (Company, "company"),
+        (Opportunity, "opportunity"),
+    ]
+    if entity_type is not None:
+        _check_entity_type(entity_type)
+        sources = [s for s in sources if s[1] == entity_type]
     live_refs = union_all(
         *(
             select(EntityTag.tag_id.label("tag_id"))
             .join(model, model.id == EntityTag.entity_id)
             .where(EntityTag.entity_type == etype, model.deleted_at.is_(None))
-            for model, etype in (
-                (Person, "person"),
-                (Lead, "lead"),
-                (Company, "company"),
-                (Opportunity, "opportunity"),
-            )
+            for model, etype in sources
         )
     ).subquery()
     rows = await db.execute(

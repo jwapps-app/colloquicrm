@@ -112,7 +112,9 @@ export default function ListPage({
 
   // Filter dropdown sources + saved filters.
   useEffect(() => {
-    cachedGet('/tags')
+    // Scoped to this list's record type — an org-wide list would offer tags
+    // (with counts) that can't match anything on this page.
+    cachedGet('/tags', { entity_type: entityType })
       .then((d) => setTags(Array.isArray(d) ? d : []))
       .catch(() => {});
     cachedGet('/users')
