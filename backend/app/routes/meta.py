@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -56,9 +56,27 @@ async def contact_types(user: User = Depends(get_current_user), db: AsyncSession
 
 @tags_router.get("")
 async def list_tags(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Org tags with usage counts. Trashed records keep their tag links so a
+    restore brings the tags back, but they must not count here — and a tag
+    whose every use is in the Trash is hidden until a restore revives it."""
+    from app.models import Company, Lead, Opportunity, Person
+
+    live_refs = union_all(
+        *(
+            select(EntityTag.tag_id.label("tag_id"))
+            .join(model, model.id == EntityTag.entity_id)
+            .where(EntityTag.entity_type == etype, model.deleted_at.is_(None))
+            for model, etype in (
+                (Person, "person"),
+                (Lead, "lead"),
+                (Company, "company"),
+                (Opportunity, "opportunity"),
+            )
+        )
+    ).subquery()
     rows = await db.execute(
-        select(Tag.id, Tag.name, func.count(EntityTag.entity_id))
-        .outerjoin(EntityTag, EntityTag.tag_id == Tag.id)
+        select(Tag.id, Tag.name, func.count(live_refs.c.tag_id))
+        .join(live_refs, live_refs.c.tag_id == Tag.id)
         .where(Tag.org_id == user.org_id)
         .group_by(Tag.id, Tag.name)
         .order_by(Tag.name)
