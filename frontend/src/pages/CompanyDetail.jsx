@@ -34,6 +34,7 @@ export default function CompanyDetail() {
     if (!window.confirm('Move this company to Trash? Recoverable from Settings → Trash for 60 days.')) return;
     try {
       await del(`/companies/${id}`);
+      bustCache('/tags'); // this record's tags may have lost their last live use
       toast.success('Company moved to Trash');
       nav('/companies');
     } catch (e) {

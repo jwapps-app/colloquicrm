@@ -175,6 +175,7 @@ export default function PersonDetail() {
     if (!window.confirm('Move this person to Trash? Recoverable from Settings → Trash for 60 days.')) return;
     try {
       await del(`/people/${id}`);
+      bustCache('/tags'); // this record's tags may have lost their last live use
       toast.success('Person moved to Trash');
       nav('/people');
     } catch (e) {

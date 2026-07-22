@@ -47,6 +47,7 @@ export default function OpportunityDetail() {
     if (!window.confirm('Move this opportunity to Trash? Recoverable from Settings → Trash for 60 days.')) return;
     try {
       await del(`/opportunities/${id}`);
+      bustCache('/tags'); // this record's tags may have lost their last live use
       toast.success('Opportunity moved to Trash');
       nav('/opportunities');
     } catch (e) {

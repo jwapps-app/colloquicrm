@@ -113,7 +113,8 @@ export default function ListPage({
   // Filter dropdown sources + saved filters.
   useEffect(() => {
     // Scoped to this list's record type — an org-wide list would offer tags
-    // (with counts) that can't match anything on this page.
+    // (with counts) that can't match anything on this page. Re-runs on refresh
+    // so a bulk action that busted the cache updates the dropdown in place.
     cachedGet('/tags', { entity_type: entityType })
       .then((d) => setTags(Array.isArray(d) ? d : []))
       .catch(() => {});
@@ -124,7 +125,7 @@ export default function ListPage({
       .then((d) => setSaved(Array.isArray(d) ? d : d?.items || []))
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entityType]);
+  }, [entityType, refresh, refreshToken]);
 
   const defs = filterDefs.map((d) => {
     if (d.type === 'tag')
@@ -236,8 +237,9 @@ export default function ListPage({
         ? { ...body, select_all: true }
         : { ...body, ids: [...selected] };
       const res = await post(`${apiPath}/bulk`, payload, allMatching ? listParams : undefined);
-      // Bulk-tagging can mint new tags — the cached /tags list is now stale.
-      if (body.action === 'add_tags') bustCache('/tags');
+      // Bulk-tagging can mint new tags; bulk-deleting records can retire a
+      // tag's last live use — either way the cached /tags list is now stale.
+      if (body.action === 'add_tags' || body.action === 'delete') bustCache('/tags');
       toast.success(`${res.affected} record${res.affected === 1 ? '' : 's'} ${body.action === 'delete' ? 'moved to Trash' : 'updated'}`);
       setSelected(new Set());
       setAllMatching(false);

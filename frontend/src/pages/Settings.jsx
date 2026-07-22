@@ -49,6 +49,7 @@ function TrashSection() {
     setBusyId(item.id);
     try {
       await post(`${api}/${item.id}/restore`);
+      bustCache('/tags'); // restoring can revive tags hidden while trashed
       setGroups((g) => {
         const next = { ...g };
         const grp = { ...next[api], items: next[api].items.filter((x) => x.id !== item.id) };
