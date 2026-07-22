@@ -9,6 +9,7 @@ import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
 import TasksPanel from '../components/TasksPanel';
 import CalendarPanel from '../components/CalendarPanel';
+import AttachmentsPanel from '../components/AttachmentsPanel';
 import RelatedPanel from '../components/RelatedPanel';
 import { Empty, Loading } from '../components/ui';
 import { fullName, humanize, money } from '../format';
@@ -75,6 +76,7 @@ export default function CompanyDetail() {
         <>
           <TasksPanel entityType="company" entityId={id} />
           <CalendarPanel entityType="company" entityId={id} />
+          <AttachmentsPanel entityType="company" entityId={id} />
           <RelatedPanel
             title="People"
             items={people}

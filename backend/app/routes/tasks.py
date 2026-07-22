@@ -1,11 +1,13 @@
+import calendar
 import uuid
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.deps import get_current_user
+from app.deps import as_utc, get_current_user
 from app.models import Task, User, utcnow
 from app.schemas import TaskIn
 from app.services import colloqui
@@ -115,6 +117,31 @@ register_crud(
 )
 
 
+def _add_interval(dt: datetime, every: int, unit: str) -> datetime:
+    """dt advanced by every×unit, calendar-correct: Jan 31 + 1 month lands on
+    Feb 28/29 (clamped to the target month's last day), not an invalid date.
+    Hand-rolled because dateutil isn't a dependency."""
+    if unit == "day":
+        return dt + timedelta(days=every)
+    if unit == "week":
+        return dt + timedelta(weeks=every)
+    months = every * 12 if unit == "year" else every
+    total = dt.month - 1 + months
+    year, month = dt.year + total // 12, total % 12 + 1
+    return dt.replace(year=year, month=month, day=min(dt.day, calendar.monthrange(year, month)[1]))
+
+
+def _next_due(due_at: datetime, every: int, unit: str) -> datetime:
+    """The next occurrence's due time: at least one interval on from the old
+    due date, then advanced repeatedly until it's in the future — a task
+    completed months late must not spawn an instantly-overdue chain."""
+    nxt = _add_interval(due_at, every, unit)
+    now = utcnow()
+    while nxt <= now:
+        nxt = _add_interval(nxt, every, unit)
+    return nxt
+
+
 async def _get_task(db: AsyncSession, user: User, task_id: uuid.UUID) -> Task:
     t = (
         await db.execute(select(Task).where(Task.id == task_id, Task.org_id == user.org_id))
@@ -143,6 +170,25 @@ async def complete_task(
                 t.id, "completed", actor_id=user.id, assignee_id=t.assignee_id
             )
         )
+        if t.repeat_every and t.repeat_unit and t.due_at:
+            # Recurring: spawn the next occurrence as a fresh open task with
+            # everything re-armed. Created directly — no created/assigned
+            # notification, it's the same person's task continuing.
+            db.add(
+                Task(
+                    org_id=t.org_id,
+                    name=t.name,
+                    details=t.details,
+                    entity_type=t.entity_type,
+                    entity_id=t.entity_id,
+                    due_at=_next_due(as_utc(t.due_at), t.repeat_every, t.repeat_unit),
+                    priority=t.priority,
+                    assignee_id=t.assignee_id,
+                    created_by=t.created_by,
+                    repeat_every=t.repeat_every,
+                    repeat_unit=t.repeat_unit,
+                )
+            )
     await db.commit()  # visible before the client refetches
     return {"id": str(t.id), "status": t.status, "completed_at": t.completed_at.isoformat()}
 
@@ -154,6 +200,8 @@ async def reopen_task(
     db: AsyncSession = Depends(get_db),
 ):
     t = await _get_task(db, user, task_id)
+    # Reopening a recurring task that already spawned its successor leaves two
+    # open occurrences — allowed; the user completes or deletes one of them.
     t.status = "open"
     t.completed_at = None
     # Re-arm the reminder — a reopened task is due again, and the sweep skips

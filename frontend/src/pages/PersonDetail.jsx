@@ -10,6 +10,7 @@ import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
 import TasksPanel from '../components/TasksPanel';
 import CalendarPanel from '../components/CalendarPanel';
+import AttachmentsPanel from '../components/AttachmentsPanel';
 import RelatedPanel from '../components/RelatedPanel';
 import { Empty, Loading } from '../components/ui';
 import { fullName, humanize, money, safeHref } from '../format';
@@ -217,6 +218,7 @@ export default function PersonDetail() {
         <>
           <TasksPanel entityType="person" entityId={id} />
           <CalendarPanel entityType="person" entityId={id} />
+          <AttachmentsPanel entityType="person" entityId={id} />
           <PersonOpportunities personId={id} companyId={person.company_id} refreshKey={relatedKey} />
           {person.company_id && (
             <div className="card">

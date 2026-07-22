@@ -13,8 +13,10 @@ from app.db import Base, SessionLocal, engine
 from app.models import Org, Pipeline, Stage
 from app.routes import (
     activities,
+    attachments,
     auth,
     automations,
+    duplicates,
     feed,
     ringcentral as ringcentral_routes,
     colloqui as colloqui_routes,
@@ -199,6 +201,8 @@ app.include_router(reports.router, prefix=f"{API}/reports", tags=["reports"])
 app.include_router(tasks.router, prefix=f"{API}/tasks", tags=["tasks"])
 app.include_router(notes.router, prefix=f"{API}/notes", tags=["notes"])
 app.include_router(activities.router, prefix=f"{API}/activities", tags=["activities"])
+app.include_router(attachments.router, prefix=f"{API}/attachments", tags=["attachments"])
+app.include_router(duplicates.router, prefix=f"{API}/duplicates", tags=["duplicates"])
 app.include_router(automations.router, prefix=f"{API}/automations", tags=["automations"])
 app.include_router(forms.router, prefix=f"{API}/forms", tags=["forms"])
 app.include_router(meta.tags_router, prefix=f"{API}/tags", tags=["tags"])

@@ -266,6 +266,11 @@ class Task(Base):
     entity_id: Mapped[uuid.UUID | None] = mapped_column()
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     reminder_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Recurrence: every N day/week/month/year(s). Both set together or both
+    # null. Completing a recurring task spawns the next occurrence (see
+    # routes/tasks.py) — the row itself just closes like any other task.
+    repeat_every: Mapped[int | None] = mapped_column(Integer)
+    repeat_unit: Mapped[str | None] = mapped_column(String(10))  # day | week | month | year
     priority: Mapped[str | None] = mapped_column(String(20))
     status: Mapped[str] = mapped_column(String(20), default="open", index=True)
     assignee_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
@@ -449,6 +454,27 @@ class Note(Base):
         ForeignKey("phone_events.id", ondelete="SET NULL"), index=True
     )
     author_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Attachment(Base):
+    """A file uploaded against a CRM record. Only the metadata lives here —
+    the bytes sit on disk at {attachments_dir}/{stored_name}. stored_name is
+    a fresh uuid plus the original extension; the client-supplied filename is
+    display metadata only and never touches the filesystem path."""
+
+    __tablename__ = "attachments"
+    __table_args__ = (Index("ix_attachments_entity", "org_id", "entity_type", "entity_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    entity_type: Mapped[str] = mapped_column(String(30))
+    entity_id: Mapped[uuid.UUID] = mapped_column()
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(255))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    stored_name: Mapped[str] = mapped_column(String(80), unique=True)
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

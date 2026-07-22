@@ -22,9 +22,13 @@ services:
       DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/app
       APP_URL: http://localhost:8010
       ALLOWED_ORIGINS: http://localhost:8010,http://localhost:5173
+      ATTACHMENTS_DIR: /data/attachments
+    volumes:
+      - attachments:/data/attachments
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   pgdata:
+  attachments:

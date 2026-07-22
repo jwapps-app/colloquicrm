@@ -76,7 +76,7 @@ main. The image is public — pull it without authentication, or build from this
 repo with the included `Dockerfile`.
 
 NAS/Portainer: use `docker-compose.portainer.yml` (postgres + api + nightly
-pg_dump sidecar with retention). Create `/volume1/docker/colloquicrm/{postgres,backups}`
+pg_dump sidecar with retention). Create `/volume1/docker/colloquicrm/{postgres,backups,attachments}`
 first, then set the stack env:
 
 | Variable | Example |
@@ -120,6 +120,8 @@ file already sets the required ones.
 | `APNS_TOPIC` | companion-app bundle id | topic the relay routes push on |
 | `TRUSTED_PROXY_IPS` | loopback + private ranges | proxy IPs/CIDRs trusted to set `cf-connecting-ip`; others fall back to the peer address for rate-limit keying |
 | `TASK_REMINDER_LEAD_MINUTES` | `15` | default reminder lead before a task's due time when no explicit reminder is set |
+| `ATTACHMENTS_DIR` | `./data/attachments` | where uploaded file attachments are stored on disk; both compose files mount a volume at `/data/attachments` and point this there |
+| `ATTACHMENT_MAX_MB` | `25` | per-file upload size cap; larger uploads are rejected with 413 |
 | `FORM_DAILY_SUBMISSION_CAP` | `500` | max public lead-form submissions per form per UTC day |
 | `FORM_MAX_BODY_BYTES` | `65536` | max public lead-form request body |
 
@@ -144,6 +146,11 @@ are ciphertext — a restore only decrypts them if `SECRET_ENCRYPTION_KEY` (or
 the `SECRET_KEY` it was derived from) matches the source instance. Everything
 else in the dump is plaintext, so still treat the backups directory like the
 database itself.
+
+File attachments are **not** in the database — only their metadata is. The
+bytes live in the attachments volume (`/volume1/docker/colloquicrm/attachments`
+on the NAS stack), so include that directory in backups alongside the dumps; a
+restore without it brings back attachment rows whose files are gone.
 
 Restore (into a scratch or fresh stack):
 

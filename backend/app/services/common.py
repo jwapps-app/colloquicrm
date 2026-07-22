@@ -351,10 +351,13 @@ async def validate_entity_ref(
         raise HTTPException(status_code=404, detail=f"{entity_type} not found")
 
 
-async def cleanup_entity(db: AsyncSession, entity_type: str, entity_id: uuid.UUID) -> None:
-    """Remove polymorphic satellites (tags, custom values, notes) when an
-    entity is deleted. Activities are kept as an audit trail."""
+async def cleanup_entity(db: AsyncSession, entity_type: str, entity_id: uuid.UUID) -> list[str]:
+    """Remove polymorphic satellites (tags, custom values, notes, attachment
+    rows) when an entity is deleted. Activities are kept as an audit trail.
+    Returns the stored_names of any deleted attachments — the caller unlinks
+    those files AFTER its commit (see services/attachments.py)."""
     from app.models import Note
+    from app.services.attachments import collect_stored_names, delete_attachment_rows
 
     await db.execute(
         delete(EntityTag).where(
@@ -370,3 +373,6 @@ async def cleanup_entity(db: AsyncSession, entity_type: str, entity_id: uuid.UUI
     await db.execute(
         delete(Note).where(Note.entity_type == entity_type, Note.entity_id == entity_id)
     )
+    stored = await collect_stored_names(db, entity_type, [entity_id])
+    await delete_attachment_rows(db, entity_type, [entity_id])
+    return stored

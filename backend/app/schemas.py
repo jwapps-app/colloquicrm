@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, model_validator
 
 
 # ---- auth ----
@@ -164,6 +164,21 @@ class TaskIn(BaseModel):
     reminder_at: datetime | None = None
     priority: str | None = None
     assignee_id: uuid.UUID | None = None
+    # Recurrence — every N day/week/month/year(s). Always sent as a pair
+    # (both null clears it), so a PATCH can't leave half a schedule behind.
+    repeat_every: int | None = None
+    repeat_unit: str | None = None
+
+    @model_validator(mode="after")
+    def _check_recurrence(self):
+        if (self.repeat_every is None) != (self.repeat_unit is None):
+            raise ValueError("repeat_every and repeat_unit go together")
+        if self.repeat_every is not None:
+            if not 1 <= self.repeat_every <= 365:
+                raise ValueError("repeat_every must be between 1 and 365")
+            if self.repeat_unit not in ("day", "week", "month", "year"):
+                raise ValueError("repeat_unit must be day, week, month, or year")
+        return self
 
 
 class NoteAttachIn(BaseModel):

@@ -9,6 +9,7 @@ import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
 import TasksPanel from '../components/TasksPanel';
 import CalendarPanel from '../components/CalendarPanel';
+import AttachmentsPanel from '../components/AttachmentsPanel';
 import Modal from '../components/Modal';
 import { Empty, Loading } from '../components/ui';
 import { fmtDate, fullName } from '../format';
@@ -173,6 +174,7 @@ export default function LeadDetail() {
             </div>
             <TasksPanel entityType="lead" entityId={id} />
           <CalendarPanel entityType="lead" entityId={id} />
+          <AttachmentsPanel entityType="lead" entityId={id} />
           </>
         }
       />

@@ -2091,6 +2091,7 @@ th.col-check {
 .when-inputs {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap; /* the repeat select drops to its own line in narrow panels */
 }
 .when-inputs input[type='date'] {
   flex: 1;
@@ -2447,5 +2448,97 @@ th.col-check {
   white-space: pre;
 }
 .leadform-embed-actions {
+  margin-top: 8px;
+}
+
+/* ---------- Attachments panel ---------- */
+.attachment-list {
+  display: flex;
+  flex-direction: column;
+}
+.attachment-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+.attachment-row:first-child {
+  border-top: none;
+}
+.attachment-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.attachment-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-row:hover .attachment-name {
+  color: var(--accent);
+}
+.attachment-meta {
+  font-size: 12px;
+}
+
+/* ---------- Task recurrence ---------- */
+.task-repeat {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: default;
+}
+.repeat-needs-due {
+  font-size: 12.5px;
+}
+
+/* ---------- Duplicates banner + review ---------- */
+.dup-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+}
+.dup-group {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.dup-reason {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.dup-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+}
+.dup-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dup-sublabel {
+  font-size: 12px;
+}
+.dup-created {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.dup-group-actions {
   margin-top: 8px;
 }

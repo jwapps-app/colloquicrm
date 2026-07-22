@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import ListPage from '../components/ListPage';
+import DuplicatesBanner from '../components/DuplicatesBanner';
 import { useContactTypes } from '../hooks';
 import { humanize } from '../format';
 
@@ -11,6 +13,7 @@ const columns = [
 
 export default function CompaniesList() {
   const contactTypes = useContactTypes();
+  const [refreshToken, setRefreshToken] = useState(0);
   const createFields = [
     { key: 'name', label: 'Name', required: true },
     { key: 'email_domain', label: 'Email domain', placeholder: 'acme.com' },
@@ -25,6 +28,7 @@ export default function CompaniesList() {
       entityType="company"
       apiPath="/companies"
       route="/companies"
+      banner={<DuplicatesBanner entityType="company" onMerged={() => setRefreshToken((k) => k + 1)} />}
       columns={columns}
       filterDefs={[
         { key: 'contact_type', label: 'Contact type', options: contactTypes },
@@ -35,6 +39,7 @@ export default function CompaniesList() {
       createTitle="Add company"
       defaultSort="name"
       defaultOrder="asc"
+      refreshToken={refreshToken}
     />
   );
 }

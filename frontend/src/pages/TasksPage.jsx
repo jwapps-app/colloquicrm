@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom';
 import { del, get, post } from '../api';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';
-import { entityPath, fmtDate, humanize, parseWhen } from '../format';
-import { PRIORITIES } from '../constants/options';
+import { entityPath, fmtDate, humanize, parseWhen, repeatLabel } from '../format';
+import { PRIORITIES, REPEAT_OPTIONS } from '../constants/options';
 
 const PAGE_SIZE = 50;
 
@@ -17,6 +17,7 @@ export default function TasksPage() {
   const [name, setName] = useState('');
   const [due, setDue] = useState('');
   const [priority, setPriority] = useState('');
+  const [repeat, setRepeat] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -62,10 +63,18 @@ export default function TasksPage() {
         body.due_at = new Date(y, m - 1, d, 9).toISOString();
       }
       if (priority) body.priority = priority;
+      if (repeat) {
+        // Guarded by the disabled submit below — a repeat without a due date
+        // would never spawn its next occurrence server-side.
+        const [every, unit] = repeat.split(':');
+        body.repeat_every = Number(every);
+        body.repeat_unit = unit;
+      }
       await post('/tasks', body);
       setName('');
       setDue('');
       setPriority('');
+      setRepeat('');
       toast.success('Task added');
       if (tab === 'open' && page === 1) setVersion((v) => v + 1);
       else {
@@ -120,7 +129,20 @@ export default function TasksPage() {
             </option>
           ))}
         </select>
-        <button className="btn btn-primary" type="submit" disabled={busy || !name.trim()}>
+        <select value={repeat} onChange={(e) => setRepeat(e.target.value)} title="Repeat">
+          {REPEAT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        {repeat && !due && <span className="muted repeat-needs-due">Repeating tasks need a due date</span>}
+        <button
+          className="btn btn-primary"
+          type="submit"
+          disabled={busy || !name.trim() || (!!repeat && !due)}
+          title={repeat && !due ? 'Pick a due date — repeats are scheduled from it' : undefined}
+        >
           Add
         </button>
       </form>
@@ -169,6 +191,11 @@ export default function TasksPage() {
                     <span className={'task-due' + (overdue ? ' overdue' : '')}>
                       {overdue ? 'Overdue · ' : 'Due '}
                       {fmtDate(t.due_at)}
+                    </span>
+                  )}
+                  {t.repeat_every && (
+                    <span className="task-repeat" title={repeatLabel(t.repeat_every, t.repeat_unit)}>
+                      ↻
                     </span>
                   )}
                   {link && (

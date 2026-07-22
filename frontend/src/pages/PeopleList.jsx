@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ListPage from '../components/ListPage';
 import SuggestionsPanel from '../components/SuggestionsPanel';
+import DuplicatesBanner from '../components/DuplicatesBanner';
 import { useContactTypes } from '../hooks';
 import { fmtDate, fullName, humanize } from '../format';
 
@@ -38,7 +39,12 @@ export default function PeopleList() {
       entityType="person"
       apiPath="/people"
       route="/people"
-      banner={<SuggestionsPanel onAdded={() => setRefreshToken((k) => k + 1)} />}
+      banner={
+        <>
+          <SuggestionsPanel onAdded={() => setRefreshToken((k) => k + 1)} />
+          <DuplicatesBanner entityType="person" onMerged={() => setRefreshToken((k) => k + 1)} />
+        </>
+      }
       columns={columns}
       filterDefs={[
         { key: 'contact_type', label: 'Contact type', options: contactTypes },

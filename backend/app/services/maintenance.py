@@ -11,6 +11,11 @@ from sqlalchemy import delete, select
 
 from app.config import settings
 from app.db import SessionLocal
+from app.services.attachments import (
+    collect_stored_names,
+    delete_attachment_rows,
+    unlink_stored,
+)
 from app.services.common import prune_orphan_tags
 from app.models import (
     Company,
@@ -61,8 +66,13 @@ async def purge_expired_trash() -> int:
                     await db.execute(
                         delete(sat).where(type_col == entity_type, id_col.in_(chunk))
                     )
+                # Attachment rows go with the purge; the files are unlinked
+                # only after the commit lands (missing files tolerated).
+                stored = await collect_stored_names(db, entity_type, chunk)
+                await delete_attachment_rows(db, entity_type, chunk)
                 await db.execute(delete(model).where(model.id.in_(chunk)))
                 await db.commit()
+                unlink_stored(stored)
             purged += len(ids)
             log.info("purged %s expired %s records from trash", len(ids), entity_type)
         if purged:

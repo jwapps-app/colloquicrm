@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { get, post } from '../api';
 import { useAuth } from '../auth';
 import { useToast } from './Toast';
-import { fmtDateTime, parseWhen } from '../format';
+import { fmtDateTime, parseWhen, repeatLabel } from '../format';
+import { REPEAT_OPTIONS } from '../constants/options';
 import { Loading } from './ui';
 
 const HOURS = Array.from({ length: 11 }, (_, i) => i + 8); // 8 AM – 6 PM
@@ -40,6 +41,7 @@ export default function TasksPanel({ entityType, entityId }) {
   const [whenDate, setWhenDate] = useState('');
   const [whenHour, setWhenHour] = useState(9);
   const [whenMin, setWhenMin] = useState(0);
+  const [repeat, setRepeat] = useState('');
   const [busy, setBusy] = useState(false);
 
   const loadEpoch = useRef(0);
@@ -80,15 +82,24 @@ export default function TasksPanel({ entityType, entityId }) {
     const due = new Date(y, m - 1, d, whenHour, whenMin, 0, 0);
     setBusy(true);
     try {
-      await post('/tasks', {
+      const body = {
         name: n,
         entity_type: entityType,
         entity_id: entityId,
         due_at: due.toISOString(),
         assignee_id: user?.id,
-      });
+      };
+      if (repeat) {
+        // A due date is always set here (the composer requires one), so a
+        // repeat can't be created without the date it schedules from.
+        const [every, unit] = repeat.split(':');
+        body.repeat_every = Number(every);
+        body.repeat_unit = unit;
+      }
+      await post('/tasks', body);
       setName('');
       setPicking(false);
+      setRepeat('');
       await load();
       toast.success(`Task added, due ${due.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`);
     } catch (err) {
@@ -102,6 +113,9 @@ export default function TasksPanel({ entityType, entityId }) {
       await post(`/tasks/${t.id}/complete`);
       setTasks((ts) => ts.filter((x) => x.id !== t.id));
       toast.success('Done');
+      // Completing a recurring task spawns its next occurrence server-side —
+      // refetch so it shows up right away.
+      if (t.repeat_every) await load();
     } catch (e) {
       toast.error(e.message);
     }
@@ -125,6 +139,11 @@ export default function TasksPanel({ entityType, entityId }) {
               <label key={t.id} className="mini-task">
                 <input type="checkbox" checked={false} onChange={() => complete(t)} title="Mark done" />
                 <span className="mini-task-name">{t.name}</span>
+                {t.repeat_every && (
+                  <span className="task-repeat" title={repeatLabel(t.repeat_every, t.repeat_unit)}>
+                    ↻
+                  </span>
+                )}
                 {t.due_at && (
                   <span className={'mini-task-due' + (overdue ? ' overdue' : '')}>{fmtDateTime(t.due_at)}</span>
                 )}
@@ -156,6 +175,13 @@ export default function TasksPanel({ entityType, entityId }) {
               {MINUTES.map((m) => (
                 <option key={m} value={m}>
                   :{pad(m)}
+                </option>
+              ))}
+            </select>
+            <select value={repeat} onChange={(e) => setRepeat(e.target.value)} title="Repeat">
+              {REPEAT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
                 </option>
               ))}
             </select>

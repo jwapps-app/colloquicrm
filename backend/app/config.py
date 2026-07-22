@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # minutes BEFORE it's due (a reminder at the due moment is too late, and
     # nobody wants to enter two datetimes). An explicit reminder_at overrides.
     task_reminder_lead_minutes: int = 15
+    # File attachments live on disk (not in Postgres) under uuid-based stored
+    # names — the compose files mount a volume here so uploads survive
+    # container restarts. Include this directory in backups alongside the
+    # database dumps.
+    attachments_dir: str = "./data/attachments"
+    attachment_max_mb: int = 25
 
     @property
     def cors_origins(self) -> list[str]:

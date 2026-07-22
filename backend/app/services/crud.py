@@ -13,6 +13,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
     Activity,
+    Attachment,
     CustomField,
     CustomFieldValue,
     EntityTag,
@@ -24,6 +25,11 @@ from app.models import (
     Task,
     User,
     utcnow,
+)
+from app.services.attachments import (
+    collect_stored_names,
+    delete_attachment_rows,
+    unlink_stored,
 )
 from app.services.common import (
     add_tags,
@@ -354,6 +360,7 @@ def register_crud(
         if not ids:
             return {"affected": 0}
 
+        stored_to_unlink: list[str] = []
         if body.action == "delete":
             for chunk in _chunks(ids):
                 if soft_delete:
@@ -372,6 +379,9 @@ def register_crud(
                     await db.execute(
                         delete(sat).where(type_col == entity_type, id_col.in_(chunk))
                     )
+                # Attachment files only go once the delete commits below.
+                stored_to_unlink.extend(await collect_stored_names(db, entity_type, chunk))
+                await delete_attachment_rows(db, entity_type, chunk)
                 await db.execute(
                     delete(model).where(model.org_id == user.org_id, model.id.in_(chunk))
                 )
@@ -428,6 +438,7 @@ def register_crud(
                     .values(**values)
                 )
         await db.commit()
+        unlink_stored(stored_to_unlink)
         return {"affected": len(ids)}
 
     @router.post("", status_code=201)
@@ -513,17 +524,19 @@ def register_crud(
     ):
         obj = await get_owned(db, user, item_id)
         label = entity_label(obj)
+        stored_to_unlink: list[str] = []
         if soft_delete:
             # To Trash — recoverable for the retention window. Satellites stay
             # attached so a restore brings the record back whole.
             obj.deleted_at = utcnow()
         else:
-            await cleanup_entity(db, entity_type, obj.id)
+            stored_to_unlink = await cleanup_entity(db, entity_type, obj.id)
             await db.delete(obj)
         await log_activity(
             db, user.org_id, None, None, f"{entity_type}_deleted", user.id, {"label": label}
         )
         await db.commit()
+        unlink_stored(stored_to_unlink)
 
     if soft_delete:
 
@@ -634,7 +647,7 @@ def register_crud(
             target.details = f"{target.details}\n{extra}" if target.details else extra
 
         # Satellites keyed by (entity_type, entity_id) follow the survivor.
-        for sat_model in (Note, Task, Activity, PhoneEvent):
+        for sat_model in (Note, Task, Activity, PhoneEvent, Attachment):
             await db.execute(
                 update(sat_model)
                 .where(
@@ -692,12 +705,15 @@ def register_crud(
                 .values(**{attr: target.id})
             )
 
+        stored_to_unlink: list[str] = []
         if soft_delete:
             # The merged record goes to Trash (its data already moved to the
             # survivor), so even a mistaken merge is recoverable.
             source.deleted_at = utcnow()
         else:
-            await cleanup_entity(db, entity_type, source.id)
+            # Attachments already re-pointed at the target above, so this only
+            # sweeps satellites that genuinely belong to the discarded source.
+            stored_to_unlink = await cleanup_entity(db, entity_type, source.id)
             await db.delete(source)
         if hasattr(target, "updated_at"):
             target.updated_at = utcnow()
@@ -710,4 +726,5 @@ def register_crud(
             await after_merge(db, user, target)
         result = (await serialize(db, user, [target]))[0]
         await db.commit()
+        unlink_stored(stored_to_unlink)
         return result

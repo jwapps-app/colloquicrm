@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import ListPage from '../components/ListPage';
+import DuplicatesBanner from '../components/DuplicatesBanner';
 import { fullName, humanize, money } from '../format';
 import { CURRENCIES, LEAD_STATUSES } from '../constants/options';
 
@@ -37,12 +39,14 @@ const createFields = [
 ];
 
 export default function LeadsList() {
+  const [refreshToken, setRefreshToken] = useState(0);
   return (
     <ListPage
       title="Leads"
       entityType="lead"
       apiPath="/leads"
       route="/leads"
+      banner={<DuplicatesBanner entityType="lead" onMerged={() => setRefreshToken((k) => k + 1)} />}
       columns={columns}
       filterDefs={[
         { key: 'status', label: 'Status', options: LEAD_STATUSES },
@@ -51,6 +55,7 @@ export default function LeadsList() {
       ]}
       createFields={createFields}
       createTitle="Add lead"
+      refreshToken={refreshToken}
     />
   );
 }

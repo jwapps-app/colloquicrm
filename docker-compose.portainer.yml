@@ -1,5 +1,5 @@
 # NAS stack (Portainer). Image-only; all env values are set in Portainer's UI.
-# Bind-mount dirs to create once: /volume1/docker/colloquicrm/postgres, /volume1/docker/colloquicrm/backups
+# Bind-mount dirs to create once: /volume1/docker/colloquicrm/postgres, /volume1/docker/colloquicrm/backups, /volume1/docker/colloquicrm/attachments
 services:
   postgres:
     image: postgres:16-alpine
@@ -29,6 +29,9 @@ services:
       ALLOWED_ORIGINS: ${APP_URL}
       DATABASE_URL: postgresql+asyncpg://app:${POSTGRES_PASSWORD}@postgres:5432/app
       SECRET_KEY: ${SECRET_KEY}
+      ATTACHMENTS_DIR: /data/attachments
+    volumes:
+      - /volume1/docker/colloquicrm/attachments:/data/attachments
     mem_limit: 512m
     depends_on:
       postgres:

@@ -6,6 +6,7 @@ import DetailShell from '../components/DetailShell';
 import ProfilePanel from '../components/ProfilePanel';
 import TagEditor from '../components/TagEditor';
 import TasksPanel from '../components/TasksPanel';
+import AttachmentsPanel from '../components/AttachmentsPanel';
 import { Empty, Loading } from '../components/ui';
 import { humanize, money } from '../format';
 import { OPPORTUNITY_FIELDS } from '../constants/fields';
@@ -110,6 +111,7 @@ export default function OpportunityDetail() {
       right={
         <>
           <TasksPanel entityType="opportunity" entityId={id} />
+          <AttachmentsPanel entityType="opportunity" entityId={id} />
           {(opp.company_id || opp.primary_person_id) && (
             <div className="card">
               <h4 className="panel-title">Related</h4>

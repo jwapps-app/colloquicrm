@@ -13,7 +13,19 @@ export const OPPORTUNITY_STATUSES = ['open', 'won', 'lost', 'abandoned'].map(opt
 
 export const PRIORITIES = ['none', 'low', 'medium', 'high'].map(opt);
 
-export const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY'].map((v) => ({ value: v, label: v }));
+// Task recurrence presets. Values encode (repeat_every, repeat_unit) as
+// "every:unit" so a single <select> round-trips the pair; '' = no repeat.
+export const REPEAT_OPTIONS = [
+  { value: '', label: "Doesn't repeat" },
+  { value: '1:day', label: 'Daily' },
+  { value: '1:week', label: 'Weekly' },
+  { value: '2:week', label: 'Every 2 weeks' },
+  { value: '1:month', label: 'Monthly' },
+  { value: '3:month', label: 'Every 3 months' },
+  { value: '1:year', label: 'Yearly' },
+];
+
+export const CURRENCIES =['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY'].map((v) => ({ value: v, label: v }));
 
 export const PREFIXES = ['Mr.', 'Mrs.', 'Miss', 'Ms.', 'Dr.'].map((v) => ({ value: v, label: v }));
 

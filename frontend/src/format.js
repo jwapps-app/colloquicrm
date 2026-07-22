@@ -74,6 +74,24 @@ export function fullName(o) {
   return [prefix, first_name, middle_name, last_name, suffix].filter(Boolean).join(' ') || '(no name)';
 }
 
+/** File size for display: bytes under 1 KB, else KB/MB with one decimal
+ * where it matters (1.5 KB, 12 KB, 3.2 MB). */
+export function humanSize(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n < 1024) return `${n} B`;
+  const kb = n / 1024;
+  if (kb < 1024) return `${kb >= 100 ? Math.round(kb) : kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb >= 100 ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
+/** "Repeats every week" / "Repeats every 2 weeks" for a task's recurrence. */
+export function repeatLabel(every, unit) {
+  if (!every || !unit) return '';
+  return `Repeats every ${every === 1 ? unit : `${every} ${unit}s`}`;
+}
+
 export function humanize(s) {
   if (!s) return '';
   const str = String(s).replace(/[_-]+/g, ' ').trim();
