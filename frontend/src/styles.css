@@ -670,6 +670,16 @@ textarea {
   align-items: center;
   margin-left: auto;
 }
+.bulk-tag-compose {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.bulk-tag-compose input {
+  padding: 4px 10px;
+  font-size: 13px;
+  width: 160px;
+}
 .bulk-owner {
   font-size: 13px;
   padding: 4px 8px;

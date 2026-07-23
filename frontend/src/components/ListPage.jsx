@@ -57,6 +57,9 @@ export default function ListPage({
   const [selected, setSelected] = useState(new Set());
   const [allMatching, setAllMatching] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  // null = tag composer closed; a string = open with that draft value.
+  const [tagDraft, setTagDraft] = useState(null);
+  const [allTags, setAllTags] = useState([]);
   const [exporting, setExporting] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const pageSize = 25;
@@ -256,10 +259,20 @@ export default function ListPage({
     runBulk({ action: 'delete' });
   }
 
-  function bulkTag() {
-    const name = window.prompt('Tag to add to the selected records:');
-    if (!name || !name.trim()) return;
-    runBulk({ action: 'add_tags', tags: [name.trim()] });
+  function openTagComposer() {
+    setTagDraft('');
+    // Suggestions are org-wide (not this page's scoped filter list) — you may
+    // be applying a tag that so far only exists on another record type.
+    cachedGet('/tags')
+      .then((d) => setAllTags(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }
+
+  function submitTag() {
+    const name = (tagDraft || '').trim();
+    if (!name) return;
+    setTagDraft(null);
+    runBulk({ action: 'add_tags', tags: [name] });
   }
 
   function bulkOwner(ownerId) {
@@ -378,9 +391,41 @@ export default function ListPage({
             </button>
           )}
           <span className="bulk-actions">
-            <button className="btn btn-small" onClick={bulkTag} disabled={bulkBusy}>
-              Add tag…
-            </button>
+            {tagDraft === null ? (
+              <button className="btn btn-small" onClick={openTagComposer} disabled={bulkBusy}>
+                Add tag…
+              </button>
+            ) : (
+              <span className="bulk-tag-compose">
+                <input
+                  autoFocus
+                  list="bulk-tag-options"
+                  placeholder="Tag name…"
+                  value={tagDraft}
+                  disabled={bulkBusy}
+                  onChange={(e) => setTagDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      submitTag();
+                    } else if (e.key === 'Escape') {
+                      setTagDraft(null);
+                    }
+                  }}
+                />
+                <datalist id="bulk-tag-options">
+                  {allTags.map((t) => (
+                    <option key={t.id} value={t.name} />
+                  ))}
+                </datalist>
+                <button className="btn btn-small btn-primary" onClick={submitTag} disabled={bulkBusy || !tagDraft.trim()}>
+                  Add
+                </button>
+                <button className="btn btn-small btn-ghost" onClick={() => setTagDraft(null)} disabled={bulkBusy}>
+                  Cancel
+                </button>
+              </span>
+            )}
             <select
               className="bulk-owner"
               value=""
