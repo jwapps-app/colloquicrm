@@ -7,7 +7,17 @@ from app.config import settings
 
 _engine_kwargs = {}
 if not settings.database_url.startswith("sqlite"):
-    _engine_kwargs = {"pool_pre_ping": True, "pool_recycle": 1800}
+    # Five background loops (reminders, Google, RingCentral, purge,
+    # automations) each hold a connection while they run, on top of request
+    # traffic — the default 5+10 pool had requests queueing behind syncs.
+    # Twenty in total stays well inside the sidecar Postgres's connection
+    # budget.
+    _engine_kwargs = {
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+        "pool_size": 10,
+        "max_overflow": 10,
+    }
 
 engine = create_async_engine(settings.database_url, **_engine_kwargs)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)

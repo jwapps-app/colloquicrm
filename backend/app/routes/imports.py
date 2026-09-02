@@ -1,8 +1,11 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.db import get_db
 from app.deps import get_current_user
@@ -14,6 +17,22 @@ from app.services.importer import IMPORT_TYPES, find_duplicates, parse_csv, run_
 router = APIRouter()
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+# The commit payload is the preview rows round-tripped as JSON; the same byte
+# bound as the CSV upload and a row ceiling well above any real Copper book.
+MAX_COMMIT_BYTES = MAX_UPLOAD_BYTES
+MAX_COMMIT_ROWS = 50_000
+
+
+def _body_too_large(request: Request) -> bool:
+    # Same shape as the public-form check: decide on Content-Length before
+    # the body is read, so an oversized payload never gets parsed.
+    raw = request.headers.get("content-length")
+    if raw is None:
+        return False
+    try:
+        return int(raw) > MAX_COMMIT_BYTES
+    except ValueError:
+        return True
 
 
 @router.post("/preview")
@@ -47,12 +66,33 @@ async def preview_import(
 
 @router.post("/commit", status_code=202)
 async def commit_import(
-    body: ImportCommitIn,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Stores the rows as a job and processes them in the background — a 19k-row
     import takes minutes, far past what a request (or the tunnel) will hold."""
+    # Parsed by hand rather than as a `body:` parameter: FastAPI reads and
+    # validates a body parameter before any dependency runs, which would put
+    # the size check after the very parse it's meant to prevent.
+    if _body_too_large(request):
+        raise HTTPException(status_code=413, detail="Import payload too large (50MB max)")
+    try:
+        raw = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Malformed JSON body")
+    try:
+        body = ImportCommitIn.model_validate(raw)
+    except ValidationError as exc:
+        # Re-raise in FastAPI's own shape so the client sees the usual 422.
+        raise RequestValidationError(
+            [{**e, "loc": ("body", *e["loc"])} for e in exc.errors(include_url=False)]
+        )
+    if len(body.rows) > MAX_COMMIT_ROWS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many rows ({len(body.rows)}; {MAX_COMMIT_ROWS} max). Split the file.",
+        )
     if body.type not in IMPORT_TYPES:
         raise HTTPException(
             status_code=422, detail=f"type must be one of {sorted(IMPORT_TYPES)}"
@@ -85,9 +125,13 @@ async def import_job_status(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # The client polls this every second or two while the job runs, and the
+    # payload is the whole import (megabytes of JSON) — leave it in the table.
     job = (
         await db.execute(
-            select(ImportJob).where(ImportJob.id == job_id, ImportJob.org_id == user.org_id)
+            select(ImportJob)
+            .options(defer(ImportJob.payload))
+            .where(ImportJob.id == job_id, ImportJob.org_id == user.org_id)
         )
     ).scalar_one_or_none()
     if job is None:

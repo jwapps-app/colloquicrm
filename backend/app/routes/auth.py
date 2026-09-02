@@ -1,5 +1,4 @@
-import time
-from collections import defaultdict
+import uuid
 from datetime import timedelta
 from ipaddress import ip_address
 
@@ -14,23 +13,33 @@ from app.db import get_db
 from app.deps import as_utc, bearer_token, get_current_user, get_session_and_user
 from app.models import Org, Session as DbSession, User, utcnow
 from app.schemas import LoginIn, SetupIn, TotpCodeIn, TotpVerifyIn
-from app.security import hash_password, hash_token, new_session_token, verify_password
+from app.security import (
+    hash_password,
+    hash_password_sync,
+    hash_token,
+    new_session_token,
+    verify_password,
+)
+from app.services.throttle import SlidingWindowLimiter
 
 router = APIRouter()
 
 # A fixed valid argon2 hash to verify against when the supplied email doesn't
 # exist, so a login for an unknown address does the same password-hashing work
 # as one for a real user — no timing oracle for account enumeration. The
-# plaintext is irrelevant; it just has to be a well-formed hash.
-_DECOY_HASH = hash_password("timing-oracle-decoy")
+# plaintext is irrelevant; it just has to be a well-formed hash. (Sync form:
+# computed once at import, no event loop yet.)
+_DECOY_HASH = hash_password_sync("timing-oracle-decoy")
 
 # In-process throttle — single instance by design. Keyed by client IP and by
 # account email so neither one address hammering many accounts nor many
-# addresses hammering one account gets a free run.
+# addresses hammering one account gets a free run. The same table also backs
+# the per-user keys for the authenticated secret checks (TOTP enable/disable,
+# password change) — one limiter, one lock.
 _FAIL_WINDOW_SECONDS = 900
 _FAIL_LIMIT = 10
 _TOTP_ATTEMPT_LIMIT = 5
-_failures: dict[str, list[float]] = defaultdict(list)
+_failures = SlidingWindowLimiter(_FAIL_WINDOW_SECONDS, _FAIL_LIMIT)
 
 
 def _peer_is_trusted_proxy(peer: str) -> bool:
@@ -44,33 +53,30 @@ def _peer_is_trusted_proxy(peer: str) -> bool:
 def _client_ip(request: Request) -> str:
     # cloudflared (or another reverse proxy) puts the real client in
     # cf-connecting-ip. Only believe it when the immediate peer is a proxy we
-    # trust — otherwise a directly-reachable client could spoof the header to
-    # dodge the per-IP throttle, so fall back to the peer address itself.
+    # trust AND the value is an actual IP address — otherwise a
+    # directly-reachable client could spoof the header (or feed it garbage to
+    # mint a fresh bucket per request) to dodge the per-IP throttle, so fall
+    # back to the peer address itself.
     peer = request.client.host if request.client else "unknown"
-    forwarded = request.headers.get("cf-connecting-ip")
+    forwarded = (request.headers.get("cf-connecting-ip") or "").strip()
     if forwarded and _peer_is_trusted_proxy(peer):
-        return forwarded.strip()
+        try:
+            return str(ip_address(forwarded))
+        except ValueError:
+            pass
     return peer
 
 
-def _throttle(keys: list[str]) -> None:
-    now = time.monotonic()
-    for key in keys:
-        recent = [t for t in _failures[key] if now - t < _FAIL_WINDOW_SECONDS]
-        _failures[key] = recent
-        if len(recent) >= _FAIL_LIMIT:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many failed attempts. Wait a few minutes and try again.",
-            )
+def _throttle(keys: list[str], limit: int | None = None) -> None:
+    if _failures.exceeded(keys, limit):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed attempts. Wait a few minutes and try again.",
+        )
 
 
 def _record_failure(keys: list[str]) -> None:
-    now = time.monotonic()
-    for key in keys:
-        _failures[key].append(now)
-    if len(_failures) > 10_000:  # bound memory under address-spraying
-        _failures.clear()
+    _failures.record(keys)
 
 
 def user_out(user: User) -> dict:
@@ -132,7 +138,7 @@ async def setup(body: SetupIn, db: AsyncSession = Depends(get_db)):
     user = User(
         org_id=org.id,
         email=body.email.lower(),
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password(body.password),
         display_name=body.display_name,
         is_admin=True,
     )
@@ -166,10 +172,10 @@ async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_
     if user is None:
         # Do the same argon2 work an existing account would, so the response
         # time doesn't reveal whether the email is registered.
-        verify_password(body.password, _DECOY_HASH)
+        await verify_password(body.password, _DECOY_HASH)
         _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not verify_password(body.password, user.password_hash):
+    if not await verify_password(body.password, user.password_hash):
         _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
@@ -284,6 +290,32 @@ async def list_sessions(
     }
 
 
+@router.delete("/sessions/{session_id}", status_code=204)
+async def revoke_session(
+    session_id: uuid.UUID,
+    session_user=Depends(get_session_and_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sign out one of the caller's OTHER sessions (a device they no longer
+    have, say). The current session is refused — that's what logout is for,
+    and a client that revoked itself here would carry on with a dead token."""
+    sess, user = session_user
+    if session_id == sess.id:
+        raise HTTPException(
+            status_code=400, detail="Use logout to end the current session"
+        )
+    target = (
+        await db.execute(
+            select(DbSession).where(DbSession.id == session_id, DbSession.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        # Someone else's session (or none) — same answer either way.
+        raise HTTPException(status_code=404, detail="Session not found")
+    await db.delete(target)
+    await db.commit()  # the other device must be out before the list refetches
+
+
 @router.post("/totp/setup")
 async def totp_setup(
     session_user=Depends(get_session_and_user), db: AsyncSession = Depends(get_db)
@@ -309,7 +341,13 @@ async def totp_enable(
     _, user = session_user
     if not user.totp_secret:
         raise HTTPException(status_code=400, detail="Run setup first")
+    # Same per-account key as the login-time TOTP check, at the same five
+    # guesses a pending session gets: a stolen session must not get unlimited
+    # tries at the seed through this door either.
+    throttle_keys = [f"totpuser:{user.id}"]
+    _throttle(throttle_keys, _TOTP_ATTEMPT_LIMIT)
     if not pyotp.TOTP(user.totp_secret).verify(body.code.strip(), valid_window=1):
+        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid code")
     user.totp_enabled = True
     await db.commit()
@@ -325,7 +363,13 @@ async def totp_disable(
     _, user = session_user
     if not user.totp_enabled or not user.totp_secret:
         raise HTTPException(status_code=400, detail="Two-factor is not enabled")
+    # Disabling 2FA with a guessed code is the prize a session thief wants
+    # most — five tries per window, like every other TOTP check on this
+    # account.
+    throttle_keys = [f"totpuser:{user.id}"]
+    _throttle(throttle_keys, _TOTP_ATTEMPT_LIMIT)
     if not pyotp.TOTP(user.totp_secret).verify(body.code.strip(), valid_window=1):
+        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid code")
     user.totp_enabled = False
     user.totp_secret = None

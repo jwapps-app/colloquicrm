@@ -42,7 +42,9 @@ export default function EmailSearch() {
       skipNextFetch.current = false;
       return;
     }
-    if (q.length < 2) {
+    // The server answers anything shorter with an empty page (too short for
+    // its trigram indexes), so don't bother asking.
+    if (q.length < 3) {
       setItems(null);
       setHasMore(false);
       return;
@@ -87,9 +89,9 @@ export default function EmailSearch() {
         />
       </div>
 
-      {q.length < 2 ? (
+      {q.length < 3 ? (
         <div className="card">
-          <Empty label="Search your synced email" hint="Type at least two characters to search subjects, senders, and message bodies." />
+          <Empty label="Search your synced email" hint="Type at least 3 characters to search subjects, senders, and message bodies." />
         </div>
       ) : loading && !items ? (
         <div className="card">

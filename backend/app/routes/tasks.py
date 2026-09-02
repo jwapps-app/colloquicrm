@@ -41,15 +41,24 @@ async def enrich(db, user, dicts):
         d["entity_label"] = labels.get((d.get("entity_type"), d.get("entity_id")))
 
 
-async def _validate_target(db, user, data):
+async def _validate_target(db, user, data, current):
     # A task can hang off a person/company/opportunity/lead — make sure the
-    # target is a real in-org record before we store the pointer. Only act when
-    # both parts are supplied together (create always sends both, or neither);
-    # a partial PATCH of one alone isn't a link change to validate here.
-    if "entity_type" in data and "entity_id" in data:
-        await validate_entity_ref(
-            db, user.org_id, data.get("entity_type"), data.get("entity_id")
-        )
+    # target is a real in-org record before we store the pointer. A PATCH may
+    # send just one half of the pair; the other half is whatever the task
+    # already has, and the combination is what gets validated — otherwise a
+    # lone entity_id could re-point a task at a record in another org (or at
+    # nothing). `current` is None on create, where the body is the whole story.
+    if "entity_type" not in data and "entity_id" not in data:
+        return
+    entity_type = (
+        data.get("entity_type")
+        if "entity_type" in data
+        else getattr(current, "entity_type", None)
+    )
+    entity_id = (
+        data.get("entity_id") if "entity_id" in data else getattr(current, "entity_id", None)
+    )
+    await validate_entity_ref(db, user.org_id, entity_type, entity_id)
 
 
 def _notify_created(task, actor):

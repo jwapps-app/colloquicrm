@@ -432,7 +432,9 @@ function SecuritySection() {
 /* ---------- Sessions ---------- */
 
 function SessionsSection() {
+  const toast = useToast();
   const [sessions, setSessions] = useState(null);
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     let on = true;
@@ -447,7 +449,18 @@ function SessionsSection() {
     return () => {
       on = false;
     };
-  }, []);
+  }, [version]);
+
+  async function revoke(s) {
+    if (!window.confirm('Sign out that session? Whatever device it is will need to log in again.')) return;
+    try {
+      await del(`/auth/sessions/${s.id}`);
+      toast.success('Session signed out');
+      setVersion((v) => v + 1);
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
 
   if (!sessions || sessions.length === 0) return null;
 
@@ -464,6 +477,12 @@ function SessionsSection() {
             </div>
             {/* last_seen_at may be absent on an older backend — show nothing then */}
             {s.last_seen_at && <span className="muted">Last active {fmtDateTime(s.last_seen_at)}</span>}
+            {/* The current session ends via Sign out, not here. */}
+            {!s.current && (
+              <button className="btn btn-small btn-danger-ghost" onClick={() => revoke(s)}>
+                Revoke
+              </button>
+            )}
           </div>
         ))}
       </div>

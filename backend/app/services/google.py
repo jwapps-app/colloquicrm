@@ -64,35 +64,87 @@ def redirect_uri() -> str:
     return f"{settings.app_url.rstrip('/')}/api/v1/integrations/google/callback"
 
 
-# ---- signed state (stateless CSRF protection for the OAuth round-trip) ----
+# ---- signed state (CSRF protection for the OAuth round-trip) ----
+#
+# The HMAC proves WE minted the state for that user; on its own it doesn't
+# prove the browser finishing the flow is the one that started it — a valid
+# state URL could be handed to a victim to bind the attacker's Google account
+# to their CRM user. So the state also carries the hash of a nonce that lives
+# only in a cookie on the starting browser; the callback requires both.
 
-def make_state(user_id: uuid.UUID) -> str:
+def hash_nonce(nonce: str) -> str:
+    return hashlib.sha256(nonce.encode()).hexdigest()
+
+
+def make_state(user_id: uuid.UUID, nonce_hash: str) -> str:
     ts = str(int(time.time()))
-    payload = f"{user_id}:{ts}"
+    payload = f"{user_id}:{nonce_hash}:{ts}"
     sig = hmac.new(settings.secret_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{sig}"
 
 
-def check_state(state: str) -> uuid.UUID | None:
+def check_state(state: str) -> tuple[uuid.UUID, str] | None:
+    """(user_id, nonce_hash) for a valid, unexpired state; None otherwise."""
     try:
-        user_part, ts, sig = state.rsplit(":", 2)
+        user_part, nonce_hash, ts, sig = state.rsplit(":", 3)
     except ValueError:
         return None
-    payload = f"{user_part}:{ts}"
+    payload = f"{user_part}:{nonce_hash}:{ts}"
     expected = hmac.new(settings.secret_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
         return None
     if time.time() - int(ts) > STATE_TTL_SECONDS:
         return None
     try:
-        return uuid.UUID(user_part)
+        return uuid.UUID(user_part), nonce_hash
     except ValueError:
         return None
 
 
+# ---- HTTP ----
+
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    # One keep-alive pool for every Google call. A backfill makes thousands
+    # of requests and each fresh AsyncClient was a TLS handshake; the pool is
+    # sized for the ten-wide message fetches. Per-call timeouts and the
+    # bearer header are passed per request — nothing is baked in.
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+    return _client
+
+
+async def aclose() -> None:
+    """Drain the shared pool; called once from app shutdown."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+async def _release_db(db) -> None:
+    """End the session's transaction before waiting on Google.
+
+    Every network call in the sync path sits behind one of these: the
+    connection goes back to the pool and Postgres holds no snapshot while a
+    page or a message batch is in flight (a backfill runs for minutes, and an
+    idle-in-transaction session that long blocks vacuum and pins a pooled
+    connection). What it commits is only finished work — rows the next
+    checkpoint would have kept anyway, deduped on resume by gmail_id and
+    rfc_message_id."""
+    if db.in_transaction():
+        await db.commit()
+
+
 # ---- OAuth ----
 
-def auth_url(client_id: str, user_id: uuid.UUID) -> str:
+def auth_url(client_id: str, user_id: uuid.UUID, nonce: str) -> str:
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri(),
@@ -100,7 +152,7 @@ def auth_url(client_id: str, user_id: uuid.UUID) -> str:
         "scope": " ".join(SCOPES),
         "access_type": "offline",
         "prompt": "consent",  # guarantees a refresh_token on reconnect
-        "state": make_state(user_id),
+        "state": make_state(user_id, hash_nonce(nonce)),
     }
     return f"{settings.google_auth_url}?{urlencode(params)}"
 
@@ -113,8 +165,7 @@ async def _post_form(url: str, data: dict) -> dict:
     resp = None
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, data=data)
+            resp = await _get_client().post(url, data=data, timeout=30.0)
             break
         except httpx.HTTPError as exc:
             if attempt < 2:
@@ -154,10 +205,12 @@ async def _get_json(
     resp = None
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.get(
-                    url, params=params, headers={"Authorization": f"Bearer {access_token}"}
-                )
+            resp = await _get_client().get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=timeout,
+            )
             break
         except httpx.HTTPError as exc:
             if attempt < 2:
@@ -193,6 +246,7 @@ async def ensure_access_token(db, cfg: GoogleIntegration, account: GoogleAccount
             expires = expires.replace(tzinfo=timezone.utc)
         if expires > utcnow() + timedelta(minutes=2):
             return account.access_token
+    await _release_db(db)  # the refresh round-trip must not sit inside a transaction
     tokens = await _post_form(
         settings.google_token_url,
         {
@@ -210,8 +264,9 @@ async def ensure_access_token(db, cfg: GoogleIntegration, account: GoogleAccount
 
 async def revoke(account: GoogleAccount) -> None:
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(settings.google_revoke_url, params={"token": account.refresh_token})
+        await _get_client().post(
+            settings.google_revoke_url, params={"token": account.refresh_token}, timeout=10.0
+        )
     except httpx.HTTPError:
         pass  # best effort — we delete our copy regardless
 
@@ -299,9 +354,67 @@ def _parse_when(when: dict | None) -> tuple[datetime | None, bool]:
     return None, False
 
 
+async def _store_calendar_page(db, account: GoogleAccount, items: list[dict]) -> int:
+    """Upsert one page of events (pure DB work — no network in here)."""
+    # One lookup for the whole page instead of a SELECT per event.
+    page_ids = [i.get("id") for i in items if i.get("id")]
+    existing_by_gid: dict[str, CalendarEvent] = {}
+    if page_ids:
+        rows = await db.execute(
+            select(CalendarEvent).where(
+                CalendarEvent.org_id == account.org_id,
+                CalendarEvent.google_event_id.in_(page_ids),
+            )
+        )
+        existing_by_gid = {e.google_event_id: e for e in rows.scalars()}
+    count = 0
+    for item in items:
+        if item.get("status") == "cancelled":
+            continue
+        event_id = item.get("id")
+        if not event_id:
+            continue
+        starts_at, all_day = _parse_when(item.get("start"))
+        ends_at, _ = _parse_when(item.get("end"))
+        existing = existing_by_gid.get(event_id)
+        if existing is None:
+            existing = CalendarEvent(org_id=account.org_id, google_event_id=event_id)
+            db.add(existing)
+        existing.owner_user_id = account.user_id
+        existing.summary = (item.get("summary") or "")[:500] or None
+        existing.location = (item.get("location") or "")[:500] or None
+        existing.starts_at = starts_at
+        existing.ends_at = ends_at
+        existing.all_day = all_day
+        existing.html_link = item.get("htmlLink")
+        await db.flush()
+        await db.execute(
+            delete(CalendarEventAttendee).where(CalendarEventAttendee.event_id == existing.id)
+        )
+        seen: set[str] = set()
+        for att in item.get("attendees", []) or []:
+            # Stored normalized (gmail dots/+suffixes stripped) — the
+            # entity-matching queries look attendees up by normalize_email.
+            email = normalize_email(att.get("email") or "")
+            if not email or email in seen:
+                continue
+            seen.add(email)
+            db.add(
+                CalendarEventAttendee(
+                    event_id=existing.id,
+                    email=email,
+                    display_name=att.get("displayName"),
+                )
+            )
+        count += 1
+    return count
+
+
 async def sync_calendar(db, cfg: GoogleIntegration, account: GoogleAccount) -> int:
     """Upsert the account's primary-calendar events for the sync window.
-    Returns how many events were written."""
+    Returns how many events were written. Fetch a page, write a page: the
+    write for one page is committed before the next page is requested, so
+    no transaction ever spans a Calendar round-trip."""
     access = await ensure_access_token(db, cfg, account)
     time_min = (utcnow() - timedelta(days=EVENT_WINDOW_PAST_DAYS)).isoformat()
     time_max = (utcnow() + timedelta(days=EVENT_WINDOW_FUTURE_DAYS)).isoformat()
@@ -318,60 +431,11 @@ async def sync_calendar(db, cfg: GoogleIntegration, account: GoogleAccount) -> i
         }
         if page_token:
             params["pageToken"] = page_token
+        await _release_db(db)
         data = await _get_json(
             f"{settings.google_calendar_base}/calendars/primary/events", access, params
         )
-        items = data.get("items", [])
-        # One lookup for the whole page instead of a SELECT per event.
-        page_ids = [i.get("id") for i in items if i.get("id")]
-        existing_by_gid: dict[str, CalendarEvent] = {}
-        if page_ids:
-            rows = await db.execute(
-                select(CalendarEvent).where(
-                    CalendarEvent.org_id == account.org_id,
-                    CalendarEvent.google_event_id.in_(page_ids),
-                )
-            )
-            existing_by_gid = {e.google_event_id: e for e in rows.scalars()}
-        for item in items:
-            if item.get("status") == "cancelled":
-                continue
-            event_id = item.get("id")
-            if not event_id:
-                continue
-            starts_at, all_day = _parse_when(item.get("start"))
-            ends_at, _ = _parse_when(item.get("end"))
-            existing = existing_by_gid.get(event_id)
-            if existing is None:
-                existing = CalendarEvent(org_id=account.org_id, google_event_id=event_id)
-                db.add(existing)
-            existing.owner_user_id = account.user_id
-            existing.summary = (item.get("summary") or "")[:500] or None
-            existing.location = (item.get("location") or "")[:500] or None
-            existing.starts_at = starts_at
-            existing.ends_at = ends_at
-            existing.all_day = all_day
-            existing.html_link = item.get("htmlLink")
-            await db.flush()
-            await db.execute(
-                delete(CalendarEventAttendee).where(CalendarEventAttendee.event_id == existing.id)
-            )
-            seen: set[str] = set()
-            for att in item.get("attendees", []) or []:
-                # Stored normalized (gmail dots/+suffixes stripped) — the
-                # entity-matching queries look attendees up by normalize_email.
-                email = normalize_email(att.get("email") or "")
-                if not email or email in seen:
-                    continue
-                seen.add(email)
-                db.add(
-                    CalendarEventAttendee(
-                        event_id=existing.id,
-                        email=email,
-                        display_name=att.get("displayName"),
-                    )
-                )
-            count += 1
+        count += await _store_calendar_page(db, account, data.get("items", []))
         page_token = data.get("nextPageToken")
         if not page_token:
             break
@@ -508,7 +572,14 @@ async def _store_messages(
     contact_map: dict[str, tuple[str, uuid.UUID]],
 ) -> tuple[int, set[uuid.UUID]]:
     """Fetch metadata for unseen ids, keep only CRM-matching mail.
-    Returns (stored_count, matched_person_ids)."""
+    Returns (stored_count, matched_person_ids).
+
+    Works in batches of ten: fetch a batch with no transaction open, write
+    it along with the affected people's interaction metrics, and that batch
+    is committed before the next fetch. An interruption anywhere leaves only
+    whole, self-consistent batches behind — the caller's checkpoint (cursor
+    or history id) stays put, so the next pass re-lists the same ids and the
+    dedupe above skips what already landed."""
     owner_email = normalize_email(account.email)
     archive = settings.gmail_archive_bodies
     stored = 0
@@ -521,6 +592,7 @@ async def _store_messages(
     CHUNK = 10
     for i in range(0, len(unseen), CHUNK):
         chunk = unseen[i : i + CHUNK]
+        await _release_db(db)
         results = await asyncio.gather(
             *[_fetch_message(access, g, archive) for g in chunk], return_exceptions=True
         )
@@ -537,6 +609,7 @@ async def _store_messages(
             if isinstance(res, BaseException):
                 raise res  # unexpected: don't silently swallow
             items.append(res)
+        batch_people: set[uuid.UUID] = set()
         for item in items:
             if item is None:
                 continue
@@ -596,7 +669,12 @@ async def _store_messages(
                     )
                 )
             stored += 1
-            matched_people.update(pid for etype, pid in matches if etype == "person")
+            batch_people.update(pid for etype, pid in matches if etype == "person")
+        # Metrics ride in the same transaction as the rows they count, so a
+        # committed batch never leaves a person's interaction count behind.
+        if batch_people:
+            await _update_person_aggregates(db, account.org_id, batch_people)
+            matched_people |= batch_people
     return stored, matched_people
 
 
@@ -740,6 +818,15 @@ def _backfill_addresses(contact_map: dict) -> list[str]:
     )
 
 
+def count_backfill_addresses(addr_map: dict) -> int:
+    """How long the walk over addr_map would be — the same rule as
+    _backfill_addresses, for any map keyed by normalized address whose values
+    lead with the entity type (the feed's cached contact map qualifies)."""
+    return sum(
+        1 for hit in addr_map.values() if hit[0] == "person" or settings.gmail_backfill_leads
+    )
+
+
 async def sync_gmail(
     db, cfg: GoogleIntegration, account: GoogleAccount, force_backfill: bool = False
 ) -> int:
@@ -752,7 +839,6 @@ async def sync_gmail(
     if not contact_map:
         return 0
     stored_total = 0
-    matched_people: set[uuid.UUID] = set()
 
     if force_backfill and account.gmail_backfill_done:
         # Restart the walk — how newly added contacts get their history.
@@ -763,16 +849,23 @@ async def sync_gmail(
         # Snapshot the history cursor FIRST so mail arriving mid-backfill
         # isn't missed once the incremental feed takes over.
         if not account.gmail_history_id:
+            await _release_db(db)
             profile = await _get_json(f"{settings.google_gmail_base}/users/me/profile", access)
             account.gmail_history_id = str(profile.get("historyId") or "")
             await db.commit()
         addresses = _backfill_addresses(contact_map)
+        # Stamped per pass (the list is rebuilt each time anyway) so the
+        # status poll can report progress without sizing the walk itself.
+        account.gmail_backfill_total = len(addresses)
         cursor = account.gmail_backfill_cursor or 0
         while cursor < len(addresses):
             chunk = addresses[cursor : cursor + BACKFILL_ADDRESSES_PER_CHECKPOINT]
             try:
+                await _release_db(db)
                 ids = await _search_contact_mail(access, chunk)
-                stored, people = await _store_messages(db, account, access, ids, contact_map)
+                # Writes (and the matched people's metrics) land in batches
+                # inside; only the last batch is still pending here.
+                stored, _ = await _store_messages(db, account, access, ids, contact_map)
             except GoogleError as exc:
                 if _is_rate_limit(exc):
                     # Quota pressure: keep the checkpoint, resume next pass.
@@ -782,20 +875,18 @@ async def sync_gmail(
                     return stored_total
                 raise
             stored_total += stored
-            # Metrics update INSIDE the checkpoint — a rate-limit resume or
-            # restart must never leave stored mail uncounted.
-            if people:
-                await _update_person_aggregates(db, account.org_id, people)
             cursor += len(chunk)
             account.gmail_backfill_cursor = cursor
             account.sync_error = None
             await db.commit()  # checkpoint: finished work survives anything
         account.gmail_backfill_done = True
         account.gmail_backfill_cursor = 0
+        account.gmail_backfill_total = None
     elif account.gmail_history_id:
         ids = []
         page_token = None
         newest_history = account.gmail_history_id
+        await _release_db(db)
         try:
             while True:
                 params = {
@@ -824,13 +915,12 @@ async def sync_gmail(
                 account.gmail_history_id = None
                 return stored_total
             raise
-        stored, people = await _store_messages(db, account, access, ids, contact_map)
+        stored, _ = await _store_messages(db, account, access, ids, contact_map)
         stored_total += stored
-        matched_people |= people
+        # Advanced only after every batch is in: an interruption re-walks
+        # this history window next pass and the dedupe absorbs the repeats.
         account.gmail_history_id = newest_history
 
-    if matched_people:
-        await _update_person_aggregates(db, account.org_id, matched_people)
     return stored_total
 
 

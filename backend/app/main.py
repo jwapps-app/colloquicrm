@@ -37,6 +37,12 @@ from app.routes import (
     tasks,
     users,
 )
+from app.services import (
+    colloqui as colloqui_service,
+    google as google_service,
+    push,
+    ringcentral as ringcentral_service,
+)
 from app.services.automations import automations_loop
 from app.services.colloqui import reminder_loop
 from app.services.google import sync_loop as google_sync_loop
@@ -101,6 +107,9 @@ async def lifespan(app: FastAPI):
     for task in background:
         with suppress(asyncio.CancelledError):
             await task
+    # The loops are gone — drain the outbound HTTP pools they shared.
+    for service in (google_service, ringcentral_service, colloqui_service, push):
+        await service.aclose()
     await engine.dispose()
 
 

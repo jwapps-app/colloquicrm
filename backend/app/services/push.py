@@ -36,8 +36,18 @@ def is_configured() -> bool:
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(timeout=10.0)
+        _client = httpx.AsyncClient(
+            timeout=10.0, limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+        )
     return _client
+
+
+async def aclose() -> None:
+    """Drain the shared pool; called once from app shutdown."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
 
 
 async def send_to_user(

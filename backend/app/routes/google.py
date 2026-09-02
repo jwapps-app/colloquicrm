@@ -1,7 +1,9 @@
+import hmac
+import secrets
 import uuid
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +34,14 @@ from app.services.importer import find_duplicates
 
 router = APIRouter()
 
+# Binds the OAuth callback to the browser that asked for the auth URL: the
+# cookie holds a nonce whose hash rides in the signed state, and /callback
+# insists the two match before any token is stored. Scoped to the callback
+# path so it never travels with ordinary API calls; SameSite=Lax is what
+# lets it accompany the top-level redirect back from Google.
+_NONCE_COOKIE = "google_oauth_nonce"
+_NONCE_COOKIE_PATH = "/api/v1/integrations/google/callback"
+
 
 async def _cfg(db: AsyncSession, org_id: uuid.UUID) -> GoogleIntegration | None:
     return (
@@ -47,13 +57,21 @@ async def _account(db: AsyncSession, user_id: uuid.UUID) -> GoogleAccount | None
 
 @router.get("/status")
 async def status(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.routes.feed import _org_contact_maps
+
     cfg = await _cfg(db, user.org_id)
     account = await _account(db, user.id)
     backfill_total = None
     backfill_done = bool(account.gmail_backfill_done) if account else False
     if account and g.has_gmail_scope(account) and not backfill_done:
-        contact_map = await g._crm_email_map(db, user.org_id)
-        backfill_total = len(g._backfill_addresses(contact_map))
+        # The sync stamps the walk's length when it starts. Before the first
+        # pass has run there is nothing stamped yet, so size the walk from the
+        # feed's short-lived contact map rather than rebuilding the org's
+        # address book on every poll.
+        backfill_total = account.gmail_backfill_total
+        if backfill_total is None:
+            addr_map, _ = await _org_contact_maps(db, user.org_id)
+            backfill_total = g.count_backfill_addresses(addr_map)
     return {
         "configured": cfg is not None,
         "client_id": cfg.client_id if cfg else None,
@@ -107,45 +125,74 @@ async def delete_config(admin: User = Depends(require_admin), db: AsyncSession =
 
 
 @router.get("/auth-url")
-async def auth_url(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def auth_url(
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     cfg = await _cfg(db, user.org_id)
     if cfg is None:
         raise HTTPException(status_code=400, detail="Google integration is not configured")
-    return {"url": g.auth_url(cfg.client_id, user.id)}
+    nonce = secrets.token_urlsafe(32)
+    response.set_cookie(
+        _NONCE_COOKIE,
+        nonce,
+        max_age=g.STATE_TTL_SECONDS,
+        path=_NONCE_COOKIE_PATH,
+        httponly=True,
+        secure=settings.environment == "production",
+        samesite="lax",
+    )
+    return {"url": g.auth_url(cfg.client_id, user.id, nonce)}
 
 
 @router.get("/callback")
 async def callback(
+    request: Request,
     state: str,
     code: str | None = None,
     error: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Browser redirect target from Google — authenticated by the signed
-    state, not a bearer token."""
+    state plus the nonce cookie set when the flow started, not a bearer
+    token."""
     dest = f"{settings.app_url.rstrip('/')}/settings"
+
+    def finish(result: str) -> RedirectResponse:
+        # One-shot: the nonce is spent whichever way the flow ended.
+        resp = RedirectResponse(f"{dest}?google={result}")
+        resp.delete_cookie(_NONCE_COOKIE, path=_NONCE_COOKIE_PATH)
+        return resp
+
     if error or not code:
-        return RedirectResponse(f"{dest}?google=denied")
-    user_id = g.check_state(state)
-    if user_id is None:
-        return RedirectResponse(f"{dest}?google=state_error")
+        return finish("denied")
+    checked = g.check_state(state)
+    if checked is None:
+        return finish("state_error")
+    user_id, nonce_hash = checked
+    nonce = request.cookies.get(_NONCE_COOKIE, "")
+    if not nonce or not hmac.compare_digest(g.hash_nonce(nonce), nonce_hash):
+        # No cookie (a pasted/forwarded callback URL) or the wrong one: this
+        # isn't the browser that started the flow.
+        return finish("state_error")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
-        return RedirectResponse(f"{dest}?google=state_error")
+        return finish("state_error")
     cfg = await _cfg(db, user.org_id)
     if cfg is None:
-        return RedirectResponse(f"{dest}?google=not_configured")
+        return finish("not_configured")
     try:
         tokens = await g.exchange_code(cfg, code)
         info = await g.get_userinfo(tokens["access_token"])
     except (g.GoogleError, KeyError):
-        return RedirectResponse(f"{dest}?google=exchange_error")
+        return finish("exchange_error")
 
     refresh = tokens.get("refresh_token")
     account = await _account(db, user.id)
     if refresh is None and account is None:
         # Without a refresh token we can't sync later; force re-consent.
-        return RedirectResponse(f"{dest}?google=no_refresh_token")
+        return finish("no_refresh_token")
 
     if account is None:
         account = GoogleAccount(
@@ -162,7 +209,7 @@ async def callback(
     account.connected_at = utcnow()
     account.sync_error = None
     await db.commit()  # the redirect target refetches status immediately
-    return RedirectResponse(f"{dest}?google=connected")
+    return finish("connected")
 
 
 @router.delete("/link", status_code=204)
@@ -510,7 +557,11 @@ async def search_emails(
     from app.routes.feed import _org_contact_maps
 
     term = (q or "").strip()
-    if len(term) < 2:
+    # Three characters is the floor: a two-character pattern yields no usable
+    # trigram, so the GIN indexes can't help and the OR over five columns
+    # falls back to scanning every archived body. Short terms get the normal
+    # empty envelope, not an error — the clients fire as the user types.
+    if len(term) < 3:
         return {"items": [], "page": 1, "has_more": False}
     page = max(1, page)
     page_size = min(max(page_size, 1), 50)

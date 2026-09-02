@@ -33,6 +33,12 @@ router = APIRouter()
 _MAPS_TTL_SECONDS = 120
 _maps_cache: dict[uuid.UUID, tuple[float, dict, dict]] = {}
 
+# The feed loads page*page_size rows from every source and sorts them in
+# Python, so the cost grows with the page NUMBER. Deep pages are an easy DoS
+# (page=999999 pulls whole tables) and no reader scrolls that far — the iOS
+# app stops at 10 pages and points at the web app for older history.
+_MAX_PAGE = 200
+
 
 async def _org_contact_maps(db: AsyncSession, org_id: uuid.UUID) -> tuple[dict, dict]:
     """(addr_map, phone_map): normalized email/number -> (type, id, label)."""
@@ -86,6 +92,11 @@ async def feed(
 ):
     page = max(1, page)
     page_size = min(max(page_size, 1), 100)
+    if page > _MAX_PAGE:
+        # Past the cap: an empty last page, not an error. The clients page by
+        # number and would surface a 4xx as a failure; an empty page with
+        # has_more false just ends the scroll.
+        return {"items": [], "page": page, "page_size": page_size, "has_more": False}
     need = page * page_size + 1  # one extra to detect has_more
 
     items: list[dict] = []

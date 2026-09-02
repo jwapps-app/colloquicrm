@@ -19,9 +19,7 @@ HTML snippet (Settings -> Forms) that posts here directly.
 
 import html
 import re
-import time
 import uuid
-from collections import defaultdict
 from datetime import date
 
 from fastapi import APIRouter, Depends, Request
@@ -35,6 +33,7 @@ from app.models import Lead, LeadForm, utcnow
 from app.routes.auth import _client_ip
 from app.routes.forms import DEFAULT_SUCCESS, FORM_FIELD_DEFS
 from app.services.common import log_activity
+from app.services.throttle import SlidingWindowLimiter
 
 router = APIRouter()
 
@@ -42,7 +41,7 @@ router = APIRouter()
 # throttle). Counts every POST to any form from one address.
 _SUBMIT_WINDOW_SECONDS = 900
 _SUBMIT_LIMIT = 10
-_submissions: dict[str, list[float]] = defaultdict(list)
+_submissions = SlidingWindowLimiter(_SUBMIT_WINDOW_SECONDS, _SUBMIT_LIMIT)
 
 # Absolute per-form ceiling: how many accepted submissions one form takes in a
 # single UTC day, regardless of source IP. In-memory like the rate limiter
@@ -53,16 +52,10 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _rate_limited(request: Request) -> bool:
-    key = f"ip:{_client_ip(request)}"
-    now = time.monotonic()
-    recent = [t for t in _submissions[key] if now - t < _SUBMIT_WINDOW_SECONDS]
-    if len(recent) >= _SUBMIT_LIMIT:
-        _submissions[key] = recent
+    keys = [f"ip:{_client_ip(request)}"]
+    if _submissions.exceeded(keys):
         return True
-    recent.append(now)
-    _submissions[key] = recent
-    if len(_submissions) > 10_000:  # bound memory under address-spraying
-        _submissions.clear()
+    _submissions.record(keys)
     return False
 
 
@@ -92,7 +85,13 @@ def _record_form_submission(form: LeadForm) -> None:
     if day != today:
         count = 0
     if len(_form_day_counts) > 10_000:  # bound memory across many forms
-        _form_day_counts.clear()
+        # Yesterday's counters are dead weight; drop those before anything
+        # live. (Forms are admin-created, so this is housekeeping, not an
+        # attacker-reachable reset.)
+        for fid in [f for f, (d, _) in _form_day_counts.items() if d != today]:
+            del _form_day_counts[fid]
+        if len(_form_day_counts) > 10_000:
+            _form_day_counts.clear()
     _form_day_counts[form.id] = (today, count + 1)
 
 

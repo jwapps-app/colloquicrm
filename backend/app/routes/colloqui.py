@@ -17,6 +17,7 @@ from app.services.colloqui import (
     ensure_workspace,
     get_integration,
     is_enabled,
+    validate_base_url,
 )
 
 router = APIRouter()
@@ -50,9 +51,10 @@ async def connect(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    base_url = body.base_url.strip().rstrip("/")
-    if not base_url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=422, detail="Base URL must start with http:// or https://")
+    try:
+        base_url = validate_base_url(body.base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     client = ColloquiClient(base_url, body.api_key.strip())
     bootstrap_note = None
     try:

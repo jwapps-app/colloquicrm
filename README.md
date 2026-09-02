@@ -90,6 +90,19 @@ first, then set the stack env:
 
 Point the reverse proxy / tunnel hostname at `<NAS-IP>:<APP_PORT>`.
 
+**Behind a proxy or tunnel.** The login and public-form rate limits are keyed
+by client address. A proxy in front of the API (cloudflared, nginx, …) hides
+that address; the app reads the real one from `cf-connecting-ip` only when the
+immediate peer is inside `TRUSTED_PROXY_IPS`, since anyone else could set the
+header themselves and dodge the throttle. The Portainer compose sets it to
+docker's `172.16.0.0/12` so a cloudflared container on the same host is
+trusted — adjust it to your proxy's network if it runs elsewhere. Without it
+every user arriving through the tunnel shares one throttle bucket (a burst of
+bad logins from one visitor locks the address for everyone). Keep the set as
+narrow as you can: docker's published port makes *every* direct connection
+look like it came from the bridge gateway, so if the port is reachable
+without the proxy, direct clients fall inside that range too.
+
 **Finish setup before exposing the hostname.** The first visitor to a fresh
 instance gets the "create admin account" screen — do that yourself before
 wiring up the public tunnel/proxy, or anyone who finds the URL first owns the
@@ -118,10 +131,11 @@ file already sets the required ones.
 | `PUSH_RELAY_URL` | unset | push-relay base URL for the iOS companion app. Unset = push off; task reminders go to Colloqui chat only |
 | `PUSH_RELAY_API_KEY` | unset | relay key scoped to the app's bundle id |
 | `APNS_TOPIC` | companion-app bundle id | topic the relay routes push on |
-| `TRUSTED_PROXY_IPS` | loopback + private ranges | proxy IPs/CIDRs trusted to set `cf-connecting-ip`; others fall back to the peer address for rate-limit keying |
+| `TRUSTED_PROXY_IPS` | `127.0.0.1/32,::1/128` | proxy IPs/CIDRs trusted to set `cf-connecting-ip`; any other peer is keyed by its own address for rate limiting. Behind cloudflared/a reverse proxy set this to the proxy's network (the compose files use `172.16.0.0/12`) — see "Behind a proxy" above |
 | `TASK_REMINDER_LEAD_MINUTES` | `15` | default reminder lead before a task's due time when no explicit reminder is set |
 | `ATTACHMENTS_DIR` | `./data/attachments` | where uploaded file attachments are stored on disk; both compose files mount a volume at `/data/attachments` and point this there |
 | `ATTACHMENT_MAX_MB` | `25` | per-file upload size cap; larger uploads are rejected with 413 |
+| `ATTACHMENT_QUOTA_MB` | `5120` | whole-org attachment budget (sum of stored files); an upload that would exceed it is rejected with 507. Uploads are also limited to 60 per user per hour |
 | `FORM_DAILY_SUBMISSION_CAP` | `500` | max public lead-form submissions per form per UTC day |
 | `FORM_MAX_BODY_BYTES` | `65536` | max public lead-form request body |
 

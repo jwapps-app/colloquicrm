@@ -24,10 +24,13 @@ class Settings(BaseSettings):
     # cf-connecting-ip. Only when the immediate peer (request.client.host)
     # falls inside this set do we believe that header for throttle keying;
     # otherwise the peer address itself is used, so a public client can't spoof
-    # its way past the login/form rate limits. Defaults to loopback + the
-    # private ranges a docker/cloudflared front-end sits in. Tighten to your
-    # proxy's exact address if the app is otherwise reachable.
-    trusted_proxy_ips: str = "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    # its way past the login/form rate limits. Defaults to loopback ONLY — a
+    # default that trusted every private range let any LAN client (and, behind
+    # docker's published port, any client at all) rotate the header and dodge
+    # the throttle. Behind cloudflared or a reverse proxy this MUST be set to
+    # the proxy's address/network (the compose files set the docker bridge
+    # range); without it every user behind the tunnel shares one bucket.
+    trusted_proxy_ips: str = "127.0.0.1/32,::1/128"
     # Public lead form abuse ceilings. A single form only accepts this many
     # submissions per UTC day (an absolute DoS cap on top of the per-IP
     # limiter), and a submission whose Content-Length exceeds this byte bound
@@ -85,6 +88,10 @@ class Settings(BaseSettings):
     # database dumps.
     attachments_dir: str = "./data/attachments"
     attachment_max_mb: int = 25
+    # Whole-org byte budget for attachments (sum of every stored file). An
+    # upload that would push the org past it is refused with 507 before any
+    # bytes land — the per-file cap alone let one account fill the disk.
+    attachment_quota_mb: int = 5120
 
     @property
     def cors_origins(self) -> list[str]:

@@ -45,6 +45,9 @@ export default function AttachmentsPanel({ entityType, entityId }) {
       toast.success(`Uploaded ${file.name}`);
       setVersion((v) => v + 1);
     } catch (err) {
+      // 413 is the per-file cap. 507 (the org's storage budget is used up)
+      // and 429 (too many uploads this hour) explain themselves in the
+      // server's detail, which is what err.message carries.
       toast.error(err.status === 413 ? 'File is too large (max 25 MB)' : err.message);
     }
     setUploading(false);

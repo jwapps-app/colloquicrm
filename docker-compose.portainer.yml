@@ -30,6 +30,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://app:${POSTGRES_PASSWORD}@postgres:5432/app
       SECRET_KEY: ${SECRET_KEY}
       ATTACHMENTS_DIR: /data/attachments
+      # Org-wide attachment budget; uploads past it are refused with 507.
+      ATTACHMENT_QUOTA_MB: ${ATTACHMENT_QUOTA_MB:-5120}
+      # Networks whose peers may set cf-connecting-ip. This MUST cover the
+      # cloudflared / reverse-proxy container's docker network (the default
+      # bridge and user-defined networks live in 172.16.0.0/12) — without it
+      # the header is ignored and every user behind the tunnel shares one
+      # login/form throttle bucket. Keep it as narrow as the proxy's network:
+      # any peer inside it can claim any client address.
+      TRUSTED_PROXY_IPS: 172.16.0.0/12
     volumes:
       - /volume1/docker/colloquicrm/attachments:/data/attachments
     mem_limit: 512m

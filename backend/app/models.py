@@ -336,6 +336,9 @@ class GoogleAccount(Base):
     gmail_backfill_done: Mapped[bool] = mapped_column(Boolean, default=False)
     # index into the sorted backfill address list — survives restarts/429s
     gmail_backfill_cursor: Mapped[int] = mapped_column(Integer, default=0)
+    # length of that list, stamped when a walk starts so status polls can
+    # report progress without rebuilding the org's contact map each time
+    gmail_backfill_total: Mapped[int | None] = mapped_column(Integer)
 
 
 class CalendarEvent(Base):

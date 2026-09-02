@@ -23,6 +23,12 @@ services:
       APP_URL: http://localhost:8010
       ALLOWED_ORIGINS: http://localhost:8010,http://localhost:5173
       ATTACHMENTS_DIR: /data/attachments
+      ATTACHMENT_QUOTA_MB: 5120
+      # Proxies allowed to set cf-connecting-ip (docker's bridge range, where a
+      # local reverse proxy container would sit). Direct connections through
+      # the published port arrive from the bridge gateway, so only put a proxy
+      # in front of this stack if the port itself is not otherwise reachable.
+      TRUSTED_PROXY_IPS: 172.16.0.0/12
     volumes:
       - attachments:/data/attachments
     depends_on:

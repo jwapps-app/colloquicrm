@@ -13,6 +13,12 @@ from app.schemas import DeviceIn
 
 router = APIRouter()
 
+# Tokens rotate on reinstall and a wiped device never DELETEs its own, so an
+# account would otherwise accumulate dead rows forever — each one an APNs
+# send per notification, and an unbounded table for anyone scripting
+# registrations. Nobody has twenty live iPhones.
+_MAX_DEVICES_PER_USER = 20
+
 
 @router.post("", status_code=201)
 async def register_device(
@@ -40,6 +46,20 @@ async def register_device(
         existing.environment = body.environment
         existing.last_seen_at = utcnow()
     else:
+        # Make room: the least recently seen registrations go first.
+        mine = (
+            (
+                await db.execute(
+                    select(DeviceToken)
+                    .where(DeviceToken.user_id == user.id)
+                    .order_by(DeviceToken.last_seen_at.asc(), DeviceToken.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for stale in mine[: max(0, len(mine) - (_MAX_DEVICES_PER_USER - 1))]:
+            await db.delete(stale)
         db.add(
             DeviceToken(
                 org_id=user.org_id,

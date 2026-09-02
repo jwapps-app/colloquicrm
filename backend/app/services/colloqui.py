@@ -14,6 +14,8 @@ import asyncio
 import logging
 import uuid
 from datetime import timedelta
+from ipaddress import ip_address
+from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy import func, or_, select
@@ -38,6 +40,61 @@ class ColloquiError(Exception):
     pass
 
 
+# Cloud instance-metadata endpoints — the classic SSRF prize. The link-local
+# check below already covers the IP form; these are the hostname forms.
+_METADATA_HOSTS = {"metadata.google.internal", "metadata", "instance-data"}
+
+
+def validate_base_url(raw: str) -> str:
+    """Normalise the admin-supplied chat server URL, or raise ValueError with
+    a message fit for a 422. This is a self-hosted product and the chat
+    server legitimately lives on a private LAN, so RFC1918 stays allowed;
+    what's refused is anything that isn't plain http(s), embedded
+    credentials, link-local (where cloud metadata services live) and the
+    metadata hostnames."""
+    url = raw.strip().rstrip("/")
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError("Base URL must start with http:// or https://")
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not host:
+        raise ValueError("Base URL needs a host")
+    if parts.username or parts.password:
+        raise ValueError("Base URL must not embed credentials")
+    if host in _METADATA_HOSTS:
+        raise ValueError("That host is not allowed")
+    try:
+        addr = ip_address(host)
+    except ValueError:
+        return url
+    if addr.is_link_local or addr.is_multicast or addr.is_unspecified:
+        raise ValueError("That address is not allowed")
+    return url
+
+
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    # One pool for every ColloquiClient instance — the reminder loop posts a
+    # DM a minute and each fresh AsyncClient was a new TLS handshake. Nothing
+    # per-server (base URL, key) lives on it; each request carries its own.
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(
+            timeout=10.0, limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+        )
+    return _client
+
+
+async def aclose() -> None:
+    """Drain the shared pool; called once from app shutdown."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
 class ColloquiClient:
     def __init__(self, base_url: str, api_key: str):
         self.base_url = base_url.rstrip("/")
@@ -45,29 +102,27 @@ class ColloquiClient:
 
     async def _request(self, method: str, path: str, json: dict | None = None) -> httpx.Response:
         try:
-            async with httpx.AsyncClient(
-                base_url=f"{self.base_url}/api/v1",
+            resp = await _get_client().request(
+                method,
+                f"{self.base_url}/api/v1{path}",
+                json=json,
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=10.0,
-            ) as client:
-                resp = await client.request(method, path, json=json)
+            )
         except httpx.HTTPError as exc:
             raise ColloquiError(f"Cannot reach Colloqui at {self.base_url}: {exc}") from exc
         if resp.status_code >= 400:
-            try:
-                detail = str(resp.json().get("detail", ""))
-            except Exception:
-                detail = ""
-            if not detail:
-                snippet = resp.text.lstrip()[:120]
-                # Proxies (e.g. Cloudflare) answer errors with HTML pages;
-                # surface the status, not the soup.
-                detail = (
-                    "upstream returned an HTML error page (proxy/tunnel hiccup?)"
-                    if snippet.startswith("<")
-                    else snippet
-                )
-            raise ColloquiError(f"Colloqui {method} {path} failed ({resp.status_code}): {detail}")
+            # The upstream body goes to the server log, not the API error —
+            # it's the chat server's (or a proxy's) text and belongs nowhere
+            # near a client. Proxies (e.g. Cloudflare) answer with HTML
+            # pages; flag that much so the admin knows to look at the tunnel.
+            snippet = resp.text.lstrip()[:500]
+            log.warning(
+                "Colloqui %s %s -> %s: %s", method, path, resp.status_code, snippet or "(empty)"
+            )
+            hint = " (HTML error page — proxy/tunnel hiccup?)" if snippet.startswith("<") else ""
+            raise ColloquiError(
+                f"Colloqui server returned {resp.status_code} for {method} {path}{hint}"
+            )
         return resp
 
     async def users(self) -> list[dict]:

@@ -21,6 +21,10 @@ saved_filters_router = APIRouter()
 options_router = APIRouter()
 
 ENTITY_TYPES = {"person", "lead", "company", "opportunity"}
+# Mirrors CUSTOM_FIELD_TYPES in the web app — the controls ProfilePanel and
+# the importer actually render. Anything else would be stored as a type no
+# client knows how to edit.
+CUSTOM_FIELD_TYPES = {"text", "number", "date", "select", "checkbox", "url", "currency"}
 
 DEFAULT_CONTACT_TYPES = [
     "Personal",
@@ -101,6 +105,13 @@ def _check_entity_type(entity_type: str) -> None:
         )
 
 
+def _check_field_type(field_type: str) -> None:
+    if field_type not in CUSTOM_FIELD_TYPES:
+        raise HTTPException(
+            status_code=422, detail=f"field_type must be one of {sorted(CUSTOM_FIELD_TYPES)}"
+        )
+
+
 @custom_fields_router.get("")
 async def list_custom_fields(
     entity_type: str | None = None,
@@ -120,6 +131,7 @@ async def create_custom_field(
     body: CustomFieldIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
     _check_entity_type(body.entity_type)
+    _check_field_type(body.field_type)
     exists = (
         await db.execute(
             select(CustomField).where(
@@ -174,6 +186,8 @@ async def update_custom_field(
     db: AsyncSession = Depends(get_db),
 ):
     field = await _get_field(db, user, field_id)
+    if body.field_type is not None:
+        _check_field_type(body.field_type)
     for key in ("name", "field_type", "options", "position"):
         value = getattr(body, key)
         if value is not None:

@@ -8,6 +8,7 @@ from app.db import get_db
 from app.deps import get_current_user, get_session_and_user, require_admin
 from app.models import Session as DbSession
 from app.models import User
+from app.routes.auth import _record_failure, _throttle
 from app.schemas import MeUpdateIn, ResetPasswordIn, UserAdminUpdateIn, UserCreateIn
 from app.security import hash_password, verify_password
 
@@ -52,7 +53,7 @@ async def create_user(
     u = User(
         org_id=admin.org_id,
         email=body.email.lower(),
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password(body.password),
         display_name=body.display_name,
         is_admin=body.is_admin,
     )
@@ -77,13 +78,19 @@ async def update_me(
             raise HTTPException(status_code=422, detail="Unknown notification channel")
         user.notify_channel = body.notify_channel
     if body.new_password:
-        if not body.current_password or not verify_password(
+        # The current-password check is a password oracle for whoever holds
+        # the session — same per-account budget as the login form, so a
+        # stolen token can't brute-force its way to a password change.
+        throttle_keys = [f"user:{user.id}"]
+        _throttle(throttle_keys)
+        if not body.current_password or not await verify_password(
             body.current_password, user.password_hash
         ):
+            _record_failure(throttle_keys)
             raise HTTPException(status_code=401, detail="Current password is incorrect")
         if len(body.new_password) < 8:
             raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
-        user.password_hash = hash_password(body.new_password)
+        user.password_hash = await hash_password(body.new_password)
         # A password change invalidates every other session — a stolen token
         # must not survive the reset. This one stays.
         await db.execute(
@@ -138,7 +145,7 @@ async def reset_password(
         raise HTTPException(status_code=404, detail="User not found")
     if len(body.new_password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
-    u.password_hash = hash_password(body.new_password)
+    u.password_hash = await hash_password(body.new_password)
     await db.execute(delete(DbSession).where(DbSession.user_id == u.id))
     result = user_row(u)
     await db.commit()

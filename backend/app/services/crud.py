@@ -4,7 +4,8 @@ import io
 import uuid
 from collections.abc import Awaitable, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import Select, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -90,7 +91,7 @@ def register_crud(
     extra_filter: Callable | None = None,  # (request, user, stmt) -> stmt
     merge_pool: list[list[str]] | None = None,  # column groups pooled on merge
     fk_checks: dict | None = None,  # {column_name: referenced Model} — must be in-org
-    body_validator: Callable | None = None,  # async (db, user, data) -> None, on create/update
+    body_validator: Callable | None = None,  # async (db, user, data, current) -> None, on create/update; current = existing obj on update, None on create
     enable_merge: bool = True,  # register POST /{id}/merge (off for entities nothing merges)
 ) -> None:
     """Wires list/create/get/patch/delete endpoints for one entity onto a
@@ -141,9 +142,11 @@ def register_crud(
             status_code=422, detail=f"At least one of {', '.join(required_any)} is required"
         )
 
-    async def validate_body(db: AsyncSession, user: User, data: dict) -> None:
+    async def validate_body(db: AsyncSession, user: User, data: dict, current=None) -> None:
         """Reject any FK in the body that points outside the caller's org (a
-        cross-tenant reference), and run any entity-specific body validator."""
+        cross-tenant reference), and run any entity-specific body validator.
+        `current` is the record being PATCHed (None on create) so a validator
+        can judge a partial body against what's already stored."""
         for col, ref in (fk_checks or {}).items():
             val = data.get(col)
             if val is None:
@@ -167,7 +170,7 @@ def register_crud(
                     status_code=422, detail=f"{col} does not reference a valid record"
                 )
         if body_validator is not None:
-            await body_validator(db, user, data)
+            await body_validator(db, user, data, current)
 
     async def apply_extras(db, user, obj, tags, cfs):
         if tags is not None:
@@ -270,25 +273,21 @@ def register_crud(
         db: AsyncSession = Depends(get_db),
     ):
         """Everything matching the current filters, as CSV: standard fields,
-        display names, tags, and one column per custom field."""
+        display names, tags, and one column per custom field. Streamed a
+        batch at a time — a whole-book export is 100k rows, and holding every
+        ORM object, its dict and the finished text at once was most of the
+        container's memory."""
         stmt = filtered_stmt(request, user, q).order_by(sort_clause(sort, order))
-        total = (
-            await db.execute(select(func.count()).select_from(stmt.subquery()))
-        ).scalar_one()
+        # Ids only, in export order: a couple of MB at the cap, and the anchor
+        # for pulling rows in bounded batches while keeping the sort exact.
+        ids = [rid for (rid,) in await db.execute(stmt.with_only_columns(model.id))]
+        total = len(ids)
         if total > EXPORT_MAX_ROWS:
             raise HTTPException(
                 status_code=413,
                 detail=f"Export too large ({total} rows; {EXPORT_MAX_ROWS} max). Narrow the filters.",
             )
-        items = (await db.execute(stmt)).scalars().all()
 
-        dicts: list[dict] = []
-        for chunk in _chunks(list(items)):
-            dicts.extend(await serialize(db, user, chunk))
-
-        base_cols = [
-            attr for attr in dicts[0].keys() if attr not in ("tags", "custom_fields")
-        ] if dicts else []
         cf_defs = []
         if has_extras:
             cf_defs = (
@@ -306,25 +305,66 @@ def register_crud(
                 return "'" + value
             return value
 
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        header = base_cols + (["tags"] if has_extras else []) + [d.name for d in cf_defs]
-        writer.writerow(header)
-        for d in dicts:
-            row = [sanitize(d.get(c)) if d.get(c) is not None else "" for c in base_cols]
-            if has_extras:
-                row.append(sanitize("; ".join(d.get("tags") or [])))
-            cf_values = d.get("custom_fields") or {}
-            row.extend(sanitize(cf_values.get(str(cd.id)) or "") for cd in cf_defs)
-            writer.writerow(row)
+        def columns_for(sample: dict | None) -> list[str]:
+            # Base columns come from a serialized row (there is no sample
+            # for an empty export \u2014 the header is then tags + custom fields).
+            if not sample:
+                return []
+            return [attr for attr in sample.keys() if attr not in ("tags", "custom_fields")]
+
+        def write_header(writer, base_cols: list[str]) -> None:
+            writer.writerow(
+                base_cols + (["tags"] if has_extras else []) + [d.name for d in cf_defs]
+            )
+
+        async def body():
+            # BOM first so Excel opens it as UTF-8; the header rides in the
+            # same first chunk as the first batch of rows. The request's
+            # session stays open for the whole stream \u2014 get_db's teardown
+            # runs after the response finishes.
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            buf.write("\ufeff")
+            base_cols: list[str] | None = None
+            for chunk in _chunks(ids):
+                rows = (
+                    await db.execute(
+                        select(model).where(model.org_id == user.org_id, model.id.in_(chunk))
+                    )
+                ).scalars()
+                by_id = {r.id: r for r in rows}
+                # IN() comes back in table order; restore the export order.
+                items = [by_id[rid] for rid in chunk if rid in by_id]
+                dicts = await serialize(db, user, items)
+                if base_cols is None:
+                    base_cols = columns_for(dicts[0] if dicts else None)
+                    write_header(writer, base_cols)
+                for d in dicts:
+                    row = [sanitize(d.get(c)) if d.get(c) is not None else "" for c in base_cols]
+                    if has_extras:
+                        row.append(sanitize("; ".join(d.get("tags") or [])))
+                    cf_values = d.get("custom_fields") or {}
+                    row.extend(sanitize(cf_values.get(str(cd.id)) or "") for cd in cf_defs)
+                    writer.writerow(row)
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate()
+            if base_cols is None:
+                # Nothing matched: still a well-formed file with its header.
+                write_header(writer, [])
+                yield buf.getvalue()
 
         plural = PLURALS.get(entity_type, f"{entity_type}s")
         filename = f"{plural}-{utcnow().date().isoformat()}.csv"
-        # BOM so Excel opens it as UTF-8.
-        return Response(
-            content="\ufeff" + buf.getvalue(),
+        # no-store: a whole-book export must not linger in a shared cache or
+        # proxy.
+        return StreamingResponse(
+            body(),
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "private, no-store",
+            },
         )
 
     @router.post("/bulk")
@@ -492,7 +532,7 @@ def register_crud(
         data = body.model_dump(exclude_unset=True)
         tags = data.pop("tags", None)
         cfs = data.pop("custom_fields", None)
-        await validate_body(db, user, data)
+        await validate_body(db, user, data, obj)
         old_values = {key: getattr(obj, key, None) for key in data}
         for key, value in data.items():
             setattr(obj, key, value)

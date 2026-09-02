@@ -161,6 +161,21 @@ PERCENT_FIELDS = {"win_probability"}
 DATE_FIELDS = {"close_date", "created_at", "last_contacted_at", "converted_at"}
 DATETIME_KWARGS = {"created_at", "last_contacted_at", "converted_at"}
 
+# Never settable from a row, whatever a header map says — ownership and
+# lifecycle columns belong to the server.
+_NEVER_IMPORTED = frozenset({"id", "org_id", "deleted_at", "updated_at", "converted_person_id"})
+
+# The keys a commit row's `data` may carry, per type: exactly what parse_csv
+# (and the Google contacts preview) produce — the header map's targets,
+# including the specials _build_kwargs resolves itself (owner_name,
+# company_name, pipeline_name, ...). The commit payload is client-supplied
+# JSON that round-trips through the review screen, so anything outside this
+# set is dropped before it gets near the model: without the allowlist a row
+# could carry org_id, id or deleted_at straight into the INSERT.
+IMPORTABLE_KEYS: dict[str, frozenset[str]] = {
+    t: frozenset(m.values()) - _NEVER_IMPORTED for t, m in HEADER_MAPS.items()
+}
+
 # Custom fields recognized by name and created with the right control instead
 # of a plain text box. Date-like fields are covered separately by sample-value
 # inference in _ensure_field.
@@ -522,6 +537,8 @@ class _CommitContext:
     def __init__(self):
         self.users: dict[str, uuid.UUID] = {}
         self.companies: dict[str, uuid.UUID] = {}
+        # lower("first last") -> id, None for a name that matched nobody
+        self.persons: dict[str, uuid.UUID | None] = {}
         self.pipelines: dict[str, uuid.UUID] = {}
         self.stages: dict[tuple[uuid.UUID, str], uuid.UUID] = {}
         self.fields: dict[str, uuid.UUID] = {}
@@ -541,6 +558,20 @@ async def _load_users(db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext) 
     rows = await db.execute(select(User.id, User.display_name).where(User.org_id == org_id))
     for uid, name in rows:
         ctx.users[name.lower()] = uid
+
+
+async def _load_persons(db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext) -> None:
+    # Opportunity rows name their primary contact in free text. One pass over
+    # the org's people beats a lower(first || ' ' || last) scan per row — the
+    # key here is built exactly like the SQL expression _resolve_person
+    # compares against, unstripped, so the two agree.
+    rows = await db.execute(
+        select(Person.id, Person.first_name, Person.last_name).where(
+            Person.org_id == org_id, Person.deleted_at.is_(None)
+        )
+    )
+    for pid, first, last in rows:
+        ctx.persons.setdefault(f"{first or ''} {last or ''}".lower(), pid)
 
 
 async def _resolve_company(
@@ -627,8 +658,15 @@ async def _resolve_pipeline_stage(
     return pipeline_id, stage_id
 
 
-async def _resolve_person(db: AsyncSession, org_id: uuid.UUID, name: str) -> uuid.UUID | None:
+async def _resolve_person(
+    db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext, name: str
+) -> uuid.UUID | None:
     key = name.lower().strip()
+    if key in ctx.persons:
+        return ctx.persons[key]
+    # Not preloaded (added since the import started, or simply unknown) —
+    # ask once and remember the answer either way, since the same name tends
+    # to recur across an export.
     row = (
         await db.execute(
             select(Person.id).where(
@@ -641,6 +679,7 @@ async def _resolve_person(db: AsyncSession, org_id: uuid.UUID, name: str) -> uui
             )
         )
     ).scalars().first()
+    ctx.persons[key] = row
     return row
 
 
@@ -747,10 +786,17 @@ def _to_datetime(iso_date: str) -> datetime:
     return datetime.fromisoformat(iso_date).replace(tzinfo=timezone.utc)
 
 
+def _importable(import_type: str, data: dict) -> dict:
+    """The row's data reduced to the keys this import type may set."""
+    allowed = IMPORTABLE_KEYS[import_type]
+    return {key: value for key, value in data.items() if key in allowed}
+
+
 async def _build_kwargs(
     db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext, import_type: str, data: dict
 ) -> dict:
-    data = dict(data)
+    # Allowlist first — both the create and merge paths come through here.
+    data = _importable(import_type, data)
     kwargs: dict = {}
 
     owner_name = data.pop("owner_name", None)
@@ -774,7 +820,7 @@ async def _build_kwargs(
             kwargs["company_id"] = await _resolve_company(db, org_id, ctx, company_name)
         person_name = data.pop("person_name", None)
         if person_name:
-            kwargs["primary_person_id"] = await _resolve_person(db, org_id, person_name)
+            kwargs["primary_person_id"] = await _resolve_person(db, org_id, ctx, person_name)
         pipeline_id, stage_id = await _resolve_pipeline_stage(
             db, org_id, ctx, data.pop("pipeline_name", None), data.pop("stage_name", None)
         )
@@ -789,7 +835,7 @@ async def _build_kwargs(
     model = MODEL_BY_TYPE[import_type]
     columns = model.__table__.columns
     for key, value in data.items():
-        if key in columns:
+        if key in columns and key not in _NEVER_IMPORTED:
             # Real exports carry monster URLs and titles; hard-fail on one row
             # would kill the whole chunk.
             length = getattr(columns[key].type, "length", None)
@@ -902,6 +948,8 @@ async def run_import_job(job_id: uuid.UUID) -> None:
             return
         ctx = _CommitContext()
         await _load_users(db, job.org_id, ctx)
+        if job.import_type == "opportunities":
+            await _load_persons(db, job.org_id, ctx)
         try:
             payload = job.payload or []
             while job.processed < job.total:

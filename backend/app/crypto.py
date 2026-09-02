@@ -69,6 +69,11 @@ def decrypt(value: str | None) -> str | None:
     if value is None:
         return None
     if not value.startswith(_FERNET_PREFIX):
+        # Intentional plaintext passthrough, not a fallback to remove: rows
+        # written before the encrypt-secrets migration are stored as-is
+        # until the app re-saves them, and this is how they stay readable.
+        # (Audit note: a tampered DB could plant a plaintext value here, but
+        # anyone who can write the column can already read every secret.)
         return value
     try:
         return _fernet.decrypt(value.encode()).decode()

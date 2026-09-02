@@ -49,10 +49,31 @@ def normalize_phone(raw: str | None, default_country: str = "1") -> str | None:
     return None  # too short to be a real number (extensions etc.)
 
 
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    # One keep-alive pool for the whole sync instead of a TLS handshake per
+    # page. Auth and headers are per call; nothing is baked into the client.
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(
+            timeout=25.0, limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+        )
+    return _client
+
+
+async def aclose() -> None:
+    """Drain the shared pool; called once from app shutdown."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
 async def _post_form(url: str, data: dict, auth: tuple[str, str]) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, data=data, auth=auth)
+        resp = await _get_client().post(url, data=data, auth=auth, timeout=15.0)
     except httpx.HTTPError as exc:
         raise RingCentralError(f"Cannot reach RingCentral: {exc}") from exc
     if resp.status_code >= 400:
@@ -66,10 +87,9 @@ async def _post_form(url: str, data: dict, auth: tuple[str, str]) -> dict:
 
 async def _get_json(url: str, access: str, params: dict | None = None) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            resp = await client.get(
-                url, params=params, headers={"Authorization": f"Bearer {access}"}
-            )
+        resp = await _get_client().get(
+            url, params=params, headers={"Authorization": f"Bearer {access}"}, timeout=25.0
+        )
     except httpx.HTTPError as exc:
         raise RingCentralError(f"Cannot reach RingCentral: {exc}") from exc
     if resp.status_code >= 400:
