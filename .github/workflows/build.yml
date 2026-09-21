@@ -17,15 +17,57 @@ jobs:
 
       # Catches undefined names (e.g. a function lost in a refactor) before
       # anything ships.
-      - run: pip install ruff && ruff check backend/app --select E9,F821
+      - run: pip install ruff==0.15.20 && ruff check backend/app --select E9,F821
 
       - run: pip install -r backend/requirements.txt
       - name: App import smoke test
         working-directory: backend
         run: DATABASE_URL="sqlite+aiosqlite:///./ci.db" python -c "from app.main import app; print('app loads')"
 
+  # The regression suite runs against a real PostgreSQL: the app depends on
+  # Postgres-only behaviour (pg_trgm indexes, row locks, RETURNING), and the
+  # migrations are part of what is being tested.
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: crm_smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - run: ruff check backend/tests
+
+      - name: Migration smoke test (alembic upgrade head on an empty database)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/crm_smoke
+        run: alembic upgrade head
+
+      # The suite creates (and migrates) its own crm_test database.
+      - name: Tests
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/crm_test
+        run: python -m pytest
+
   image:
-    needs: checks
+    needs: [checks, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
