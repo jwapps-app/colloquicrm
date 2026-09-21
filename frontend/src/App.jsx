@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useNavigate } from 'react-router';
 import { clearToken, get, getToken, post, setToken } from './api';
 import { AuthContext, useAuth } from './auth';
 import { APP_NAME } from './constants/branding';

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { get, patch } from '../api';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';

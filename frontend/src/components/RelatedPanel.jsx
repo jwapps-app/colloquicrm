@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Loading } from './ui';
 
 /** `total` is the server's full count; when it exceeds the rows on hand the

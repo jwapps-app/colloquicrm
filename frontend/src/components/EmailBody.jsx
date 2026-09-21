@@ -17,7 +17,10 @@ export function useEmailBodies() {
       const body = await get(`/emails/${id}/body`);
       setBodies((b) => ({ ...b, [id]: { ...body, loading: false } }));
     } catch (e) {
-      setBodies((b) => ({ ...b, [id]: { error: e.message, loading: false } }));
+      // 410: the full text is gone for good (archived from a mailbox that is
+      // no longer connected) — a terminal state, not a failure to retry.
+      const failed = e.status === 410 ? { gone: e.message } : { error: e.message };
+      setBodies((b) => ({ ...b, [id]: { ...failed, loading: false } }));
     }
   }
 
@@ -27,14 +30,15 @@ export function useEmailBodies() {
       return;
     }
     setOpen(id);
-    // Only a successful body is a cache hit — a failed fetch is tried again
-    // on the next open instead of pinning its error for the page's lifetime.
+    // Only a settled body is a cache hit (a 410 "gone" is settled too) — a
+    // failed fetch is tried again on the next open instead of pinning its
+    // error for the page's lifetime.
     if (!bodies[id] || bodies[id].error) await load(id);
   }
 
   /** Refetch a body whose load failed (the Retry button in <EmailBody>). */
   const retry = (id) => {
-    if (!bodies[id]?.loading) load(id);
+    if (!bodies[id]?.loading && !bodies[id]?.gone) load(id);
   };
 
   return { open, toggle, bodies, retry, close: () => setOpen(null) };
@@ -57,11 +61,12 @@ export function EmailBody({ body, onRetry, children }) {
           )}
         </div>
       )}
+      {body?.gone && <div className="muted">{body.gone}</div>}
       {body?.body_text && <div className="email-body">{body.body_text}</div>}
       {!body?.body_text && body?.body_html && (
         <iframe title="email" className="email-frame" sandbox="" srcDoc={body.body_html} />
       )}
-      {body && !body.loading && !body.error && !body.body_text && !body.body_html && (
+      {body && !body.loading && !body.error && !body.gone && !body.body_text && !body.body_html && (
         <div className="muted">No body stored for this message.</div>
       )}
       {children}

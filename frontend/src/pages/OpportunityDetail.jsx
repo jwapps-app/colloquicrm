@@ -1,4 +1,4 @@
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router';
 import { bustCache, del } from '../api';
 import { useEntity, usePipelines, useUsers } from '../hooks';
 import { useToast } from '../components/Toast';

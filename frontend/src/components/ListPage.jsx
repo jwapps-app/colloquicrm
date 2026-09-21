@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router';
 import { bustCache, cachedGet, del, download, get, post } from '../api';
 import { useToast } from './Toast';
 import FormModal from './FormModal';

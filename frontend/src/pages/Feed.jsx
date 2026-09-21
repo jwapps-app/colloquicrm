@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { get } from '../api';
 import { EmailBody, useEmailBodies } from '../components/EmailBody';
 import { useAuth } from '../auth';
