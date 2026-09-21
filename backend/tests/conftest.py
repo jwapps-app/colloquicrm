@@ -172,6 +172,30 @@ async def client():
 
 
 @pytest.fixture
+def request_sessions():
+    """The database sessions the app's requests run on, collected as they are
+    opened — so a fake upstream can check none of them is sitting in a
+    transaction while the "network" call is in flight. Mirrors get_db."""
+    from app.db import get_db
+
+    sessions: list = []
+
+    async def tracked_get_db():
+        async with SessionLocal() as session:
+            sessions.append(session)
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app.dependency_overrides[get_db] = tracked_get_db
+    yield sessions
+    app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture
 def db_session():
     """Session factory for arranging and inspecting rows directly."""
     return SessionLocal

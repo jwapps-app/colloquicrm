@@ -43,6 +43,13 @@ async def _recompute_on_address_edit(db, person, old_values, actor):
         await update_person_aggregates(db, person.org_id, {person.id})
 
 
+async def _compute_on_create(db, person, actor):
+    # Mail and calls are archived by address, not by record: a person added
+    # after the sync already saw their address starts with that history.
+    if any(getattr(person, field) for field in _CONTACT_ADDRESS_FIELDS):
+        await update_person_aggregates(db, person.org_id, {person.id})
+
+
 async def company_name_map(db, org_id, ids: set) -> dict[str, str]:
     ids = {uuid.UUID(i) for i in ids if i}
     if not ids:
@@ -98,6 +105,7 @@ register_crud(
     enrich=enrich,
     fk_checks={"company_id": Company, "owner_id": User},
     merge_refs=[(Opportunity, "primary_person_id"), (Lead, "converted_person_id")],
+    after_create=_compute_on_create,
     after_update=_recompute_on_address_edit,
     after_merge=lambda db, user, target: update_person_aggregates(db, user.org_id, {target.id}),
     extra_filter=_hide_self_filter,

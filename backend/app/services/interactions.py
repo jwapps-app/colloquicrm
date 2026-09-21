@@ -5,6 +5,10 @@ direct emails, calls, and texts.
 Recomputation is set-based: whatever set of people a caller hands over is
 answered by one grouped query per source (emails, phone events), not a pair
 of queries per person — a backfill touches the same contacts over and over.
+
+last_contacted_at is the later of the date derived from those events and the
+date an import carried (last_contacted_imported_at), so a sync never loses an
+imported date and an imported date never hides a newer email.
 """
 
 import uuid
@@ -123,6 +127,7 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
                     Person.work_phone,
                     Person.mobile_phone,
                     Person.interaction_count,
+                    Person.last_contacted_imported_at,
                 ).where(
                     Person.id.in_(ids[i : i + _CHUNK]),
                     Person.org_id == org_id,
@@ -152,15 +157,23 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
             email_count, email_latest = by_email.get(p.id, (0, None))
             phone_count, phone_latest = by_phone.get(p.id, (0, None))
             total = (email_count or 0) + (phone_count or 0)
-            latest = max((d for d in (email_latest, phone_latest) if d is not None), default=None)
+            # The later of what the events say and what an import said.
+            latest = max(
+                (
+                    d
+                    for d in (email_latest, phone_latest, p.last_contacted_imported_at)
+                    if d is not None
+                ),
+                default=None,
+            )
             if latest is not None or (p.interaction_count or 0) > 0:
                 # Events exist, or did until now. A date derived from events
-                # that are gone (deleted call, address removed) is cleared
-                # rather than left to go stale.
+                # that are gone (deleted call, address removed) falls back to
+                # the imported date, and is cleared only when there is none.
                 both.append({"pid": p.id, "n": total, "latest": latest})
             else:
-                # No events now and none counted before: whatever date is on
-                # the record came from an import or a manual edit — the only
+                # No events now, none counted before, nothing imported:
+                # whatever date is on the record is a manual edit — the only
                 # history there is, and not ours to erase.
                 count_only.append({"pid": p.id, "n": total})
         if both:
@@ -182,3 +195,41 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
             set_committed_value(obj, "interaction_count", row["n"])
             if "latest" in row:
                 set_committed_value(obj, "last_contacted_at", row["latest"])
+
+
+async def people_with_number(db, org_id: uuid.UUID, number: str | None) -> set[uuid.UUID]:
+    """Every live person who lists this (normalized) number. Two people can
+    share a line — a front desk, a couple — and an event on that number
+    counts for each of them, so each needs recomputing when one is logged.
+
+    Numbers are stored as typed, so matching means normalizing each one —
+    the same org-wide read the call sync's phone map makes."""
+    from app.services.ringcentral import normalize_phone
+
+    if not number:
+        return set()
+    await db.flush()
+    rows = await db.execute(
+        select(Person.id, Person.work_phone, Person.mobile_phone).where(
+            Person.org_id == org_id,
+            Person.deleted_at.is_(None),
+            Person.work_phone.is_not(None) | Person.mobile_phone.is_not(None),
+        )
+    )
+    return {
+        pid
+        for pid, work, mobile in rows
+        if number in (normalize_phone(work), normalize_phone(mobile))
+    }
+
+
+async def recompute_in_batches(org_id: uuid.UUID, person_ids, batch: int = 200) -> None:
+    """Recompute a large set of people in short transactions of its own —
+    for callers (an import job) that must not hold one open across the lot."""
+    from app.db import SessionLocal
+
+    ids = list(person_ids)
+    async with SessionLocal() as db:
+        for i in range(0, len(ids), batch):
+            await update_person_aggregates(db, org_id, set(ids[i : i + batch]))
+            await db.commit()

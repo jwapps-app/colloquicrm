@@ -67,7 +67,12 @@ EVENT_WINDOW_FUTURE_DAYS = 90
 
 
 class GoogleError(Exception):
-    pass
+    """status_code is Google's HTTP status when it answered with an error,
+    None when it could not be reached at all."""
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def redirect_uri() -> str:
@@ -189,7 +194,10 @@ async def _post_form(url: str, data: dict) -> dict:
             detail = resp.json().get("error_description") or resp.json().get("error")
         except Exception:
             detail = resp.text[:200]
-        raise GoogleError(f"Google rejected the request ({resp.status_code}): {detail}")
+        raise GoogleError(
+            f"Google rejected the request ({resp.status_code}): {detail}",
+            status_code=resp.status_code,
+        )
     return resp.json()
 
 
@@ -239,7 +247,8 @@ async def _get_json(
             pass
         raise GoogleError(
             f"Google GET {url.split('?')[0]} failed ({resp.status_code})"
-            + (f": {detail}" if detail else "")
+            + (f": {detail}" if detail else ""),
+            status_code=resp.status_code,
         )
     return resp.json()
 
@@ -629,7 +638,7 @@ async def _fetch_message(access: str, gmail_id: str, full: bool) -> dict | None:
             timeout=SEARCH_TIMEOUT if full else 20.0,
         )
     except GoogleError as exc:
-        if "(404)" in str(exc):
+        if exc.status_code == 404:
             return None  # message deleted between list and get
         raise
 
@@ -961,11 +970,25 @@ def _walk_parts(payload: dict, found: dict) -> None:
         _walk_parts(part, found)
 
 
+class MessageGone(GoogleError):
+    """Gmail has no message by this id in the connected mailbox."""
+
+
 async def fetch_message_body(access: str, gmail_id: str) -> dict:
     """Full message content: first text/plain and text/html parts."""
-    item = await _get_json(
-        f"{settings.google_gmail_base}/users/me/messages/{gmail_id}", access, {"format": "full"}
-    )
+    try:
+        item = await _get_json(
+            f"{settings.google_gmail_base}/users/me/messages/{gmail_id}",
+            access,
+            {"format": "full"},
+        )
+    except GoogleError as exc:
+        if exc.status_code == 404:
+            # Ids are per mailbox. After the owner connects a different
+            # Google account, the rows archived from the old one point at
+            # messages the new mailbox never had.
+            raise MessageGone(str(exc), status_code=404) from exc
+        raise
     found: dict = {}
     _walk_parts(item.get("payload") or {}, found)
     return {"text": found.get("text"), "html": found.get("html")}
@@ -1477,17 +1500,10 @@ async def scan_contact_suggestions(user_id: uuid.UUID) -> None:
         try:
             access = await ensure_access_token(db, cfg, account)
             owner_email = normalize_email(account.email)
-            contact_map = await _crm_email_map(db, account.org_id)  # already-known addresses
-            existing = {
-                s.email: s
-                for s in (
-                    await db.execute(
-                        select(ContactSuggestion).where(
-                            ContactSuggestion.org_id == account.org_id
-                        )
-                    )
-                ).scalars()
-            }
+            # Fetch first, write after: the scan is up to two searches and
+            # several hundred message reads, none of which may sit inside a
+            # transaction. This also persists a refreshed token.
+            await _release_db(db)
 
             tally: dict[str, dict] = {}
             for query in ("in:sent", "in:inbox"):
@@ -1530,6 +1546,20 @@ async def scan_contact_suggestions(user_id: uuid.UUID) -> None:
                             if sent_at and (t["last"] is None or sent_at > t["last"]):
                                 t["last"] = sent_at
 
+            # The network part is over; everything from here is local. Read
+            # the CRM's addresses and the standing suggestions now, so they
+            # are as fresh as the write that follows.
+            contact_map = await _crm_email_map(db, account.org_id)  # already-known addresses
+            existing = {
+                s.email: s
+                for s in (
+                    await db.execute(
+                        select(ContactSuggestion).where(
+                            ContactSuggestion.org_id == account.org_id
+                        )
+                    )
+                ).scalars()
+            }
             for email, t in tally.items():
                 if email in contact_map:  # already a Person/Lead
                     continue

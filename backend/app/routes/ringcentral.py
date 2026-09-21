@@ -144,6 +144,10 @@ async def diagnose_number(
     live_hits = []
     try:
         access = await rc.ensure_access_token(db, cfg)
+        # Local reads are done; the call-log lookup must not hold the
+        # request's transaction (or its pooled connection) while it waits on
+        # RingCentral. This also persists a token refreshed just above.
+        await rc._release_db(db)
         data = await rc._get_json(
             f"{_settings.ringcentral_base}/restapi/v1.0/account/~/call-log",
             access,

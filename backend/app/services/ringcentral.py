@@ -247,8 +247,21 @@ async def _recompute_touched(db, cfg: RingCentralIntegration, phone_map: dict, t
     # any history burned thousands of queries every cycle once real call logs
     # existed. Same transaction as the rows, so a committed page never leaves
     # a count behind it.
+    if not touched:
+        return
+    # The phone map keeps one owner per number, but a shared line (a front
+    # desk, a couple) belongs to everyone who lists it — and an event on it
+    # counts for each of them. One read of the org's numbers per page that
+    # actually stored something, not one per number.
+    rows = await db.execute(
+        select(Person.id, Person.work_phone, Person.mobile_phone).where(
+            Person.org_id == cfg.org_id, Person.deleted_at.is_(None)
+        )
+    )
     person_ids = {
-        phone_map[n][1] for n in touched if n in phone_map and phone_map[n][0] == "person"
+        pid
+        for pid, work, mobile in rows
+        if normalize_phone(work) in touched or normalize_phone(mobile) in touched
     }
     if person_ids:
         from app.services.interactions import update_person_aggregates

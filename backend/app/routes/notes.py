@@ -14,7 +14,7 @@ from app.services.common import (
     row_to_dict,
     validate_entity_ref,
 )
-from app.services.interactions import update_person_aggregates
+from app.services.interactions import people_with_number, update_person_aggregates
 from app.services.ringcentral import normalize_phone
 
 
@@ -153,9 +153,13 @@ async def create_note(
         db.add(event)
         await db.flush()
         phone_event_id = event.id
+        # The logged call counts as an interaction right away — for the
+        # person it was logged on and for anyone else listing that number
+        # (events are matched by number, so it shows on all of them).
+        affected = await people_with_number(db, user.org_id, number)
         if body.entity_type == "person":
-            # The logged call counts as an interaction right away.
-            await update_person_aggregates(db, user.org_id, {body.entity_id})
+            affected.add(body.entity_id)
+        await update_person_aggregates(db, user.org_id, affected)
 
     note = Note(
         org_id=user.org_id,
@@ -228,9 +232,11 @@ async def delete_note(
             ).scalar_one_or_none()
             if still_referenced is None:
                 await db.delete(event)
+                # The call is gone — so is its place in the interaction count
+                # and last-contacted date of everyone it counted for.
+                await db.flush()
+                affected = await people_with_number(db, user.org_id, event.other_number)
                 if event.entity_type == "person" and event.entity_id is not None:
-                    # The call is gone — so is its place in the person's
-                    # interaction count and last-contacted date.
-                    await db.flush()
-                    await update_person_aggregates(db, user.org_id, {event.entity_id})
+                    affected.add(event.entity_id)
+                await update_person_aggregates(db, user.org_id, affected)
     await db.commit()  # visible before the client refetches

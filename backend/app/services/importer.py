@@ -993,6 +993,10 @@ async def _build_kwargs(
     for key, value in extra_dates.items():
         if key in columns:
             kwargs[key] = value
+    if import_type == "people" and kwargs.get("last_contacted_at"):
+        # The displayed date is recomputed whenever mail or calls sync; the
+        # imported one is kept beside it so the recompute can fold it back in.
+        kwargs["last_contacted_imported_at"] = kwargs["last_contacted_at"]
     if created_at:
         kwargs["created_at"] = created_at
     return kwargs
@@ -1004,10 +1008,12 @@ async def _commit_chunk(
     ctx: _CommitContext,
     import_type: str,
     rows: list[dict],
+    touched: set[uuid.UUID] | None = None,
 ) -> tuple[int, int, int]:
     """Process one chunk of payload rows with set-based writes: new records,
     their tags, and their custom values each land as bulk inserts instead of
-    a handful of round trips per row."""
+    a handful of round trips per row. Ids of the records created or merged
+    into are added to `touched`."""
     entity_type = IMPORT_TYPES[import_type]
     model = MODEL_BY_TYPE[import_type]
     created = merged = skipped = 0
@@ -1051,6 +1057,8 @@ async def _commit_chunk(
                     only_if_missing=True,
                 )
             merged += 1
+            if touched is not None:
+                touched.add(existing.id)
             continue
 
         kwargs = await _build_kwargs(db, org_id, ctx, import_type, row.get("data") or {})
@@ -1077,6 +1085,8 @@ async def _commit_chunk(
                 }
             )
         created += 1
+        if touched is not None:
+            touched.add(rid)
 
     # executemany needs uniform keys — group by key set (defaults fill the rest)
     by_keys: dict[frozenset, list[dict]] = {}
@@ -1091,6 +1101,38 @@ async def _commit_chunk(
     return created, merged, skipped
 
 
+async def _recompute_imported_people(
+    db: AsyncSession, job: ImportJob, touched: set[uuid.UUID], resumed: bool
+) -> None:
+    """Imported people whose addresses already have synced mail or calls get
+    their interaction count and last-contacted date now, not at the next
+    sync that happens to touch them. Runs before the job is marked done: a
+    restart in the middle leaves it "running", and the resume redoes this.
+
+    Short transactions on a session of its own — the rows are committed, and
+    nothing here may sit in one transaction across thousands of people. A
+    failure is logged, not raised: the import itself succeeded."""
+    from app.services.interactions import recompute_in_batches
+
+    org_id = job.org_id
+    await db.commit()  # nothing of ours stays open while the batches run
+    try:
+        if resumed:
+            touched = set(
+                (
+                    await db.execute(
+                        select(Person.id).where(
+                            Person.org_id == org_id, Person.deleted_at.is_(None)
+                        )
+                    )
+                ).scalars()
+            )
+            await db.commit()
+        await recompute_in_batches(org_id, touched)
+    except Exception:
+        log.exception("import %s: interaction recompute failed", job.id)
+
+
 async def run_import_job(job_id: uuid.UUID) -> None:
     """Background worker: processes a committed import in chunks, committing
     progress as it goes so a restart resumes instead of restarting."""
@@ -1101,6 +1143,11 @@ async def run_import_job(job_id: uuid.UUID) -> None:
         if job is None or job.status != "running":
             return
         ctx = _CommitContext()
+        # People this run created or merged into, for the interaction
+        # recompute at the end. A job picked up after a restart has lost the
+        # ids from before it — that one recomputes the whole org instead.
+        touched: set[uuid.UUID] = set()
+        resumed = job.processed > 0
         # Definitions (custom fields, pipelines, stages) are admin-managed;
         # the import runs with the rights of whoever committed it.
         importer = await db.get(User, job.user_id) if job.user_id else None
@@ -1114,7 +1161,9 @@ async def run_import_job(job_id: uuid.UUID) -> None:
                 chunk = payload[job.processed : job.processed + COMMIT_CHUNK]
                 if not chunk:
                     break
-                c, m, s = await _commit_chunk(db, job.org_id, ctx, job.import_type, chunk)
+                c, m, s = await _commit_chunk(
+                    db, job.org_id, ctx, job.import_type, chunk, touched
+                )
                 job.processed += len(chunk)
                 job.created_count += c
                 job.merged_count += m
@@ -1131,6 +1180,8 @@ async def run_import_job(job_id: uuid.UUID) -> None:
                     "skipped": job.skipped_count,
                 },
             )
+            if job.import_type == "people":
+                await _recompute_imported_people(db, job, touched, resumed)
             job.status = "done"
             job.payload = []  # the parsed rows are dead weight once imported
             job.updated_at = utcnow()

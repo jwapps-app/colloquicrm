@@ -167,6 +167,10 @@ class Person(Base):
     facebook: Mapped[str | None] = mapped_column(String(500))
     owner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The date an import (e.g. Copper) carried. Kept apart from the displayed
+    # last_contacted_at, which a sync recomputes — the recompute folds this
+    # back in, so a sync can never lose it.
+    last_contacted_imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     interaction_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

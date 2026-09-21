@@ -9,6 +9,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import ContactSuggestion, Person, User, utcnow
 from app.services.common import log_activity
+from app.services.interactions import update_person_aggregates
 
 router = APIRouter()
 
@@ -121,6 +122,9 @@ async def add_suggestion(
     )
     db.add(person)
     await db.flush()
+    # The suggestion exists because this address is all over the mailbox —
+    # and whatever of that mail is archived counts from the start.
+    await update_person_aggregates(db, user.org_id, {person.id})
     await log_activity(db, user.org_id, "person", person.id, "created", user.id)
     result = {"person_id": str(person.id), "first_name": first, "last_name": last}
     await db.commit()  # visible before the client refetches

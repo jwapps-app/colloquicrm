@@ -1,6 +1,7 @@
 """Google sync against a fake Google: isolation between accounts, the message
-retry queue, calendar tombstones, all-day events, and no network round-trip
-inside a database transaction."""
+retry queue, calendar tombstones, all-day events, no network round-trip
+inside a database transaction, and reading a message body after the mailbox
+it came from was swapped for another."""
 
 import base64
 import re
@@ -14,6 +15,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import (
     CalendarEvent,
+    ContactSuggestion,
     EmailMessage,
     GmailSyncFailure,
     GoogleAccount,
@@ -36,6 +38,7 @@ class FakeGoogle:
         self.history: dict[str, list[str]] = {}  # token -> new message ids
         self.messages: dict[str, dict] = {}  # gmail id -> message resource
         self.broken_messages: set[str] = set()  # gmail ids that 500
+        self.mailbox: dict[str, list[str]] = {}  # token -> ids a search lists
         self.requests: list[str] = []
         self.in_transaction_during_request: list[str] = []
         self.sessions: list = []
@@ -68,6 +71,9 @@ class FakeGoogle:
                     "historyId": "200",
                 },
             )
+        if path.endswith("/users/me/messages"):
+            ids = self.mailbox.get(token, [])
+            return httpx.Response(200, json={"messages": [{"id": i} for i in ids]})
         match = re.search(r"/users/me/messages/([^/]+)$", path)
         if match:
             gmail_id = match.group(1)
@@ -312,3 +318,120 @@ async def test_no_google_request_is_made_inside_a_database_transaction(
     async with SessionLocal() as db:
         assert len((await db.execute(select(EmailMessage))).all()) == 3
     assert (await _account(world.member.id)).sync_error is None
+
+
+async def test_suggestion_scan_makes_no_google_request_inside_a_transaction(
+    google_world, fake_google
+):
+    world = google_world
+    await make_person(world.org, work_email="client@customer.example")
+    await add(
+        ContactSuggestion(org_id=world.org.id, email="regular@partner.example", message_count=1)
+    )
+    await _connect(world, world.member, "tok")
+    senders = {
+        "s1": "Regular <regular@partner.example>",
+        "s2": "Regular <regular@partner.example>",
+        "s3": "Fresh Face <fresh@prospect.example>",
+        "s4": "Fresh Face <fresh@prospect.example>",
+        "s5": "client@customer.example",  # already a contact: never suggested
+        "s6": "client@customer.example",
+    }
+    for gmail_id, sender in senders.items():
+        fake_google.messages[gmail_id] = _message(gmail_id, sender, world.member.email)
+    fake_google.mailbox["tok"] = list(senders)
+
+    await google.scan_contact_suggestions(world.member.id)
+
+    # Two searches (sent, inbox) and a read per listed message, each time.
+    assert len(fake_google.requests) == 2 + 2 * len(senders)
+    assert fake_google.in_transaction_during_request == []
+    async with SessionLocal() as db:
+        found = {
+            s.email: s.message_count
+            for s in (await db.execute(select(ContactSuggestion))).scalars()
+        }
+    # Listed by both searches, so each message is tallied twice.
+    assert found == {"regular@partner.example": 4, "fresh@prospect.example": 4}
+
+
+# --- reading a message body ---------------------------------------------------
+
+
+async def _archived_email(world, owner, gmail_id: str, **fields) -> EmailMessage:
+    return await add(
+        EmailMessage(
+            org_id=world.org.id,
+            owner_user_id=owner.id,
+            gmail_id=gmail_id,
+            rfc_message_id=f"<{gmail_id}@mail.example>",
+            subject="Hi " + gmail_id,
+            sent_at=utcnow(),
+            **fields,
+        )
+    )
+
+
+GONE_DETAIL = (
+    "This message was archived from a previously connected mailbox "
+    "and its full text is no longer available."
+)
+
+
+async def test_body_from_a_previous_mailbox_is_gone_not_a_bad_gateway(
+    client, google_world, fake_google, request_sessions
+):
+    world = google_world
+    fake_google.sessions = request_sessions
+    await _connect(world, world.member, "tok-new-mailbox")
+    # Synced from the mailbox connected before the switch; the new one has
+    # never heard of this id.
+    old = await _archived_email(world, world.member, "old-mailbox-id")
+
+    resp = await client.get(f"/api/v1/emails/{old.id}/body", headers=world.member_auth)
+    assert resp.status_code == 410, resp.text
+    assert resp.json() == {"detail": GONE_DETAIL}
+    assert fake_google.fetches_of("old-mailbox-id") == 1
+    assert fake_google.in_transaction_during_request == []
+
+
+async def test_locally_archived_body_is_served_whatever_gmail_would_say(
+    client, google_world, fake_google
+):
+    world = google_world
+    await _connect(world, world.member, "tok-new-mailbox")
+    kept = await _archived_email(
+        world, world.member, "old-but-archived",
+        body_text="The full text, kept at sync time", body_fetched_at=utcnow(),
+    )
+
+    resp = await client.get(f"/api/v1/emails/{kept.id}/body", headers=world.member_auth)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["body_text"] == "The full text, kept at sync time"
+    assert fake_google.requests == []  # never asked
+
+
+async def test_body_fetch_that_google_fails_is_still_a_bad_gateway(
+    client, google_world, fake_google
+):
+    world = google_world
+    await _connect(world, world.member, "tok")
+    msg = await _archived_email(world, world.member, "flaky")
+    fake_google.broken_messages.add("flaky")
+
+    resp = await client.get(f"/api/v1/emails/{msg.id}/body", headers=world.member_auth)
+    assert resp.status_code == 502, resp.text
+    assert "500" in resp.json()["detail"]
+
+
+async def test_body_is_fetched_once_and_cached(client, google_world, fake_google):
+    world = google_world
+    await _connect(world, world.member, "tok")
+    msg = await _archived_email(world, world.member, "fresh")
+    fake_google.messages["fresh"] = _message("fresh", "client@customer.example", "me@example.com")
+
+    for _ in range(2):
+        resp = await client.get(f"/api/v1/emails/{msg.id}/body", headers=world.member_auth)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["body_text"] == "Hello there"
+    assert fake_google.fetches_of("fresh") == 1

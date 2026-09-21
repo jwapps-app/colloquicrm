@@ -50,8 +50,15 @@ docker stop crm-test-pg
 
 Point it at another server with
 `TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host:port/dbname` — that
-database is dropped and recreated on every run. `requirements.lock` pins the
-exact versions the suite was last run against (`pip install -r requirements.lock`).
+database is dropped and recreated on every run.
+
+`requirements.txt` is the hand-edited list of what the app needs;
+`requirements.lock` pins the exact versions the suite was last run against,
+with sha256 hashes, and is what the image installs
+(`pip install --require-hashes -r requirements.lock`). Don't edit the lock by
+hand — regenerate it with pip-tools (`pip-compile --generate-hashes`, the exact
+command is in the comment at the top of the file), re-run the suite, commit
+both files.
 
 ## API
 
@@ -85,7 +92,27 @@ the export includes.
 - **Google Workspace**: the org registers its own OAuth client (setup guide in
   Settings); users connect their accounts for read-only Contacts import and
   Calendar sync. Events surface on People/Leads/Companies detail pages by
-  attendee email/domain.
+  attendee email/domain. With the Gmail scope granted, mail to and from known
+  contacts is archived too (nothing else is stored).
+
+**Gmail backfill.** A newly connected mailbox is searched for history with
+every known address (People; Leads too with `GMAIL_BACKFILL_LEADS`), in sorted
+order, ten addresses per query, falling back to one at a time if a combined
+search fails. The position — last address finished, plus the page inside the
+current search — is saved after every page, so a restart resumes where it
+stopped. A pass lists at most 4,000 message ids and then *pauses*: nothing past
+the budget is dropped, the next pass (a minute later while history remains,
+otherwise every 30 minutes) carries on. A message that can't be fetched goes to
+a retry queue and is tried first on each pass; an address whose search fails
+holds the walk at that address. Either is given up after 5 attempts and stepped
+over (a manual re-sync gives them a fresh chance). The backfill is "complete"
+only when every address has been searched to its last page; after that the
+Gmail history feed brings in new mail. `GMAIL_BACKFILL_DAYS=0` (the default)
+means all history; a day count bounds the search. Reconnecting with a
+*different* Google account resets all of this — history id, position, retry
+queue — and backfills the new mailbox from the start. Mail already archived
+from the old one stays; with `GMAIL_ARCHIVE_BODIES=false`, the full text of
+those older messages can no longer be fetched (the API answers 410).
 
 ## Deployment
 
@@ -177,6 +204,20 @@ file already sets the required ones.
 | `FORM_MAX_BODY_BYTES` | `65536` | max public lead-form request body, counted on the bytes actually received (chunked requests included) |
 
 ### Upgrades
+
+The server runs as an unprivileged user (uid/gid `10001`), not root. The
+container still *starts* as root so the entrypoint can hand the attachments
+directory to that user, then drops privileges before the migrations and the
+server run. Upgrading from an image that ran as root needs nothing from you:
+the first start chowns the existing attachments (one log line), and they show
+up as owner `10001` on the host afterwards. If the storage refuses — a
+filesystem or ACL that rejects chown, a read-only mount — the container logs
+`entrypoint: WARNING: … running as root, as before` and does exactly that;
+it never refuses to start over file ownership. Seeing that warning on every
+start means the hardening isn't in effect: `chown -R 10001:10001` the directory
+on the host. Don't add `user:` to the stack unless the directory is already
+owned by that uid — a container started non-root can't fix ownership and just
+runs as it is.
 
 Re-pull the image and restart the stack — migrations run automatically at
 container start. Before upgrading, take a manual backup (below). Rolling back

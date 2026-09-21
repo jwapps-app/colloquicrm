@@ -28,6 +28,7 @@ from app.services.common import (
     overdue_task_entity_ids,
 )
 from app.services.crud import register_crud
+from app.services.interactions import update_person_aggregates
 
 router = APIRouter()
 
@@ -211,6 +212,8 @@ async def convert_lead(
     )
     db.add(person)
     await db.flush()
+    # The lead's address may already have synced mail or calls behind it.
+    await update_person_aggregates(db, user.org_id, {person.id})
 
     lead_tags = (await get_tag_maps(db, "lead", [lead.id])).get(lead.id, [])
     if lead_tags:

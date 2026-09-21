@@ -438,6 +438,7 @@ async def diagnose_address(
     addr = g.normalize_email(email)
     try:
         access = await g.ensure_access_token(db, cfg, account)
+        await g._release_db(db)  # no transaction open across the Gmail calls
         # Ask Gmail directly whose mailbox this token opens — the stored email
         # can lie if the consent screen picked a different account.
         profile = await g._get_json(f"{settings.google_gmail_base}/users/me/profile", access)
@@ -511,6 +512,7 @@ async def contacts_preview(
         raise HTTPException(status_code=400, detail="Google integration is not configured")
     try:
         access = await g.ensure_access_token(db, cfg, account)
+        await g._release_db(db)  # no transaction open across the People API walk
         contacts = await g.fetch_contacts(access)
     except g.GoogleError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -817,7 +819,18 @@ async def email_body(
             )
         try:
             access = await g.ensure_access_token(db, cfg, owner_account)
+            await g._release_db(db)  # no transaction open across the Gmail fetch
             body = await g.fetch_message_body(access, msg.gmail_id)
+        except g.MessageGone:
+            # Not an upstream failure and not worth a retry: the id belongs
+            # to a mailbox that is no longer the connected one.
+            raise HTTPException(
+                status_code=410,
+                detail=(
+                    "This message was archived from a previously connected mailbox "
+                    "and its full text is no longer available."
+                ),
+            )
         except g.GoogleError as exc:
             raise HTTPException(status_code=502, detail=str(exc))
         msg.body_text = body.get("text")
