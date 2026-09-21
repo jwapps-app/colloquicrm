@@ -2,8 +2,8 @@
 
 The CRM never holds Apple credentials. Like every other app in the fleet it
 POSTs each notification to the push relay (X-API-Key auth, key scoped to this
-bundle id); the relay signs with the team's .p8 and forwards to APNs. Dead
-tokens are reported back in the relay's 502 detail and pruned here.
+bundle id); the relay signs with the team's .p8 and forwards to APNs. A dead
+token comes back as a 410 naming Apple's reason, and is pruned here.
 
 Every push is best-effort: the relay being down or unconfigured must never
 break or delay a CRM action. Unset env = feature dark, chat DMs keep working.
@@ -20,8 +20,11 @@ from app.models import DeviceToken, User
 
 log = logging.getLogger("push")
 
-# Apple reasons (surfaced in the relay's 502 detail) that mean the token is
-# permanently gone — uninstalled, rotated, or registered for another app.
+# Apple reasons that mean the token is permanently gone — uninstalled,
+# rotated, or registered for another app. The relay reports them as a 410
+# whose `reason` is exactly one of these; nothing else is ever grounds to
+# delete a device (a 422's detail echoes our own title/body back, so matching
+# on text would let a task named "Unregistered" delete a live token).
 DEAD_TOKEN_REASONS = ("BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic")
 
 _client: httpx.AsyncClient | None = None
@@ -93,6 +96,28 @@ async def send_to_user(
     return sent
 
 
+async def _post(payload: dict) -> httpx.Response | None:
+    try:
+        return await _get_client().post(
+            settings.push_relay_url.rstrip("/") + "/notify",
+            json=payload,
+            headers={"X-API-Key": settings.push_relay_api_key},
+        )
+    except httpx.HTTPError as exc:
+        log.warning("Relay push to %s… failed: %s", payload["device_token"][:8], exc)
+        return None
+
+
+def _dead_token_reason(resp: httpx.Response) -> str | None:
+    if resp.status_code != 410:
+        return None
+    try:
+        reason = resp.json().get("reason")
+    except Exception:
+        return None
+    return reason if reason in DEAD_TOKEN_REASONS else None
+
+
 async def _send_one(
     db, device: DeviceToken, title: str, body: str, extra: dict, badge: int | None = None
 ) -> bool:
@@ -106,31 +131,50 @@ async def _send_one(
     }
     if badge is not None:
         payload["badge"] = badge
-    try:
-        resp = await _get_client().post(
-            settings.push_relay_url.rstrip("/") + "/notify",
-            json=payload,
-            headers={"X-API-Key": settings.push_relay_api_key},
-        )
-    except httpx.HTTPError as exc:
-        log.warning("Relay push to %s… failed: %s", device.token[:8], exc)
+    resp = await _post(payload)
+    if resp is None:
         return False
+    reason = _dead_token_reason(resp)
+    if reason == "BadDeviceToken":
+        # Apple says this for a perfectly good token sent to the wrong
+        # environment (a TestFlight/App Store token recorded as sandbox, or the
+        # reverse). Nothing was delivered, so trying the other side can't
+        # double-notify — and it saves a live device from being deleted.
+        other = "production" if payload["sandbox"] else "sandbox"
+        retry = await _post({**payload, "sandbox": other == "sandbox"})
+        if retry is not None and retry.status_code == 200:
+            device.environment = other
+            await db.commit()
+            log.info(
+                "Pushed '%s' to %s… after correcting its environment to %s",
+                title, device.token[:8], other,
+            )
+            return True
+        if retry is None or _dead_token_reason(retry) is None:
+            # The second opinion never arrived (or wasn't a verdict on the
+            # token) — not enough to delete on. Leave it for the next push.
+            log.warning("Relay rejected push to %s…: BadDeviceToken", device.token[:8])
+            return False
     if resp.status_code == 200:
         log.info("Pushed '%s' to %s… (%s)", title, device.token[:8], device.environment)
         return True
-    try:
-        detail = str(resp.json().get("detail", ""))
-    except Exception:
-        detail = ""
-    if any(reason in detail for reason in DEAD_TOKEN_REASONS):
+    if reason is not None:
         # The device uninstalled the app or the token rotated — drop the row
         # so we stop paying for dead sends. Commit here: notification callers
         # are read-only sessions that never commit themselves.
         await db.execute(delete(DeviceToken).where(DeviceToken.id == device.id))
         await db.commit()
-        log.info("Pruned dead device token %s… (%s)", device.token[:8], detail)
-    else:
+        log.info("Pruned dead device token %s… (%s)", device.token[:8], reason)
+        return False
+    if resp.status_code == 429:
         log.warning(
-            "Relay rejected push to %s…: %s %s", device.token[:8], resp.status_code, detail
+            "Relay is rate-limiting pushes (retry after %s); dropped push to %s…",
+            resp.headers.get("Retry-After", "?"), device.token[:8],
         )
+        return False
+    try:
+        detail = str(resp.json().get("detail", ""))
+    except Exception:
+        detail = ""
+    log.warning("Relay rejected push to %s…: %s %s", device.token[:8], resp.status_code, detail)
     return False
