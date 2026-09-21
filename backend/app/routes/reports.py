@@ -94,11 +94,128 @@ def _money(v) -> float:
     return round(float(v or 0), 2)
 
 
+DEFAULT_CURRENCY = "USD"
+UNASSIGNED = "unassigned"
+
+
+def _currency_expr():
+    """An opportunity's currency as a grouping key: upper-cased, blank/NULL
+    read as the column default."""
+    return func.upper(
+        func.coalesce(func.nullif(func.trim(Opportunity.currency), ""), DEFAULT_CURRENCY)
+    )
+
+
+async def _dominant_currency(db: AsyncSession, org_id: uuid.UUID) -> str:
+    """The currency most of the org's deals are in. Money in different
+    currencies can't be added, so headline totals are stated in this one and
+    everything else is reported alongside, per currency — never summed in."""
+    cur = _currency_expr()
+    row = (
+        await db.execute(
+            select(cur, func.count())
+            .where(Opportunity.org_id == org_id, Opportunity.deleted_at.is_(None))
+            .group_by(cur)
+            .order_by(func.count().desc(), cur)
+            .limit(1)
+        )
+    ).first()
+    return row[0] if row else DEFAULT_CURRENCY
+
+
+class _Bucket:
+    """Open deals in one slot of the pipeline report, kept per currency."""
+
+    def __init__(self):
+        self.by_currency: dict[str, dict] = {}
+
+    def add(self, currency: str, count: int, value, weighted) -> None:
+        cur = self.by_currency.setdefault(
+            currency, {"count": 0, "total_value": 0.0, "weighted_value": 0.0}
+        )
+        cur["count"] += count
+        cur["total_value"] = round(cur["total_value"] + _money(value), 2)
+        cur["weighted_value"] = round(cur["weighted_value"] + _money(weighted), 2)
+
+    @property
+    def count(self) -> int:
+        return sum(c["count"] for c in self.by_currency.values())
+
+    def value(self, currency: str) -> float:
+        return self.by_currency.get(currency, {}).get("total_value", 0.0)
+
+    def weighted(self, currency: str) -> float:
+        return self.by_currency.get(currency, {}).get("weighted_value", 0.0)
+
+
+class _Totals:
+    def __init__(self, currency: str):
+        self.currency = currency
+        self.open_count = 0
+        self.by_currency: dict[str, dict] = {}
+
+    def add(self, bucket: _Bucket) -> None:
+        self.open_count += bucket.count
+        for currency, c in bucket.by_currency.items():
+            t = self.by_currency.setdefault(
+                currency, {"open_count": 0, "open_value": 0.0, "weighted_forecast": 0.0}
+            )
+            t["open_count"] += c["count"]
+            t["open_value"] = round(t["open_value"] + c["total_value"], 2)
+            t["weighted_forecast"] = round(t["weighted_forecast"] + c["weighted_value"], 2)
+
+    def merge(self, other: "_Totals") -> None:
+        self.open_count += other.open_count
+        for currency, c in other.by_currency.items():
+            t = self.by_currency.setdefault(
+                currency, {"open_count": 0, "open_value": 0.0, "weighted_forecast": 0.0}
+            )
+            for key, amount in c.items():
+                t[key] = t[key] + amount if key == "open_count" else round(t[key] + amount, 2)
+
+    def out(self) -> dict:
+        mine = self.by_currency.get(self.currency, {})
+        return {
+            # Every open deal, whatever its currency.
+            "open_count": self.open_count,
+            # Money: deals in `currency` only. The rest is in by_currency.
+            "open_value": mine.get("open_value", 0.0),
+            "weighted_forecast": mine.get("weighted_forecast", 0.0),
+            "by_currency": self.by_currency,
+        }
+
+
+def _stage_row(stage_id: str, name: str, win_probability, bucket: _Bucket, currency: str) -> dict:
+    return {
+        "stage_id": stage_id,
+        "name": name,
+        "win_probability": win_probability,
+        "count": bucket.count,
+        "total_value": bucket.value(currency),
+        "weighted_value": bucket.weighted(currency),
+        "by_currency": bucket.by_currency,
+    }
+
+
+def _effective_probability(bucket: _Bucket, currency: str) -> int:
+    """The value-weighted win % of a bucket that has no stage to borrow one
+    from — what its deals' own probabilities amount to."""
+    value = bucket.value(currency)
+    return round(bucket.weighted(currency) / value * 100) if value else 0
+
+
 @router.get("/pipeline")
 async def pipeline_report(
     user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    """Current open-pipeline snapshot; the range param does not apply."""
+    """Current open-pipeline snapshot; the range param does not apply.
+
+    Every open deal is counted somewhere: in its stage; in a "No stage" row
+    of its pipeline; or, with neither, in a trailing "Unassigned" pipeline.
+    A deal is weighted by ITS OWN win_probability when it has one (that is
+    the number its card shows), else by its stage's. Monetary totals cover
+    the org's dominant currency only — `currency` names it, `by_currency`
+    carries the rest, and `mixed_currencies` says whether there is a rest."""
     pipelines = (
         (
             await db.execute(
@@ -121,65 +238,90 @@ async def pipeline_report(
         .scalars()
         .all()
     )
+    currency = await _dominant_currency(db, user.org_id)
+    cur = _currency_expr()
+    probability = func.coalesce(Opportunity.win_probability, Stage.win_probability, 0)
     agg = await db.execute(
         select(
             Opportunity.pipeline_id,
             Opportunity.stage_id,
+            cur,
             func.count(Opportunity.id),
             func.coalesce(func.sum(Opportunity.value), 0),
+            func.coalesce(func.sum(Opportunity.value * probability), 0),
         )
+        .outerjoin(Stage, Stage.id == Opportunity.stage_id)
         .where(
             Opportunity.org_id == user.org_id,
             Opportunity.deleted_at.is_(None),
             Opportunity.status == "open",
         )
-        .group_by(Opportunity.pipeline_id, Opportunity.stage_id)
+        .group_by(Opportunity.pipeline_id, Opportunity.stage_id, cur)
     )
+    known_stages = {s.id for s in stages}
+    known_pipelines = {p.id for p in pipelines}
     by_stage: dict = {}
-    extra_by_pipeline: dict = {}  # open opps with a pipeline but no stage
-    for pid, sid, count, value in agg:
-        if sid is not None:
-            by_stage[sid] = (count, value)
-        elif pid is not None:
-            prev = extra_by_pipeline.get(pid, (0, 0))
-            extra_by_pipeline[pid] = (prev[0] + count, float(prev[1]) + float(value or 0))
+    unstaged: dict = {}  # pipeline id -> open deals with a pipeline but no stage
+    unassigned = _Bucket()  # neither (or pointing at something that's gone)
+    seen_currencies: set[str] = set()
+    for pid, sid, row_currency, count, value, weighted_x100 in agg:
+        seen_currencies.add(row_currency)
+        if sid is not None and sid in known_stages:
+            bucket = by_stage.setdefault(sid, _Bucket())
+        elif pid is not None and pid in known_pipelines:
+            bucket = unstaged.setdefault(pid, _Bucket())
+        else:
+            bucket = unassigned
+        bucket.add(row_currency, count, value, float(weighted_x100 or 0) / 100)
 
     out = []
-    grand = {"open_count": 0, "open_value": 0.0, "weighted_forecast": 0.0}
+    grand = _Totals(currency)
     for p in pipelines:
         stage_rows = []
-        totals = {"open_count": 0, "open_value": 0.0, "weighted_forecast": 0.0}
+        totals = _Totals(currency)
         for s in stages:
             if s.pipeline_id != p.id:
                 continue
-            count, value = by_stage.get(s.id, (0, 0))
-            value = _money(value)
-            weighted = round(value * (s.win_probability or 0) / 100, 2)
-            stage_rows.append(
-                {
-                    "stage_id": str(s.id),
-                    "name": s.name,
-                    "win_probability": s.win_probability,
-                    "count": count,
-                    "total_value": value,
-                    "weighted_value": weighted,
-                }
+            bucket = by_stage.get(s.id, _Bucket())
+            stage_rows.append(_stage_row(str(s.id), s.name, s.win_probability, bucket, currency))
+            totals.add(bucket)
+        loose = unstaged.get(p.id)
+        if loose is not None and loose.count:
+            row = _stage_row(
+                f"unstaged:{p.id}", "No stage", _effective_probability(loose, currency),
+                loose, currency,
             )
-            totals["open_count"] += count
-            totals["open_value"] = round(totals["open_value"] + value, 2)
-            totals["weighted_forecast"] = round(totals["weighted_forecast"] + weighted, 2)
-        extra_count, extra_value = extra_by_pipeline.get(p.id, (0, 0))
-        totals["open_count"] += extra_count
-        totals["open_value"] = round(totals["open_value"] + _money(extra_value), 2)
-        grand["open_count"] += totals["open_count"]
-        grand["open_value"] = round(grand["open_value"] + totals["open_value"], 2)
-        grand["weighted_forecast"] = round(
-            grand["weighted_forecast"] + totals["weighted_forecast"], 2
-        )
+            row["unassigned"] = True
+            stage_rows.append(row)
+            totals.add(loose)
+        grand.merge(totals)
         out.append(
-            {"id": str(p.id), "name": p.name, "stages": stage_rows, "totals": totals}
+            {"id": str(p.id), "name": p.name, "stages": stage_rows, "totals": totals.out()}
         )
-    return {"pipelines": out, "totals": grand}
+    if unassigned.count:
+        totals = _Totals(currency)
+        totals.add(unassigned)
+        grand.merge(totals)
+        row = _stage_row(
+            UNASSIGNED, "No pipeline or stage", _effective_probability(unassigned, currency),
+            unassigned, currency,
+        )
+        row["unassigned"] = True
+        out.append(
+            {
+                "id": UNASSIGNED,
+                "name": "Unassigned",
+                "unassigned": True,
+                "stages": [row],
+                "totals": totals.out(),
+            }
+        )
+    return {
+        "pipelines": out,
+        "totals": grand.out(),
+        "currency": currency,
+        "mixed_currencies": bool(seen_currencies - {currency}),
+    }
 
 
 @router.get("/sales")
@@ -188,12 +330,20 @@ async def sales_report(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Won/lost analysis. The effective date of a win/loss is close_date when
-    set, else updated_at (the status flip touches updated_at)."""
+    """Won/lost analysis. A win/loss is dated by closed_at — stamped when the
+    deal left "open", untouched by later edits. (Rows closed before closed_at
+    existed were backfilled by the migration; the close_date/updated_at
+    fallback only covers a row some other writer closed without stamping.)
+
+    Counts and rates cover every deal; money covers the org's dominant
+    currency only, with the full per-currency picture in by_currency."""
     unit, since = _parse_range(range)
+    cur = _currency_expr()
     q = select(
         Opportunity.status,
         Opportunity.value,
+        cur,
+        Opportunity.closed_at,
         Opportunity.close_date,
         Opportunity.created_at,
         Opportunity.updated_at,
@@ -205,17 +355,24 @@ async def sales_report(
     if since is not None:
         q = q.where(
             or_(
-                Opportunity.close_date >= since.date(),
-                and_(Opportunity.close_date.is_(None), Opportunity.updated_at >= since),
+                Opportunity.closed_at >= since,
+                and_(
+                    Opportunity.closed_at.is_(None),
+                    or_(
+                        Opportunity.close_date >= since.date(),
+                        and_(Opportunity.close_date.is_(None), Opportunity.updated_at >= since),
+                    ),
+                ),
             )
         )
     rows = (await db.execute(q)).all()
+    currency = await _dominant_currency(db, user.org_id)
 
     today = utcnow().date()
-    effective: list[tuple[date, str, float, date | None]] = []
-    for status, value, close_date, created_at, updated_at in rows:
-        eff = close_date or _to_date(updated_at) or today
-        effective.append((eff, status, float(value or 0), _to_date(created_at)))
+    effective: list[tuple[date, str, float, str, date | None]] = []
+    for status, value, row_currency, closed_at, close_date, created_at, updated_at in rows:
+        eff = _to_date(closed_at) or close_date or _to_date(updated_at) or today
+        effective.append((eff, status, float(value or 0), row_currency, _to_date(created_at)))
 
     start = since.date() if since else (min(e[0] for e in effective) if effective else None)
     end = max([today] + [e[0] for e in effective]) if effective else today
@@ -228,38 +385,54 @@ async def sales_report(
     ]
 
     won_count = lost_count = 0
-    won_value = lost_value = 0.0
+    by_currency: dict[str, dict] = {}
     close_days: list[int] = []
-    for eff, status, value, created in effective:
+    for eff, status, value, row_currency, created in effective:
         b = index.get(_bucket_key(unit, eff))
+        per = by_currency.setdefault(
+            row_currency,
+            {"won_count": 0, "won_value": 0.0, "lost_count": 0, "lost_value": 0.0},
+        )
+        prefix = "won" if status == "won" else "lost"
+        per[f"{prefix}_count"] += 1
+        per[f"{prefix}_value"] = round(per[f"{prefix}_value"] + value, 2)
         if status == "won":
             won_count += 1
-            won_value += value
-            if b is not None:
-                series[b]["won_count"] += 1
-                series[b]["won_value"] = round(series[b]["won_value"] + value, 2)
             if created is not None:
                 close_days.append(max(0, (eff - created).days))
         else:
             lost_count += 1
-            lost_value += value
-            if b is not None:
-                series[b]["lost_count"] += 1
-                series[b]["lost_value"] = round(series[b]["lost_value"] + value, 2)
+        if b is not None:
+            series[b][f"{prefix}_count"] += 1
+            if row_currency == currency:
+                series[b][f"{prefix}_value"] = round(series[b][f"{prefix}_value"] + value, 2)
 
+    mine = by_currency.get(currency, {})
+    won_value = mine.get("won_value", 0.0)
     decided = won_count + lost_count
     summary = {
         "won_count": won_count,
-        "won_value": round(won_value, 2),
+        "won_value": won_value,
         "lost_count": lost_count,
-        "lost_value": round(lost_value, 2),
+        "lost_value": mine.get("lost_value", 0.0),
         "win_rate": round(won_count / decided, 4) if decided else None,
-        "avg_deal_size": round(won_value / won_count, 2) if won_count else None,
+        # Average of the deals the money total covers, not of all wins.
+        "avg_deal_size": round(won_value / mine["won_count"], 2)
+        if mine.get("won_count")
+        else None,
         "avg_days_to_close": round(sum(close_days) / len(close_days), 1)
         if close_days
         else None,
     }
-    return {"range": range, "unit": unit, "summary": summary, "series": series}
+    return {
+        "range": range,
+        "unit": unit,
+        "summary": summary,
+        "series": series,
+        "currency": currency,
+        "mixed_currencies": bool(set(by_currency) - {currency}),
+        "by_currency": by_currency,
+    }
 
 
 @router.get("/activity")
@@ -416,6 +589,15 @@ async def leads_report(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Lead funnel. Two different questions, kept apart:
+
+    - FLOW: how many leads arrived in the period (new_leads) and how many
+      conversions happened in it (converted / converted_in_period) — the
+      latter includes leads that arrived long before.
+    - COHORT: of the leads that ARRIVED in the period, how many have
+      converted by now (cohort_converted). conversion_rate is this cohort
+      ratio, so it can never exceed 100%; dividing the two flow counts (the
+      old behaviour) could, and did."""
     unit, since = _parse_range(range)
     base = [Lead.org_id == user.org_id, Lead.deleted_at.is_(None)]
 
@@ -438,6 +620,16 @@ async def leads_report(
         for k, v in (
             await db.execute(
                 select(Lead.source, func.count()).where(*conv_where).group_by(Lead.source)
+            )
+        )
+    }
+    cohort_by_source = {
+        k: v
+        for k, v in (
+            await db.execute(
+                select(Lead.source, func.count())
+                .where(*new_where, Lead.converted_at.is_not(None))
+                .group_by(Lead.source)
             )
         )
     }
@@ -481,6 +673,7 @@ async def leads_report(
 
     new_leads = sum(new_by_source.values())
     converted = sum(conv_by_source.values())
+    cohort_converted = sum(cohort_by_source.values())
     by_source = []
     for source in sorted(
         set(new_by_source) | set(conv_by_source),
@@ -488,12 +681,14 @@ async def leads_report(
     ):
         n = new_by_source.get(source, 0)
         c = conv_by_source.get(source, 0)
+        cohort = cohort_by_source.get(source, 0)
         by_source.append(
             {
                 "source": source or "No source",
                 "new_count": n,
-                "converted_count": c,
-                "conversion_rate": round(c / n, 4) if n else None,
+                "converted_count": c,  # conversions that happened in the period
+                "cohort_converted": cohort,  # of new_count, converted so far
+                "conversion_rate": round(cohort / n, 4) if n else None,
             }
         )
 
@@ -503,7 +698,9 @@ async def leads_report(
         "summary": {
             "new_leads": new_leads,
             "converted": converted,
-            "conversion_rate": round(converted / new_leads, 4) if new_leads else None,
+            "converted_in_period": converted,  # same number, named for what it is
+            "cohort_converted": cohort_converted,
+            "conversion_rate": round(cohort_converted / new_leads, 4) if new_leads else None,
             "avg_days_to_convert": round(sum(convert_days) / len(convert_days), 1)
             if convert_days
             else None,

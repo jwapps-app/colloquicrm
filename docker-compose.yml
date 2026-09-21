@@ -17,7 +17,9 @@ services:
   api:
     build: .
     ports:
-      - "8010:8000"
+      # APP_BIND=127.0.0.1 keeps the port off the network when a reverse
+      # proxy on this host is the only intended way in (see TRUSTED_PROXY_IPS).
+      - "${APP_BIND:-0.0.0.0}:8010:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://app:app@postgres:5432/app
       APP_URL: http://localhost:8010
@@ -26,9 +28,11 @@ services:
       ATTACHMENT_QUOTA_MB: 5120
       # Proxies allowed to set cf-connecting-ip (docker's bridge range, where a
       # local reverse proxy container would sit). Direct connections through
-      # the published port arrive from the bridge gateway, so only put a proxy
-      # in front of this stack if the port itself is not otherwise reachable.
-      TRUSTED_PROXY_IPS: 172.16.0.0/12
+      # the published port arrive from the bridge gateway — inside this range —
+      # so with a proxy in front, either bind the port to loopback (APP_BIND)
+      # or narrow this to the proxy's own address; otherwise anyone who can
+      # reach the port directly can spoof their client IP past the throttles.
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.16.0.0/12}
     volumes:
       - attachments:/data/attachments
     depends_on:

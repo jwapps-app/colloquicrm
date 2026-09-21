@@ -3,14 +3,15 @@ import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import as_utc, get_current_user
 from app.models import Task, User, utcnow
-from app.schemas import TaskIn
+from app.schemas import MAX_TASK_DATE, TaskIn
 from app.services import colloqui
+from app.services.background import after_commit
 from app.services.common import (
     display_name_map,
     entity_labels_map,
@@ -61,16 +62,28 @@ async def _validate_target(db, user, data, current):
     await validate_entity_ref(db, user.org_id, entity_type, entity_id)
 
 
-def _notify_created(task, actor):
+def _notify_later(db, task_id, event, actor_id, assignee_id) -> None:
+    """Queue a task notification for AFTER the commit. The notifier re-reads
+    the task from its own session, so it must not start until the write is
+    durable — scheduling it mid-transaction raced the commit (and announced
+    tasks whose transaction then rolled back). Plain ids are captured here;
+    the ORM objects belong to a transaction that will be over by then."""
+    after_commit(
+        db,
+        lambda: colloqui.schedule(
+            colloqui.notify_task_event(
+                task_id, event, actor_id=actor_id, assignee_id=assignee_id
+            )
+        ),
+    )
+
+
+def _notify_created(db, task, actor):
     # Only a genuine hand-off notifies. A task you create for yourself (or leave
     # unassigned) needs no "you were assigned" ping and no team #tasks post —
     # only assigning it to someone else does.
     if task.assignee_id and task.assignee_id != actor.id:
-        colloqui.schedule(
-            colloqui.notify_task_event(
-                task.id, "created", actor_id=actor.id, assignee_id=task.assignee_id
-            )
-        )
+        _notify_later(db, task.id, "created", actor.id, task.assignee_id)
 
 
 def _after_update(db, task, old_values, actor):
@@ -87,11 +100,7 @@ def _after_update(db, task, old_values, actor):
     if "assignee_id" not in old_values:
         return
     if task.assignee_id and task.assignee_id != old_values["assignee_id"]:
-        colloqui.schedule(
-            colloqui.notify_task_event(
-                task.id, "assigned", actor_id=actor.id, assignee_id=task.assignee_id
-            )
-        )
+        _notify_later(db, task.id, "assigned", actor.id, task.assignee_id)
 
 
 register_crud(
@@ -140,15 +149,32 @@ def _add_interval(dt: datetime, every: int, unit: str) -> datetime:
     return dt.replace(year=year, month=month, day=min(dt.day, calendar.monthrange(year, month)[1]))
 
 
-def _next_due(due_at: datetime, every: int, unit: str) -> datetime:
+def _next_due(due_at: datetime, every: int, unit: str) -> datetime | None:
     """The next occurrence's due time: at least one interval on from the old
     due date, then advanced repeatedly until it's in the future — a task
-    completed months late must not spawn an instantly-overdue chain."""
-    nxt = _add_interval(due_at, every, unit)
+    completed months late must not spawn an instantly-overdue chain.
+
+    None when there is no sane next date: the schema bounds due dates and
+    intervals, but rows written before it did (or by an import) may not
+    respect them, and date arithmetic past year 9999 raises. A series that
+    has run off the end of the calendar simply stops. The catch-up loop is
+    bounded too — a daily task last due in 1970 jumps straight to today's
+    slot instead of stepping through twenty thousand days."""
     now = utcnow()
-    while nxt <= now:
-        nxt = _add_interval(nxt, every, unit)
-    return nxt
+    try:
+        nxt = _add_interval(due_at, every, unit)
+        if nxt <= now and unit in ("day", "week"):
+            step = timedelta(days=every * (7 if unit == "week" else 1))
+            nxt += step * ((now - nxt) // step)
+        hops = 0
+        while nxt <= now:
+            nxt = _add_interval(nxt, every, unit)
+            hops += 1
+            if hops > 10_000:
+                return None
+    except (OverflowError, ValueError):
+        return None
+    return nxt if nxt <= MAX_TASK_DATE else None
 
 
 async def _get_task(db: AsyncSession, user: User, task_id: uuid.UUID) -> Task:
@@ -166,20 +192,33 @@ async def complete_task(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    t = await _get_task(db, user, task_id)
-    if t.status != "done":
-        t.status = "done"
-        t.completed_at = utcnow()
+    # The open -> done transition is ONE conditional UPDATE. Two requests
+    # completing the same task (a double tap, two devices) both used to read
+    # "open" and both spawn a successor; now the database picks a single
+    # winner — the loser's UPDATE waits on the row, re-checks the WHERE after
+    # the winner commits, and matches nothing.
+    now = utcnow()
+    won = (
+        await db.execute(
+            update(Task)
+            .where(Task.id == task_id, Task.org_id == user.org_id, Task.status != "done")
+            .values(status="done", completed_at=now, updated_at=now)
+            .returning(Task.id)
+        )
+    ).scalar_one_or_none()
+    t = await _get_task(db, user, task_id)  # 404s an unknown id
+    if won is not None:
         await log_activity(
             db, user.org_id, t.entity_type, t.entity_id, "task_completed", user.id,
             {"task_id": str(t.id), "name": t.name},
         )
-        colloqui.schedule(
-            colloqui.notify_task_event(
-                t.id, "completed", actor_id=user.id, assignee_id=t.assignee_id
-            )
+        _notify_later(db, t.id, "completed", user.id, t.assignee_id)
+        next_due = (
+            _next_due(as_utc(t.due_at), t.repeat_every, t.repeat_unit)
+            if t.repeat_every and t.repeat_unit and t.due_at
+            else None
         )
-        if t.repeat_every and t.repeat_unit and t.due_at:
+        if next_due is not None:
             # Recurring: spawn the next occurrence as a fresh open task with
             # everything re-armed. Created directly — no created/assigned
             # notification, it's the same person's task continuing.
@@ -190,7 +229,7 @@ async def complete_task(
                     details=t.details,
                     entity_type=t.entity_type,
                     entity_id=t.entity_id,
-                    due_at=_next_due(as_utc(t.due_at), t.repeat_every, t.repeat_unit),
+                    due_at=next_due,
                     priority=t.priority,
                     assignee_id=t.assignee_id,
                     created_by=t.created_by,
@@ -199,7 +238,11 @@ async def complete_task(
                 )
             )
     await db.commit()  # visible before the client refetches
-    return {"id": str(t.id), "status": t.status, "completed_at": t.completed_at.isoformat()}
+    return {
+        "id": str(t.id),
+        "status": t.status,
+        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+    }
 
 
 @router.post("/{task_id}/reopen")

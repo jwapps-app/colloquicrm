@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 from functools import partial
@@ -27,10 +28,29 @@ _CHUNK = 1024 * 1024
 
 # Per-user upload rate — generous for a person attaching files by hand,
 # tight for a script trying to churn through the org's storage budget.
-# Same in-process limiter as login; counts accepted uploads.
+# Same in-process limiter as login; counts accepted uploads. The slot is
+# reserved before the write and handed back if the upload fails, so a parallel
+# burst can't all pass the check before any of them is counted.
 _UPLOAD_WINDOW_SECONDS = 3600
 _UPLOAD_LIMIT = 60
 _uploads = SlidingWindowLimiter(_UPLOAD_WINDOW_SECONDS, _UPLOAD_LIMIT)
+
+# Bytes promised to uploads that are still being written, per org. The quota
+# check counts committed rows PLUS these, so two parallel uploads can't both
+# fit into the same remaining space. In-process like the limiter — this is a
+# single-process app. The lock covers "read the committed sum + reserve" and
+# "commit the row + release", so a finishing upload is always visible to the
+# next check as one or the other, never as neither.
+_reserved_bytes: dict[uuid.UUID, int] = {}
+_ledger_lock = asyncio.Lock()
+
+
+def _release_bytes(org_id: uuid.UUID, amount: int) -> None:
+    left = _reserved_bytes.get(org_id, 0) - amount
+    if left > 0:
+        _reserved_bytes[org_id] = left
+    else:
+        _reserved_bytes.pop(org_id, None)
 
 
 def _quota_bytes() -> int:
@@ -47,6 +67,12 @@ def _quota_error() -> HTTPException:
     # render as "file is too large" (the per-file cap).
     return HTTPException(
         status_code=507, detail=f"Attachment storage is full (limit {_quota_label()})"
+    )
+
+
+def _too_large_error() -> HTTPException:
+    return HTTPException(
+        status_code=413, detail=f"File exceeds the {settings.attachment_max_mb} MB limit"
     )
 
 
@@ -111,74 +137,95 @@ async def upload_attachment(
     await validate_entity_ref(db, user.org_id, entity_type, entity_id)
 
     rate_keys = [f"upload:{user.id}"]
-    if _uploads.exceeded(rate_keys):
+    slot = _uploads.reserve(rate_keys)
+    if slot is None:
         raise HTTPException(
             status_code=429,
             detail="Too many uploads in the last hour — try again in a little while.",
         )
 
-    # Org storage budget. The multipart parser has already sized the part,
-    # so an upload that can't fit is refused before a byte hits the disk;
-    # the running count below re-checks against what actually arrived.
-    quota = _quota_bytes()
-    used = await _org_bytes_used(db, user.org_id)
-    if file.size and used + file.size > quota:
-        raise _quota_error()
-
-    filename = sanitize_filename(file.filename or "")
-    stored_name = make_stored_name(filename)
-    await anyio.to_thread.run_sync(partial(os.makedirs, settings.attachments_dir, exist_ok=True))
-    dest = attachment_path(stored_name)
-
-    # Stream to disk with a running byte count — never the whole body in
-    # memory. Blowing the cap deletes the partial file and 413s. The disk
-    # writes themselves block, so they run on a worker thread — a 25 MB
-    # upload to a slow volume must not stall every other request.
     max_bytes = settings.attachment_max_mb * 1024 * 1024
-    size = 0
-    out = await anyio.to_thread.run_sync(partial(open, dest, "wb"))
+    quota = _quota_bytes()
+    reserved = 0
+    committed = False
     try:
-        try:
-            while chunk := await file.read(_CHUNK):
-                size += len(chunk)
-                if size > max_bytes:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"File exceeds the {settings.attachment_max_mb} MB limit",
-                    )
-                if used + size > quota:
-                    raise _quota_error()
-                await anyio.to_thread.run_sync(out.write, chunk)
-        finally:
-            await anyio.to_thread.run_sync(out.close)
-    except BaseException:
-        await _discard(dest)
-        raise
+        # Org storage budget. The multipart parser has already sized the part,
+        # so an upload that can't fit is refused before a byte hits the disk;
+        # its size is reserved against the quota until the row commits (or the
+        # upload fails), and the running count below re-checks against what
+        # actually arrived.
+        if file.size and file.size > max_bytes:
+            raise _too_large_error()
+        async with _ledger_lock:
+            used = await _org_bytes_used(db, user.org_id)
+            want = file.size if file.size is not None else max_bytes
+            if used + _reserved_bytes.get(user.org_id, 0) + want > quota:
+                raise _quota_error()
+            _reserved_bytes[user.org_id] = _reserved_bytes.get(user.org_id, 0) + want
+            reserved = want
 
-    a = Attachment(
-        org_id=user.org_id,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        filename=filename,
-        content_type=(file.content_type or "application/octet-stream")[:255],
-        size_bytes=size,
-        stored_name=stored_name,
-        uploaded_by=user.id,
-    )
-    db.add(a)
-    await db.flush()
-    await log_activity(
-        db, user.org_id, entity_type, entity_id, "attachment_added", user.id,
-        {"filename": filename},
-    )
-    try:
-        result = (await _serialize(db, user.org_id, [a]))[0]
-        await db.commit()  # visible before the client refetches
-    except BaseException:
-        # The row won't land — don't leave orphaned bytes behind.
-        await _discard(dest)
-        raise
-    _uploads.record(rate_keys)
+        filename = sanitize_filename(file.filename or "")
+        stored_name = make_stored_name(filename)
+        await anyio.to_thread.run_sync(
+            partial(os.makedirs, settings.attachments_dir, exist_ok=True)
+        )
+        dest = attachment_path(stored_name)
+
+        # Everything from the first byte on disk to the commit sits inside one
+        # handler: ANY failure — the cap, a full disk, flush, log_activity,
+        # serialization, the commit, a cancelled request — removes the file.
+        # The row won't land, so the bytes must not stay behind uncounted.
+        try:
+            # Stream to disk with a running byte count — never the whole body
+            # in memory. The disk writes themselves block, so they run on a
+            # worker thread — a 25 MB upload to a slow volume must not stall
+            # every other request.
+            size = 0
+            out = await anyio.to_thread.run_sync(partial(open, dest, "wb"))
+            try:
+                while chunk := await file.read(_CHUNK):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise _too_large_error()
+                    if size > reserved:
+                        # More arrived than the parser said — can't happen
+                        # with a sized part, but never write past the promise.
+                        raise _quota_error()
+                    await anyio.to_thread.run_sync(out.write, chunk)
+            finally:
+                await anyio.to_thread.run_sync(out.close)
+
+            a = Attachment(
+                org_id=user.org_id,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                filename=filename,
+                content_type=(file.content_type or "application/octet-stream")[:255],
+                size_bytes=size,
+                stored_name=stored_name,
+                uploaded_by=user.id,
+            )
+            db.add(a)
+            await db.flush()
+            await log_activity(
+                db, user.org_id, entity_type, entity_id, "attachment_added", user.id,
+                {"filename": filename},
+            )
+            result = (await _serialize(db, user.org_id, [a]))[0]
+            async with _ledger_lock:
+                await db.commit()  # visible before the client refetches
+                # The committed row carries the bytes from here on.
+                _release_bytes(user.org_id, reserved)
+                reserved = 0
+            committed = True
+        except BaseException:
+            await _discard(dest)
+            raise
+    finally:
+        _release_bytes(user.org_id, reserved)
+        if not committed:
+            # The limiter counts accepted uploads — hand the slot back.
+            _uploads.release(rate_keys, slot)
     return result
 
 

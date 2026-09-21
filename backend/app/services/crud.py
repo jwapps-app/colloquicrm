@@ -27,11 +27,7 @@ from app.models import (
     User,
     utcnow,
 )
-from app.services.attachments import (
-    collect_stored_names,
-    delete_attachment_rows,
-    unlink_stored,
-)
+from app.services.attachments import unlink_stored
 from app.services.common import (
     add_tags,
     cleanup_entity,
@@ -41,6 +37,7 @@ from app.services.common import (
     get_tag_maps,
     log_activity,
     prune_orphan_tags,
+    remove_entity_satellites,
     row_to_dict,
     set_custom_fields,
     set_tags,
@@ -84,7 +81,7 @@ def register_crud(
     required_any: list[str] | None = None,
     has_extras: bool = True,
     enrich: Enricher | None = None,
-    after_create: Callable | None = None,  # (obj, actor) — post-flush, pre-commit
+    after_create: Callable | None = None,  # (db, obj, actor) or legacy (obj, actor) — post-flush, pre-commit
     after_update: Callable | None = None,  # (db, obj, old_values, actor) — old_values = changed fields' prior values; runs pre-commit
     merge_refs: list[tuple] | None = None,  # (Model, fk attr name) to re-point on merge
     after_merge: Callable | None = None,
@@ -93,11 +90,16 @@ def register_crud(
     fk_checks: dict | None = None,  # {column_name: referenced Model} — must be in-org
     body_validator: Callable | None = None,  # async (db, user, data, current) -> None, on create/update; current = existing obj on update, None on create
     enable_merge: bool = True,  # register POST /{id}/merge (off for entities nothing merges)
+    ci_filters: set[str] | None = None,  # filterable names compared case-insensitively
 ) -> None:
     """Wires list/create/get/patch/delete endpoints for one entity onto a
     router. body_model serves both create and PATCH (exclude_unset)."""
 
     soft_delete = hasattr(model, "deleted_at")
+    # Hooks written before after_create grew a db argument take (obj, actor).
+    after_create_wants_db = (
+        after_create is not None and len(inspect.signature(after_create).parameters) >= 3
+    )
 
     def _active(stmt: Select) -> Select:
         # Trashed records are invisible everywhere except the trash view.
@@ -206,7 +208,12 @@ def register_crud(
                     val = uuid.UUID(raw)
                 except ValueError:
                     raise HTTPException(status_code=400, detail=f"Invalid {name}")
-            stmt = stmt.where(col == val)
+            if ci_filters and name in ci_filters:
+                # ?status=new and ?status=New are the same filter, whatever
+                # casing older rows or another client happen to use.
+                stmt = stmt.where(func.lower(col) == str(val).strip().lower())
+            else:
+                stmt = stmt.where(col == val)
 
         tag_name = request.query_params.get("tag")
         if tag_name and has_extras:
@@ -225,13 +232,18 @@ def register_crud(
             stmt = extra_filter(request, user, stmt)
         return stmt
 
-    def sort_clause(sort: str | None, order: str):
+    def sort_clause(sort: str | None, order: str) -> list:
+        # An unknown sort key falls back to the default, silently — clients
+        # (the iOS app among them) rely on that rather than on a 4xx.
         sort_col = sortable.get(sort or default_sort) or sortable[default_sort]
         clause = sort_col.desc() if order == "desc" else sort_col.asc()
         # Records without a value ("never contacted", no close date) belong at
         # the bottom whichever way you sort — Postgres defaults NULLs to the
-        # top on DESC.
-        return clause.nulls_last()
+        # top on DESC. The id tiebreaker makes the order total: without it,
+        # rows that tie on the sort column (same last name, same status, all
+        # the NULLs) can swap between two OFFSET pages, so paging skips some
+        # and repeats others.
+        return [clause.nulls_last(), model.id.asc()]
 
     @router.get("")
     async def list_items(
@@ -252,7 +264,7 @@ def register_crud(
             await db.execute(select(func.count()).select_from(stmt.subquery()))
         ).scalar_one()
 
-        stmt = stmt.order_by(sort_clause(sort, order))
+        stmt = stmt.order_by(*sort_clause(sort, order))
         stmt = stmt.offset((page - 1) * page_size).limit(page_size)
         items = (await db.execute(stmt)).scalars().all()
 
@@ -277,15 +289,21 @@ def register_crud(
         batch at a time — a whole-book export is 100k rows, and holding every
         ORM object, its dict and the finished text at once was most of the
         container's memory."""
-        stmt = filtered_stmt(request, user, q).order_by(sort_clause(sort, order))
+        stmt = filtered_stmt(request, user, q).order_by(*sort_clause(sort, order))
         # Ids only, in export order: a couple of MB at the cap, and the anchor
         # for pulling rows in bounded batches while keeping the sort exact.
-        ids = [rid for (rid,) in await db.execute(stmt.with_only_columns(model.id))]
-        total = len(ids)
-        if total > EXPORT_MAX_ROWS:
+        # One id past the cap is all it takes to know the export is too big —
+        # never pull a million ids just to refuse them.
+        ids = [
+            rid
+            for (rid,) in await db.execute(
+                stmt.with_only_columns(model.id).limit(EXPORT_MAX_ROWS + 1)
+            )
+        ]
+        if len(ids) > EXPORT_MAX_ROWS:
             raise HTTPException(
                 status_code=413,
-                detail=f"Export too large ({total} rows; {EXPORT_MAX_ROWS} max). Narrow the filters.",
+                detail=f"Export too large (more than {EXPORT_MAX_ROWS} rows). Narrow the filters.",
             )
 
         cf_defs = []
@@ -313,8 +331,12 @@ def register_crud(
             return [attr for attr in sample.keys() if attr not in ("tags", "custom_fields")]
 
         def write_header(writer, base_cols: list[str]) -> None:
+            # Custom-field names are user data too (an admin or an import can
+            # name a field "=1+1") — header cells get the same treatment.
             writer.writerow(
-                base_cols + (["tags"] if has_extras else []) + [d.name for d in cf_defs]
+                [sanitize(c) for c in base_cols]
+                + (["tags"] if has_extras else [])
+                + [sanitize(d.name) for d in cf_defs]
             )
 
         async def body():
@@ -411,17 +433,11 @@ def register_crud(
                         .values(deleted_at=utcnow())
                     )
                     continue
-                for sat, type_col, id_col in (
-                    (EntityTag, EntityTag.entity_type, EntityTag.entity_id),
-                    (CustomFieldValue, CustomFieldValue.entity_type, CustomFieldValue.entity_id),
-                    (Note, Note.entity_type, Note.entity_id),
-                ):
-                    await db.execute(
-                        delete(sat).where(type_col == entity_type, id_col.in_(chunk))
-                    )
+                # Same satellite policy as every other permanent delete.
                 # Attachment files only go once the delete commits below.
-                stored_to_unlink.extend(await collect_stored_names(db, entity_type, chunk))
-                await delete_attachment_rows(db, entity_type, chunk)
+                stored_to_unlink.extend(
+                    await remove_entity_satellites(db, entity_type, chunk)
+                )
                 await db.execute(
                     delete(model).where(model.org_id == user.org_id, model.id.in_(chunk))
                 )
@@ -502,7 +518,7 @@ def register_crud(
         await apply_extras(db, user, obj, tags, cfs)
         await log_activity(db, user.org_id, entity_type, obj.id, "created", user.id)
         if after_create is not None:
-            r = after_create(obj, user)
+            r = after_create(db, obj, user) if after_create_wants_db else after_create(obj, user)
             if inspect.iscoroutine(r):
                 await r
         result = (await serialize(db, user, [obj]))[0]
@@ -614,23 +630,30 @@ def register_crud(
             user: User = Depends(get_current_user),
             db: AsyncSession = Depends(get_db),
         ):
-            obj = (
+            # One conditional UPDATE, not read-then-write: the trash purge
+            # deletes with the mirror-image condition, so whichever statement
+            # gets the row first wins cleanly — a restore that reports success
+            # has a record, and one that lost the race is an honest 404.
+            values = {"deleted_at": None}
+            if hasattr(model, "updated_at"):
+                values["updated_at"] = utcnow()
+            restored = (
                 await db.execute(
-                    select(model).where(
+                    update(model)
+                    .where(
                         model.id == item_id,
                         model.org_id == user.org_id,
                         model.deleted_at.is_not(None),
                     )
+                    .values(**values)
+                    .returning(model.id)
                 )
             ).scalar_one_or_none()
-            if obj is None:
+            if restored is None:
                 raise HTTPException(status_code=404, detail="Not in trash")
-            obj.deleted_at = None
-            if hasattr(obj, "updated_at"):
-                obj.updated_at = utcnow()
-            await log_activity(db, user.org_id, entity_type, obj.id, "restored", user.id)
+            await log_activity(db, user.org_id, entity_type, restored, "restored", user.id)
             await db.commit()
-            return {"id": str(obj.id), "restored": True}
+            return {"id": str(restored), "restored": True}
 
     if not enable_merge:
         # Some entities (tasks) have nothing to merge — leave the

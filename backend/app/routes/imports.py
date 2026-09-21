@@ -1,5 +1,6 @@
 import uuid
 
+import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
@@ -12,7 +13,13 @@ from app.deps import get_current_user
 from app.models import ImportJob, User
 from app.schemas import ImportCommitIn
 from app.services.background import spawn
-from app.services.importer import IMPORT_TYPES, find_duplicates, parse_csv, run_import_job
+from app.services.importer import (
+    IMPORT_TYPES,
+    apply_definition_policy,
+    find_duplicates,
+    parse_csv,
+    run_import_job,
+)
 
 router = APIRouter()
 
@@ -25,7 +32,9 @@ MAX_COMMIT_ROWS = 50_000
 
 def _body_too_large(request: Request) -> bool:
     # Same shape as the public-form check: decide on Content-Length before
-    # the body is read, so an oversized payload never gets parsed.
+    # the body is read, so an oversized payload never gets parsed. A body
+    # with NO Content-Length (chunked) is counted as it streams by the
+    # body-limit middleware in main.py, which 413s it at the same bound.
     raw = request.headers.get("content-length")
     if raw is None:
         return False
@@ -51,14 +60,19 @@ async def preview_import(
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (50MB max)")
-    rows, unmapped = parse_csv(content, type)
+    # Decoding and parsing up to 50 MB of CSV is seconds of pure CPU — on a
+    # worker thread, so every other request isn't stalled behind it.
+    rows, unmapped = await anyio.to_thread.run_sync(parse_csv, content, type)
     if not rows:
         raise HTTPException(status_code=422, detail="No data rows found in the file")
     duplicates_found = await find_duplicates(db, user.org_id, type, rows)
+    # unmapped_headers (kept as custom fields) plus discarded_headers /
+    # discarded_pipelines: what a non-admin's import will NOT bring in.
+    header_report = await apply_definition_policy(db, user, type, rows, unmapped)
     return {
         "type": type,
         "total": len(rows),
-        "unmapped_headers": unmapped,
+        **header_report,
         "duplicates_found": duplicates_found,
         "rows": rows,
     }

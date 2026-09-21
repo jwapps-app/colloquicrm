@@ -17,10 +17,22 @@ from app.services.colloqui import (
     ensure_workspace,
     get_integration,
     is_enabled,
+    leave_space,
     validate_base_url,
 )
 
 router = APIRouter()
+
+
+class ConnectIn(ColloquiConnectIn):
+    # Blank = "keep the stored key": the settings form never gets the saved
+    # key back, so re-saving a configured integration arrives with it empty.
+    api_key: str = ""
+
+
+class LinkIn(ColloquiLinkIn):
+    # The CRM user being mapped; omitted = the admin themself.
+    user_id: uuid.UUID | None = None
 
 
 def _status(row: ColloquiIntegration | None, user: User) -> dict:
@@ -47,7 +59,7 @@ async def status(user: User = Depends(get_current_user), db: AsyncSession = Depe
 
 @router.post("/connect")
 async def connect(
-    body: ColloquiConnectIn,
+    body: ConnectIn,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -55,7 +67,21 @@ async def connect(
         base_url = validate_base_url(body.base_url)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    client = ColloquiClient(base_url, body.api_key.strip())
+    row = await get_integration(db, admin.org_id)
+    api_key = body.api_key.strip()
+    if not api_key:
+        # Unchanged secret: reuse what's stored — but only against the server
+        # it was issued for. Sending the saved key to a newly typed URL would
+        # hand it to whoever runs that host.
+        if row is None or not row.api_key:
+            raise HTTPException(status_code=422, detail="An API key is required")
+        if row.base_url != base_url:
+            raise HTTPException(
+                status_code=422,
+                detail="Enter the API key for the new server — the saved key belongs to the old one",
+            )
+        api_key = row.api_key
+    client = ColloquiClient(base_url, api_key)
     bootstrap_note = None
     try:
         await client.users()  # validates reachability + key
@@ -68,12 +94,11 @@ async def connect(
                 "pasted was used once and NOT stored — you can revoke it in Colloqui."
             )
         else:
-            stored_key = body.api_key.strip()
+            stored_key = api_key
             space_id, channel_id = await ensure_workspace(client)
     except ColloquiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    row = await get_integration(db, admin.org_id)
     if row is None:
         row = ColloquiIntegration(org_id=admin.org_id, base_url=base_url, api_key=stored_key)
         db.add(row)
@@ -163,12 +188,36 @@ async def colloqui_users(
     ]
 
 
+async def _link_target(db: AsyncSession, admin: User, user_id: uuid.UUID | None) -> User:
+    """The CRM user being mapped — the caller by default, otherwise a member
+    of the same org (link additionally insists they're active)."""
+    if user_id is None or user_id == admin.id:
+        return admin
+    target = (
+        await db.execute(select(User).where(User.id == user_id, User.org_id == admin.org_id))
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return target
+
+
 @router.post("/link")
 async def link_account(
-    body: ColloquiLinkIn,
+    body: LinkIn,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Map a CRM user to a chat account. Admin-only: nothing here proves the
+    caller controls the remote account, and linking both routes that person's
+    task reminders to it and invites it into the CRM space — a member could
+    otherwise point either at any account on the chat server."""
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=403, detail="Ask an administrator to link your Colloqui account"
+        )
+    target = await _link_target(db, user, body.user_id)
+    if not target.is_active:
+        raise HTTPException(status_code=422, detail="That user is deactivated")
     row = await get_integration(db, user.org_id)
     if not row or not row.base_url or not row.api_key:
         raise HTTPException(status_code=400, detail="Colloqui is not configured")
@@ -183,8 +232,10 @@ async def link_account(
         raise HTTPException(status_code=502, detail=str(exc))
     if remote is None:
         raise HTTPException(status_code=404, detail="That user does not exist on the Colloqui server")
-    user.colloqui_user_id = body.colloqui_user_id
-    user.colloqui_username = body.colloqui_username or remote["username"]
+    target.colloqui_user_id = body.colloqui_user_id
+    # Always the server's own record — a client-supplied username is ignored
+    # (it ends up in @mentions, and must match the id it sits beside).
+    target.colloqui_username = remote["username"]
     # Membership is what makes them see #tasks and receive its notifications.
     if is_enabled(row):
         try:
@@ -195,15 +246,24 @@ async def link_account(
             )
     await db.commit()  # visible before the client refetches
     return {
-        "colloqui_user_id": str(user.colloqui_user_id),
-        "colloqui_username": user.colloqui_username,
+        "colloqui_user_id": str(target.colloqui_user_id),
+        "colloqui_username": target.colloqui_username,
     }
 
 
 @router.delete("/link", status_code=204)
 async def unlink_account(
-    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    user_id: uuid.UUID | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    user.colloqui_user_id = None
-    user.colloqui_username = None
+    """Anyone may drop their OWN link (it only ever reduces what reaches
+    them); unlinking somebody else (?user_id=) is an admin action."""
+    if user_id is not None and user_id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin required")
+    target = await _link_target(db, user, user_id)
+    leaving = target.colloqui_user_id
+    target.colloqui_user_id = None
+    target.colloqui_username = None
     await db.commit()  # visible before the client refetches
+    await leave_space(db, user.org_id, leaving)

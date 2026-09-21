@@ -8,8 +8,10 @@ RUN npm run build
 FROM python:3.13-slim
 WORKDIR /srv
 
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the pinned, tested dependency set — requirements.txt stays the
+# human-edited source of truth; the lock is what production actually runs.
+COPY backend/requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY backend/app ./app
 COPY backend/alembic ./alembic

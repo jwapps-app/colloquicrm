@@ -62,6 +62,9 @@ def _rate_limited(request: Request) -> bool:
 def _body_too_large(request: Request) -> bool:
     # Reject before request.form() ever reads the stream: a lead form is a
     # handful of short text fields, so anything over the byte bound is abuse.
+    # This is the friendly page for an honest Content-Length; a body that
+    # hides its size (chunked) or lies about it is counted as it streams by
+    # the body-limit middleware in main.py and cut off at the same bound.
     raw = request.headers.get("content-length")
     if raw is None:
         return False

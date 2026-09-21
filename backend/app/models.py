@@ -244,6 +244,10 @@ class Opportunity(Base):
     )
     source: Mapped[str | None] = mapped_column(String(120))
     loss_reason: Mapped[str | None] = mapped_column(String(255))
+    # When the deal left "open" (won/lost/abandoned); cleared on reopen. Sales
+    # reporting dates a win/loss by this, never by updated_at — editing a
+    # closed deal must not move it into a different period.
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
@@ -339,6 +343,36 @@ class GoogleAccount(Base):
     # length of that list, stamped when a walk starts so status polls can
     # report progress without rebuilding the org's contact map each time
     gmail_backfill_total: Mapped[int | None] = mapped_column(Integer)
+    # The walk's real position: the last address (in sorted order) whose
+    # history was searched to completion. An index alone drifts whenever a
+    # contact is added or removed mid-walk; the integer cursor above is kept
+    # as the progress figure the status endpoint reports.
+    gmail_backfill_after: Mapped[str | None] = mapped_column(String(320))
+    # "<query fingerprint>:<Gmail pageToken>" — where inside the current
+    # address group's search results the walk stopped, so a bounded pass
+    # resumes mid-search instead of dropping whatever lay past its cap.
+    gmail_backfill_page_token: Mapped[str | None] = mapped_column(String(1000))
+
+
+class GmailSyncFailure(Base):
+    """Backfill/sync work that failed and is owed a retry: a Gmail message
+    that would not fetch (kind=message, key=gmail id) or an address whose
+    search errored (kind=address). Checkpoints only move past work that is
+    stored, deliberately ignored, or recorded here. After a bounded number
+    of attempts the row is kept as given_up so the gap stays visible."""
+
+    __tablename__ = "gmail_sync_failures"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("google_accounts.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(String(10), primary_key=True)  # message | address
+    key: Mapped[str] = mapped_column(String(320), primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    given_up: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_error: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class CalendarEvent(Base):

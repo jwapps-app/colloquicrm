@@ -34,6 +34,25 @@ First visit walks through creating the initial admin account.
 
 Postgres via compose instead: `docker compose up` (API on :8010).
 
+## Running the tests
+
+The backend suite needs a real PostgreSQL (the app uses Postgres-only SQL).
+It creates and migrates its own `crm_test` database, and never talks to the
+network — push, chat, Google and RingCentral are all faked.
+
+```
+docker run -d --rm --name crm-test-pg -e POSTGRES_PASSWORD=test -p 5494:5432 postgres:16
+cd backend
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest
+docker stop crm-test-pg
+```
+
+Point it at another server with
+`TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host:port/dbname` — that
+database is dropped and recreated on every run. `requirements.lock` pins the
+exact versions the suite was last run against (`pip install -r requirements.lock`).
+
 ## API
 
 Everything lives under `/api/v1`; interactive docs at `/docs`. Auth is a
@@ -81,10 +100,12 @@ first, then set the stack env:
 
 | Variable | Example |
 |---|---|
-| `POSTGRES_PASSWORD` | strong random |
+| `POSTGRES_PASSWORD` | strong random, **URL-safe** — letters, digits, `-` `_` `.` `~` (e.g. `openssl rand -hex 24`). Compose pastes it straight into `DATABASE_URL`, where `@ : / ? # %` would be read as URL syntax |
 | `SECRET_KEY` | `openssl rand -hex 32` |
 | `APP_URL` | `https://crm.example.com` |
 | `APP_PORT` | `3310` (host port) |
+| `APP_BIND` | host address the port is published on; default `0.0.0.0` (all interfaces). `127.0.0.1` when a proxy on the same host is the only way in (optional) |
+| `TRUSTED_PROXY_IPS` | default `172.16.0.0/12`; narrow to your proxy's address, e.g. `172.20.0.5/32` (optional — see below) |
 | `APP_NAME` | display name |
 | `BACKUP_RETENTION_DAYS` | `14` (optional) |
 
@@ -103,6 +124,22 @@ narrow as you can: docker's published port makes *every* direct connection
 look like it came from the bridge gateway, so if the port is reachable
 without the proxy, direct clients fall inside that range too.
 
+Put plainly: **a published port plus broad proxy trust lets a direct caller
+spoof their client address.** Anyone who can reach `<NAS-IP>:<APP_PORT>`
+without going through the proxy can send their own `cf-connecting-ip`, pick a
+fresh "address" per request, and walk around the per-IP login and form
+throttles (the per-email login lock still holds). The defaults stay permissive
+so existing stacks keep working; close the gap on one side or the other:
+
+- **Proxy on the same host** (cloudflared/nginx container or service on the
+  NAS): set `APP_BIND=127.0.0.1` so the port is published on loopback only and
+  the proxy is the sole way in. Point the proxy at `127.0.0.1:<APP_PORT>` (or
+  put both on one docker network and address the `api` service directly).
+- **Either way**, narrow `TRUSTED_PROXY_IPS` from the whole docker range to
+  the specific proxy address — the cloudflared container's IP as a `/32`, or
+  your reverse proxy's LAN address. A spoofed header from any other peer is
+  then ignored.
+
 **Finish setup before exposing the hostname.** The first visitor to a fresh
 instance gets the "create admin account" screen — do that yourself before
 wiring up the public tunnel/proxy, or anyone who finds the URL first owns the
@@ -115,7 +152,7 @@ file already sets the required ones.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DATABASE_URL` | sqlite dev db | asyncpg format: `postgresql+asyncpg://user:pass@host:5432/db` |
+| `DATABASE_URL` | local Postgres (`postgresql+asyncpg://app:app@localhost:5432/app`) | asyncpg format: `postgresql+asyncpg://user:pass@host:5432/db`. Percent-encode reserved characters in the password (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`). For a no-services dev run use SQLite: `sqlite+aiosqlite:///./dev.db` |
 | `SECRET_KEY` | dev placeholder | production refuses to boot with a weak/placeholder value |
 | `ENVIRONMENT` | `development` | `production` arms the SECRET_KEY check |
 | `APP_NAME` | `Colloqui CRM` | display name everywhere, incl. the TOTP issuer |
@@ -134,10 +171,10 @@ file already sets the required ones.
 | `TRUSTED_PROXY_IPS` | `127.0.0.1/32,::1/128` | proxy IPs/CIDRs trusted to set `cf-connecting-ip`; any other peer is keyed by its own address for rate limiting. Behind cloudflared/a reverse proxy set this to the proxy's network (the compose files use `172.16.0.0/12`) — see "Behind a proxy" above |
 | `TASK_REMINDER_LEAD_MINUTES` | `15` | default reminder lead before a task's due time when no explicit reminder is set |
 | `ATTACHMENTS_DIR` | `./data/attachments` | where uploaded file attachments are stored on disk; both compose files mount a volume at `/data/attachments` and point this there |
-| `ATTACHMENT_MAX_MB` | `25` | per-file upload size cap; larger uploads are rejected with 413 |
+| `ATTACHMENT_MAX_MB` | `25` | per-file upload size cap; larger uploads are rejected with 413. If a proxy in front has its own body limit, keep it at or above this (+1 MB of multipart framing) |
 | `ATTACHMENT_QUOTA_MB` | `5120` | whole-org attachment budget (sum of stored files); an upload that would exceed it is rejected with 507. Uploads are also limited to 60 per user per hour |
 | `FORM_DAILY_SUBMISSION_CAP` | `500` | max public lead-form submissions per form per UTC day |
-| `FORM_MAX_BODY_BYTES` | `65536` | max public lead-form request body |
+| `FORM_MAX_BODY_BYTES` | `65536` | max public lead-form request body, counted on the bytes actually received (chunked requests included) |
 
 ### Upgrades
 
@@ -152,6 +189,10 @@ The `backup` sidecar writes a nightly `pg_dump -Fc` to
 `/volume1/docker/colloquicrm/backups` (`app-YYYY-MM-DD.dump`), prunes past
 `BACKUP_RETENTION_DAYS`, and touches `backups/last-success` on every good run —
 if that file goes stale, backups are failing (see `backups/failures.log`).
+Each dump is written under a temporary name and renamed into place only when
+`pg_dump` succeeds, so a failed re-run never clobbers that day's good dump.
+**The sidecar backs up the database only** — uploaded files live in the
+attachments directory and need their own copy job (below).
 
 Dumps contain **all CRM data**. Integration credentials (Google refresh
 tokens, RingCentral JWT, Colloqui API key) and TOTP secrets are stored
@@ -164,7 +205,12 @@ database itself.
 File attachments are **not** in the database — only their metadata is. The
 bytes live in the attachments volume (`/volume1/docker/colloquicrm/attachments`
 on the NAS stack), so include that directory in backups alongside the dumps; a
-restore without it brings back attachment rows whose files are gone.
+restore without it brings back attachment rows whose files are gone. Copy it
+on the same schedule as the dumps (NAS snapshot/Hyper Backup, `rsync`, …), and
+restore both from the same night: a stray file with no matching row (a crash
+mid-upload) is deleted by the app's daily cleanup once it is over an hour old.
+The cleanup stands down when most files have no row — a restore in progress —
+but restore the database before starting the api container all the same.
 
 Restore (into a scratch or fresh stack):
 

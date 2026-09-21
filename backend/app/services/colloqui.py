@@ -144,6 +144,17 @@ class ColloquiClient:
             if "409" not in str(exc):
                 raise
 
+    async def remove_space_member(self, space_id: str, user_id: str) -> None:
+        """DELETE /spaces/{id}/members/{user_id} — needs the service user to
+        be a manager of the space (bootstrap makes it one). The chat server
+        also drops their membership of every channel in the space."""
+        try:
+            await self._request("DELETE", f"/spaces/{space_id}/members/{user_id}")
+        except ColloquiError as exc:
+            # Not a member (any more) is fine; anything else propagates.
+            if "404" not in str(exc):
+                raise
+
     async def is_admin_key(self) -> bool:
         """A key bound to an admin user can reach the admin API."""
         try:
@@ -276,6 +287,27 @@ def _client_for(row: ColloquiIntegration) -> ColloquiClient:
     return ColloquiClient(row.base_url, row.api_key)
 
 
+async def leave_space(db, org_id: uuid.UUID, colloqui_user_id) -> None:
+    """Best-effort: take an unlinked or deactivated user's chat account out of
+    the CRM space so they stop seeing #tasks. Call it AFTER the CRM-side
+    change is committed — chat being down must never undo or fail that, so a
+    miss is only logged, for an admin to finish by hand in Colloqui."""
+    if colloqui_user_id is None:
+        return
+    row = await get_integration(db, org_id)
+    if not is_enabled(row) or not row.space_id:
+        return
+    try:
+        await _client_for(row).remove_space_member(str(row.space_id), str(colloqui_user_id))
+    except ColloquiError as exc:
+        log.warning(
+            "Could not remove Colloqui user %s from the CRM space (%s) — "
+            "remove them in Colloqui manually",
+            colloqui_user_id,
+            exc,
+        )
+
+
 def _task_link() -> str:
     return f"{settings.app_url.rstrip('/')}/tasks"
 
@@ -304,6 +336,18 @@ def schedule(coro) -> None:
             log.exception("Colloqui notification failed")
 
     spawn(runner())
+
+
+async def _active_user(db, user_id: uuid.UUID | None) -> User | None:
+    """The user a personal notification may go to — None for a deactivated
+    account. Former staff must not keep getting task names over push or DM
+    just because old tasks still carry their id; callers treat that exactly
+    like an unassigned task."""
+    if user_id is None:
+        return None
+    return (
+        await db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
+    ).scalar_one_or_none()
 
 
 def _wants_push(assignee: User | None) -> bool:
@@ -345,21 +389,15 @@ async def notify_task_event(
     assignee_id: uuid.UUID | None = None,
 ) -> None:
     """assignee_id is the assignee AT EVENT TIME, captured by the caller — the
-    task row is reloaded after a delay, and trusting its current assignee lets
+    task row is reloaded in a fresh session after the commit, and trusting its current assignee lets
     a create-then-assign race double-notify."""
-    # Runs outside the request's transaction; give the commit a moment to land.
-    await asyncio.sleep(1.0)
     async with SessionLocal() as db:
         task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
         if task is None:
             return
         row = await get_integration(db, task.org_id)
         chat_enabled = is_enabled(row)
-        assignee = None
-        if assignee_id:
-            assignee = (
-                await db.execute(select(User).where(User.id == assignee_id))
-            ).scalar_one_or_none()
+        assignee = await _active_user(db, assignee_id)
         wants_push = _wants_push(assignee)
 
         if event == "created":
@@ -410,11 +448,7 @@ async def _send_due_reminder(db, row: ColloquiIntegration | None, task: Task) ->
     whether it was delivered anywhere (False = leave it pending for the next
     pass, e.g. push-only user whose device hasn't registered yet and no chat
     to fall back to)."""
-    assignee = None
-    if task.assignee_id:
-        assignee = (
-            await db.execute(select(User).where(User.id == task.assignee_id))
-        ).scalar_one_or_none()
+    assignee = await _active_user(db, task.assignee_id)
     if _wants_push(assignee):
         if await _push_to_assignee(db, assignee, task, "Task reminder", "task_due"):
             return True
@@ -453,9 +487,14 @@ async def _reminder_channel_exists(db, row: ColloquiIntegration | None, task: Ta
         return True
     if not push.is_configured() or task.assignee_id is None:
         return False
+    # Active assignees only — push.send_to_user refuses a deactivated account,
+    # so a leftover device row is not a channel (it would retry every pass).
     return (
         await db.execute(
-            select(DeviceToken.id).where(DeviceToken.user_id == task.assignee_id).limit(1)
+            select(DeviceToken.id)
+            .join(User, DeviceToken.user_id == User.id)
+            .where(DeviceToken.user_id == task.assignee_id, User.is_active.is_(True))
+            .limit(1)
         )
     ).first() is not None
 

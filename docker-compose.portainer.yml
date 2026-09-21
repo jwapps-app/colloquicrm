@@ -21,7 +21,11 @@ services:
     image: ghcr.io/jwapps-app/colloquicrm:latest
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-3310}:8000"
+      # Published on every host interface by default. When the reverse proxy /
+      # cloudflared runs on this same host, set APP_BIND=127.0.0.1 (or drop
+      # the port and share a docker network) so the proxy is the ONLY way in —
+      # see TRUSTED_PROXY_IPS below for why that matters.
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-3310}:8000"
     environment:
       ENVIRONMENT: production
       APP_NAME: ${APP_NAME:-Colloqui CRM}
@@ -37,8 +41,14 @@ services:
       # bridge and user-defined networks live in 172.16.0.0/12) — without it
       # the header is ignored and every user behind the tunnel shares one
       # login/form throttle bucket. Keep it as narrow as the proxy's network:
-      # any peer inside it can claim any client address.
-      TRUSTED_PROXY_IPS: 172.16.0.0/12
+      # any peer inside it can claim any client address — and a DIRECT
+      # connection through the published port arrives from the docker bridge
+      # gateway, which is inside this default range. So with the port
+      # reachable from the LAN and this broad trust, a direct caller can spoof
+      # cf-connecting-ip and sidestep the per-IP throttles. Fix one side: bind
+      # the port to loopback (APP_BIND=127.0.0.1) or set this to the proxy
+      # container's exact address (e.g. 172.20.0.5/32).
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.16.0.0/12}
     volumes:
       - /volume1/docker/colloquicrm/attachments:/data/attachments
     mem_limit: 512m
@@ -63,10 +73,16 @@ services:
       - -c
       - |
         while true; do
-          if pg_dump -Fc -f "/backups/app-$$(date +%F).dump"; then
+          # Dump to a temp name and move it into place only on success: a
+          # restart re-runs on the same date, and a failed dump written
+          # straight to app-DATE.dump would truncate that day's good one.
+          # (*.dump.partial never matches the retention find below.)
+          target="/backups/app-$$(date +%F).dump"
+          if pg_dump -Fc -f "$${target}.partial" && mv -f "$${target}.partial" "$${target}"; then
             find /backups -name '*.dump' -mtime +$${RETENTION_DAYS} -delete
             date > /backups/last-success
           else
+            rm -f "$${target}.partial"
             echo "BACKUP FAILED $$(date)" | tee -a /backups/failures.log
           fi
           sleep 86400

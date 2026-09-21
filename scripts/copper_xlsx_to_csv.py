@@ -3,7 +3,6 @@ Keeps only columns the CRM importer consumes; drops the 200+ padded
 Website/Social slots and Copper-internal ids."""
 import csv
 import re
-import sys
 from datetime import datetime, date
 from pathlib import Path
 

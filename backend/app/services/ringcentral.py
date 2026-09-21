@@ -104,6 +104,36 @@ async def _get_json(url: str, access: str, params: dict | None = None) -> dict:
     return resp.json()
 
 
+async def _release_db(db) -> None:
+    """End the session's transaction before waiting on RingCentral — the
+    same rule the Google sync follows. A call-log walk is many round-trips;
+    none of them may pin a pooled connection or hold a snapshot open. What
+    this commits is only finished work: whole pages, deduped on rc_id if the
+    walk is repeated."""
+    if db.in_transaction():
+        await db.commit()
+
+
+async def request_token(client_id: str, client_secret: str, jwt: str) -> dict:
+    """The JWT-bearer token exchange. Pure network — takes the credentials
+    themselves so the connect route can validate them before storing any."""
+    tokens = await _post_form(
+        f"{settings.ringcentral_base}/restapi/oauth/token",
+        {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": jwt,
+        },
+        auth=(client_id, client_secret),
+    )
+    if not tokens.get("access_token"):
+        raise RingCentralError("RingCentral returned no access token")
+    return tokens
+
+
+def token_expiry(tokens: dict) -> datetime:
+    return utcnow() + timedelta(seconds=int(tokens.get("expires_in", 3600)))
+
+
 async def ensure_access_token(db, cfg: RingCentralIntegration) -> str:
     if cfg.access_token and cfg.access_expires_at:
         expires = cfg.access_expires_at
@@ -111,16 +141,10 @@ async def ensure_access_token(db, cfg: RingCentralIntegration) -> str:
             expires = expires.replace(tzinfo=timezone.utc)
         if expires > utcnow() + timedelta(minutes=2):
             return cfg.access_token
-    tokens = await _post_form(
-        f"{settings.ringcentral_base}/restapi/oauth/token",
-        {
-            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-            "assertion": cfg.jwt,
-        },
-        auth=(cfg.client_id, cfg.client_secret),
-    )
+    await _release_db(db)  # the token round-trip must not sit inside a transaction
+    tokens = await request_token(cfg.client_id, cfg.client_secret, cfg.jwt)
     cfg.access_token = tokens["access_token"]
-    cfg.access_expires_at = utcnow() + timedelta(seconds=int(tokens.get("expires_in", 3600)))
+    cfg.access_expires_at = token_expiry(tokens)
     await db.flush()
     return cfg.access_token
 
@@ -201,18 +225,43 @@ def _sync_window_start(cfg: RingCentralIntegration) -> str:
     return (last - timedelta(hours=24)).isoformat()
 
 
-async def sync_calls(
-    db, cfg: RingCentralIntegration, access: str, phone_map: dict, touched: set[str],
-    date_from: str,
-) -> int:
+async def _walk_pages(db, access: str, url: str, params: dict, store_page) -> int:
+    """Fetch a page, write a page. The fetch happens with no transaction
+    open; the write for one page (at most 250 records, plus the metrics of
+    the people it touched) is committed before the next page is requested."""
     stored = 0
     page = 1
     while True:
-        params = {"view": "Simple", "perPage": 250, "page": page, "dateFrom": date_from}
-        data = await _get_json(
-            f"{settings.ringcentral_base}/restapi/v1.0/account/~/call-log", access, params
-        )
-        records = data.get("records", [])
+        await _release_db(db)
+        data = await _get_json(url, access, {**params, "page": page})
+        stored += await store_page(data.get("records", []))
+        paging = data.get("paging") or {}
+        if page >= int(paging.get("totalPages") or 1):
+            break
+        page += 1
+    return stored
+
+
+async def _recompute_touched(db, cfg: RingCentralIntegration, phone_map: dict, touched: set[str]) -> None:
+    # Only people with NEW events on this page — recomputing everyone with
+    # any history burned thousands of queries every cycle once real call logs
+    # existed. Same transaction as the rows, so a committed page never leaves
+    # a count behind it.
+    person_ids = {
+        phone_map[n][1] for n in touched if n in phone_map and phone_map[n][0] == "person"
+    }
+    if person_ids:
+        from app.services.interactions import update_person_aggregates
+
+        await update_person_aggregates(db, cfg.org_id, person_ids)
+
+
+async def sync_calls(
+    db, cfg: RingCentralIntegration, access: str, phone_map: dict, date_from: str
+) -> int:
+    async def store_page(records: list[dict]) -> int:
+        stored = 0
+        touched: set[str] = set()
         known = await _known_rc_ids(
             db, cfg.org_id, [f"call:{r.get('id')}" for r in records if r.get("id")]
         )
@@ -220,6 +269,7 @@ async def sync_calls(
             rc_id = rec.get("id")
             if not rc_id or f"call:{rc_id}" in known:
                 continue
+            known.add(f"call:{rc_id}")  # a record repeated within the page
             direction = (rec.get("direction") or "").lower()  # Inbound/Outbound
             other = rec.get("from") if direction == "inbound" else rec.get("to")
             other = other or {}
@@ -242,27 +292,23 @@ async def sync_calls(
             )
             touched.add(number)
             stored += 1
-        paging = data.get("paging") or {}
-        if page >= int(paging.get("totalPages") or 1):
-            break
-        page += 1
-    return stored
+        await _recompute_touched(db, cfg, phone_map, touched)
+        return stored
+
+    return await _walk_pages(
+        db, access,
+        f"{settings.ringcentral_base}/restapi/v1.0/account/~/call-log",
+        {"view": "Simple", "perPage": 250, "dateFrom": date_from},
+        store_page,
+    )
 
 
 async def sync_sms(
-    db, cfg: RingCentralIntegration, access: str, phone_map: dict, touched: set[str],
-    date_from: str,
+    db, cfg: RingCentralIntegration, access: str, phone_map: dict, date_from: str
 ) -> int:
-    stored = 0
-    page = 1
-    while True:
-        params = {"messageType": "SMS", "perPage": 250, "page": page, "dateFrom": date_from}
-        data = await _get_json(
-            f"{settings.ringcentral_base}/restapi/v1.0/account/~/extension/~/message-store",
-            access,
-            params,
-        )
-        records = data.get("records", [])
+    async def store_page(records: list[dict]) -> int:
+        stored = 0
+        touched: set[str] = set()
         known = await _known_rc_ids(
             db, cfg.org_id, [f"sms:{r.get('id')}" for r in records if r.get("id")]
         )
@@ -270,6 +316,7 @@ async def sync_sms(
             rc_id = rec.get("id")
             if not rc_id or f"sms:{rc_id}" in known:
                 continue
+            known.add(f"sms:{rc_id}")
             direction = (rec.get("direction") or "").lower()
             if direction == "inbound":
                 other = rec.get("from") or {}
@@ -292,16 +339,25 @@ async def sync_sms(
             )
             touched.add(number)
             stored += 1
-        paging = data.get("paging") or {}
-        if page >= int(paging.get("totalPages") or 1):
-            break
-        page += 1
-    return stored
+        await _recompute_touched(db, cfg, phone_map, touched)
+        return stored
+
+    return await _walk_pages(
+        db, access,
+        f"{settings.ringcentral_base}/restapi/v1.0/account/~/extension/~/message-store",
+        {"messageType": "SMS", "perPage": 250, "dateFrom": date_from},
+        store_page,
+    )
 
 
 async def sync_org(db, cfg: RingCentralIntegration) -> dict:
+    """No transaction is held across any RingCentral round-trip: every fetch
+    sits behind _release_db, and writes land a page at a time. An interrupted
+    walk leaves whole pages behind and last_synced_at untouched, so the next
+    pass covers the same window and the rc_id dedupe absorbs the repeats."""
     access = await ensure_access_token(db, cfg)
     if not cfg.own_numbers:
+        await _release_db(db)
         cfg.own_numbers = await fetch_own_numbers(access)
     phone_map = await _crm_phone_map(db, cfg.org_id)
     for own in cfg.own_numbers or []:
@@ -310,21 +366,13 @@ async def sync_org(db, cfg: RingCentralIntegration) -> dict:
         cfg.last_synced_at = utcnow()
         cfg.sync_error = None
         return {"calls_synced": 0, "sms_synced": 0}
-    touched: set[str] = set()
     date_from = _sync_window_start(cfg)
-    calls = await sync_calls(db, cfg, access, phone_map, touched, date_from)
-    sms = await sync_sms(db, cfg, access, phone_map, touched, date_from)
-    # Recompute relationship metrics only for people with NEW events this
-    # pass — recomputing everyone with any history burned thousands of
-    # queries every cycle once real call logs existed.
-    person_ids = {
-        phone_map[n][1] for n in touched if n in phone_map and phone_map[n][0] == "person"
-    }
-    if person_ids:
-        from app.services.interactions import update_person_aggregates
-
-        await update_person_aggregates(db, cfg.org_id, person_ids)
-    cfg.last_synced_at = utcnow()
+    started = utcnow()
+    calls = await sync_calls(db, cfg, access, phone_map, date_from)
+    sms = await sync_sms(db, cfg, access, phone_map, date_from)
+    # Stamped with when the walk STARTED: a long walk must not push the next
+    # window's start past records written while it was running.
+    cfg.last_synced_at = started
     cfg.sync_error = None
     return {"calls_synced": calls, "sms_synced": sms}
 
@@ -337,32 +385,74 @@ def _sync_error_text(exc: Exception) -> str:
     return f"Sync failed: {type(exc).__name__}: {exc}"[:500]
 
 
-async def run_sync_pass() -> None:
+# ---- one sync at a time per org ----
+#
+# The manual "Sync now" and the scheduled pass would otherwise insert the
+# same rc_ids concurrently and trip the unique constraint. Single process, so
+# an in-process claim does it; taken synchronously, so it cannot race.
+
+_syncing: set[uuid.UUID] = set()
+
+
+def try_claim_sync(org_id: uuid.UUID) -> bool:
+    if org_id in _syncing:
+        return False
+    _syncing.add(org_id)
+    return True
+
+
+def release_sync(org_id: uuid.UUID) -> None:
+    _syncing.discard(org_id)
+
+
+async def _record_sync_error(org_id: uuid.UUID, exc: Exception) -> None:
+    # A session of its own — nothing here leans on the failed one.
     async with SessionLocal() as db:
-        configs = (await db.execute(select(RingCentralIntegration))).scalars().all()
-        for cfg in configs:
-            org_id = cfg.org_id
-            try:
-                await sync_org(db, cfg)
-                await db.commit()
-            except Exception as exc:
-                # Record ANY failure, not just RingCentralError — an unrecorded
-                # crash leaves a stale status, and one broken org must not stop
-                # the pass for the rest.
-                log.warning("RingCentral sync failed: %s", exc)
-                # The failure may have left the session mid-transaction; roll
-                # back, then re-load the config cleanly to stamp the error.
-                await db.rollback()
-                fresh = (
+        cfg = (
+            await db.execute(
+                select(RingCentralIntegration).where(RingCentralIntegration.org_id == org_id)
+            )
+        ).scalar_one_or_none()
+        if cfg is not None:
+            cfg.sync_error = _sync_error_text(exc)
+            await db.commit()
+
+
+async def run_sync_pass() -> None:
+    # Plain ids, and a fresh session per org: a failure (and its rollback)
+    # in one org leaves nothing expired for the next iteration to trip on.
+    async with SessionLocal() as db:
+        org_ids = [
+            oid for (oid,) in await db.execute(select(RingCentralIntegration.org_id))
+        ]
+    for org_id in org_ids:
+        if not try_claim_sync(org_id):
+            log.info("RingCentral sync for org %s already running; skipping this pass", org_id)
+            continue
+        try:
+            async with SessionLocal() as db:
+                cfg = (
                     await db.execute(
                         select(RingCentralIntegration).where(
                             RingCentralIntegration.org_id == org_id
                         )
                     )
                 ).scalar_one_or_none()
-                if fresh is not None:
-                    fresh.sync_error = _sync_error_text(exc)
-                    await db.commit()
+                if cfg is None:
+                    continue
+                await sync_org(db, cfg)
+                await db.commit()
+        except Exception as exc:
+            # Record ANY failure, not just RingCentralError — an unrecorded
+            # crash leaves a stale status, and one broken org must not stop
+            # the pass for the rest.
+            log.warning("RingCentral sync failed for org %s: %s", org_id, exc)
+            try:
+                await _record_sync_error(org_id, exc)
+            except Exception:
+                log.exception("could not record the RingCentral sync error for org %s", org_id)
+        finally:
+            release_sync(org_id)
 
 
 async def sync_loop() -> None:

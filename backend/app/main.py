@@ -1,8 +1,9 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -10,6 +11,7 @@ from sqlalchemy import select, text
 
 from app.config import settings
 from app.db import Base, SessionLocal, engine
+from app.deps import get_session_and_user
 from app.models import Org, Pipeline, Stage
 from app.routes import (
     activities,
@@ -43,6 +45,7 @@ from app.services import (
     push,
     ringcentral as ringcentral_service,
 )
+from app.services.attachments import reconcile_loop as attachment_reconcile_loop
 from app.services.automations import automations_loop
 from app.services.colloqui import reminder_loop
 from app.services.google import sync_loop as google_sync_loop
@@ -99,6 +102,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(google_sync_loop()),
         asyncio.create_task(ringcentral_sync_loop()),
         asyncio.create_task(purge_loop()),
+        asyncio.create_task(attachment_reconcile_loop()),
         asyncio.create_task(automations_loop()),
     ]
     yield
@@ -121,6 +125,156 @@ _docs_kwargs = (
     else {}
 )
 app = FastAPI(title=settings.app_name, lifespan=lifespan, **_docs_kwargs)
+
+
+# --- Request body ceilings -------------------------------------------------
+# Enforced on the bytes that ACTUALLY arrive, not on what Content-Length
+# claims: a chunked request carries no Content-Length at all, and the
+# per-route header checks simply waved it through. Every route class gets a
+# ceiling; the body is counted as the app reads it and cut off at the limit.
+_MB = 1024 * 1024
+_GLOBAL_MAX_BODY = 60 * _MB
+_IMPORT_MAX_BODY = imports.MAX_UPLOAD_BYTES
+# Multipart framing (boundaries, part headers, the small form fields) rides
+# on top of the file itself.
+_MULTIPART_OVERHEAD = 1 * _MB
+# A refused request whose honestly declared body is at most this big is left
+# for the server to read and throw away (no parsing, no spooling), so the
+# client gets to see the response — slamming the socket shut mid-upload
+# usually surfaces as "connection lost" instead of the 413/401, and the iOS
+# app turns exactly that 413 into "File is too large". Anything bigger, or
+# any body that hid or lied about its size, gets Connection: close.
+_COURTESY_DRAIN_MAX = _GLOBAL_MAX_BODY + 4 * _MB
+
+
+def _body_policy(method: str, path: str) -> tuple[int, str, bool, bool]:
+    """(byte ceiling, 413 detail, authenticate before reading, leave an honest
+    oversized Content-Length to the route) for a request. The details match
+    what the routes themselves say for the same condition."""
+    path = path.rstrip("/")
+    if method == "POST":
+        if path == "/api/v1/attachments":
+            return (
+                settings.attachment_max_mb * _MB + _MULTIPART_OVERHEAD,
+                f"File exceeds the {settings.attachment_max_mb} MB limit",
+                True,
+                False,
+            )
+        if path == "/api/v1/imports/preview":
+            return _IMPORT_MAX_BODY + _MULTIPART_OVERHEAD, "File too large (50MB max)", True, False
+        if path.startswith("/f/"):
+            # The form route answers a declared-too-big body with a friendly
+            # HTML page (without reading it); only the stream is policed here.
+            return settings.form_max_body_bytes, "Submission too large", False, True
+    if path.startswith("/api/v1/imports/"):
+        return _IMPORT_MAX_BODY, "Import payload too large (50MB max)", False, False
+    return _GLOBAL_MAX_BODY, f"Request body too large (max {_GLOBAL_MAX_BODY // _MB} MB)", False, False
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+class BodyLimitMiddleware:
+    """Pure ASGI on purpose — it has to wrap `receive`, which
+    BaseHTTPMiddleware doesn't expose.
+
+    The two multipart endpoints are also authenticated HERE, before a byte of
+    the body is read: FastAPI parses (and spools to disk) File/Form parameters
+    before it resolves the auth dependency, so an anonymous caller could make
+    the server ingest a full upload just to be told 401."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limit, too_large_detail, auth_first, route_handles_declared = _body_policy(
+            scope["method"], scope["path"]
+        )
+        headers = dict(scope["headers"])
+        declared = None
+        if b"content-length" in headers:
+            try:
+                declared = int(headers[b"content-length"])
+            except ValueError:
+                declared = -1  # unparseable: treat as hiding its size
+        drainable = declared is not None and 0 <= declared <= _COURTESY_DRAIN_MAX
+
+        if auth_first:
+            denied = await self._auth_failure(scope)
+            if denied is not None:
+                return await self._reject(send, denied.status_code, denied.detail, not drainable)
+        if declared is not None and declared > limit and not route_handles_declared:
+            return await self._reject(send, 413, too_large_detail, not drainable)
+
+        received = 0
+        too_large = False
+        started = False
+        replaced = False
+
+        async def limited_receive():
+            nonlocal received, too_large
+            if too_large:
+                raise _BodyTooLarge()
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    too_large = True
+                    raise _BodyTooLarge()
+            return message
+
+        async def guarded_send(message):
+            nonlocal started, replaced
+            if too_large and not started:
+                # Whatever the app made of the aborted read (FastAPI turns a
+                # failed body parse into a 400), the honest answer is 413.
+                started = replaced = True
+                await self._reject(send, 413, too_large_detail, True)
+            if replaced:
+                return  # the app's own response is dropped
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, guarded_send)
+        except _BodyTooLarge:
+            if not started:
+                await self._reject(send, 413, too_large_detail, True)
+
+    @staticmethod
+    async def _auth_failure(scope) -> HTTPException | None:
+        # The very same check the route's dependency runs (and will run again
+        # once the body is in) — just early, on a short-lived session of its
+        # own so no pool connection is held while the upload streams.
+        async with SessionLocal() as db:
+            try:
+                await get_session_and_user(Request(scope), db)
+                await db.commit()  # keeps the last_seen_at refresh
+            except HTTPException as exc:
+                return exc
+        return None
+
+    @staticmethod
+    async def _reject(send, status: int, detail, close: bool) -> None:
+        # Byte-for-byte what FastAPI emits for an HTTPException.
+        body = json.dumps({"detail": detail}, separators=(",", ":")).encode()
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+        ]
+        if close:
+            headers.append((b"connection", b"close"))
+        await send({"type": "http.response.start", "status": status, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+
+# Added first = innermost: its 401/413 answers still pick up the CORS and
+# security headers from the middleware wrapped around it.
+app.add_middleware(BodyLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

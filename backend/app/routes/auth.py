@@ -1,10 +1,11 @@
+import asyncio
 import uuid
 from datetime import timedelta
 from ipaddress import ip_address
 
 import pyotp
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,8 +19,8 @@ from app.security import (
     hash_password_sync,
     hash_token,
     new_session_token,
-    verify_password,
 )
+from app.security import verify_password as _argon2_verify
 from app.services.throttle import SlidingWindowLimiter
 
 router = APIRouter()
@@ -77,6 +78,42 @@ def _throttle(keys: list[str], limit: int | None = None) -> None:
 
 def _record_failure(keys: list[str]) -> None:
     _failures.record(keys)
+
+
+def _reserve(keys: list[str], limit: int | None = None) -> float:
+    """Count the attempt BEFORE the awaited password/TOTP work. Checking first
+    and recording afterwards let a concurrent burst all pass the same check —
+    thirty parallel logins each saw nine failures on the books. A reservation
+    that is never released is the recorded failure; _release forgives it when
+    the attempt succeeds, so a correct login costs nothing."""
+    stamp = _failures.reserve(keys, limit)
+    if stamp is None:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed attempts. Wait a few minutes and try again.",
+        )
+    return stamp
+
+
+def _release(keys: list[str], stamp: float) -> None:
+    _failures.release(keys, stamp)
+
+
+# argon2 costs tens of milliseconds of CPU and ~64 MB of memory per call. The
+# throttle bounds attempts per key; this bounds how many verifications run at
+# once across ALL keys, so a spray over many emails/addresses can't pin every
+# worker thread (or the container's memory limit) on password hashing. Created
+# lazily — the module is imported before an event loop exists.
+_VERIFY_CONCURRENCY = 4
+_verify_slots: asyncio.Semaphore | None = None
+
+
+async def verify_password(password: str, password_hash: str) -> bool:
+    global _verify_slots
+    if _verify_slots is None:
+        _verify_slots = asyncio.Semaphore(_VERIFY_CONCURRENCY)
+    async with _verify_slots:
+        return await _argon2_verify(password, password_hash)
 
 
 def user_out(user: User) -> dict:
@@ -157,7 +194,22 @@ async def setup(body: SetupIn, db: AsyncSession = Depends(get_db)):
 async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_db)):
     email = body.email.lower()
     throttle_keys = [f"ip:{_client_ip(request)}", f"email:{email}"]
-    _throttle(throttle_keys)
+    # Reserved up front, forgiven only on a clean success — every other way
+    # out of this function (wrong password, unknown email, a pending 2FA
+    # session, an error) leaves the attempt counted.
+    attempt = _reserve(throttle_keys)
+    forgive = False
+    try:
+        result, forgive = await _login(body, email, db)
+    finally:
+        if forgive:
+            _release(throttle_keys, attempt)
+    return result
+
+
+async def _login(body: LoginIn, email: str, db: AsyncSession) -> tuple[dict, bool]:
+    """The login itself; returns (response, whether to forgive the reserved
+    throttle attempt)."""
     # Opportunistic hygiene: expired sessions otherwise accumulate forever.
     await db.execute(delete(DbSession).where(DbSession.expires_at < utcnow()))
     # Uniqueness is per (org_id, email) — the same address may exist in more
@@ -173,10 +225,8 @@ async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_
         # Do the same argon2 work an existing account would, so the response
         # time doesn't reveal whether the email is registered.
         await verify_password(body.password, _DECOY_HASH)
-        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not await verify_password(body.password, user.password_hash):
-        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=401, detail="Account disabled")
@@ -184,14 +234,13 @@ async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_
         # Minting a pending session is itself a throttled event: a stolen
         # password otherwise buys unlimited pending sessions (each good for a
         # fresh burst of TOTP guesses). Bound it by the same per-email + per-IP
-        # budget as an outright wrong password.
-        _record_failure(throttle_keys)
+        # budget as an outright wrong password — the reservation stays.
         pending = await _create_session(db, user, pending=True)
         await db.commit()
-        return {"totp_required": True, "pending_token": pending}
+        return {"totp_required": True, "pending_token": pending}, False
     token = await _create_session(db, user)
     await db.commit()
-    return {"token": token, "user": user_out(user)}
+    return {"token": token, "user": user_out(user)}, True
 
 
 @router.post("/totp")
@@ -201,7 +250,22 @@ async def totp_verify(body: TotpVerifyIn, request: Request, db: AsyncSession = D
     # is added once the session resolves to a user (below).
     pending_hash = hash_token(body.pending_token)
     throttle_keys = [f"ip:{_client_ip(request)}", f"totp:{pending_hash}"]
-    _throttle(throttle_keys)
+    # Same reserve-then-forgive shape as login: the guess is on the books
+    # before any awaited work, so parallel guesses can't share one check.
+    reserved = [(throttle_keys, _reserve(throttle_keys))]
+    forgive = False
+    try:
+        result, forgive = await _totp_verify(body, pending_hash, reserved, db)
+    finally:
+        if forgive:
+            for keys, stamp in reserved:
+                _release(keys, stamp)
+    return result
+
+
+async def _totp_verify(
+    body: TotpVerifyIn, pending_hash: str, reserved: list, db: AsyncSession
+) -> tuple[dict, bool]:
     row = (
         await db.execute(
             select(DbSession, User)
@@ -210,35 +274,68 @@ async def totp_verify(body: TotpVerifyIn, request: Request, db: AsyncSession = D
         )
     ).first()
     if row is None:
-        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid session")
     sess, user = row
     # Bound guessing per account across however many pending sessions the
     # attacker mints, independent of the IP they arrive from.
-    throttle_keys.append(f"totpuser:{user.id}")
-    _throttle([f"totpuser:{user.id}"])
+    user_keys = [f"totpuser:{user.id}"]
+    reserved.append((user_keys, _reserve(user_keys)))
     if not sess.pending_totp or as_utc(sess.expires_at) < utcnow():
+        # Not a guess at the code — nothing to count.
+        for keys, stamp in reserved:
+            _release(keys, stamp)
+        reserved.clear()
         raise HTTPException(status_code=401, detail="Verification window expired; log in again")
+    # A pending session is not an oracle: a few wrong codes burn it. The guess
+    # is consumed in the database BEFORE the code is looked at, with a
+    # conditional UPDATE — the row lock serializes concurrent guesses against
+    # one pending session, and the WHERE stops the count at the limit. The old
+    # read-modify-write let a parallel burst all read attempts=0.
+    attempts = (
+        await db.execute(
+            update(DbSession)
+            .where(
+                DbSession.id == sess.id,
+                DbSession.pending_totp.is_(True),
+                DbSession.totp_attempts < _TOTP_ATTEMPT_LIMIT,
+            )
+            .values(totp_attempts=DbSession.totp_attempts + 1)
+            .returning(DbSession.totp_attempts)
+            .execution_options(synchronize_session=False)
+        )
+    ).scalar_one_or_none()
+    await db.commit()  # release the row lock; the spent guess stays spent
+    if attempts is None:
+        # Out of guesses, or a concurrent request already promoted/burned it.
+        await db.execute(
+            delete(DbSession).where(DbSession.id == sess.id, DbSession.pending_totp.is_(True))
+        )
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Too many wrong codes; log in again")
     if not user.totp_secret or not pyotp.TOTP(user.totp_secret).verify(
         body.code.strip(), valid_window=1
     ):
-        # A pending session is not an oracle: a few wrong codes burn it.
-        sess.totp_attempts += 1
-        if sess.totp_attempts >= _TOTP_ATTEMPT_LIMIT:
-            await db.delete(sess)
+        if attempts >= _TOTP_ATTEMPT_LIMIT:
+            await db.execute(delete(DbSession).where(DbSession.id == sess.id))
             await db.commit()
-            _record_failure(throttle_keys)
             raise HTTPException(
                 status_code=401, detail="Too many wrong codes; log in again"
             )
-        await db.commit()
-        _record_failure(throttle_keys)
         raise HTTPException(status_code=401, detail="Invalid code")
-    sess.pending_totp = False
-    sess.totp_attempts = 0
-    sess.expires_at = utcnow() + timedelta(days=settings.session_ttl_days)
+    # Explicit UPDATE rather than attribute sets: the in-memory row still
+    # holds the pre-increment count, so the ORM would see "0 -> 0" and skip it.
+    await db.execute(
+        update(DbSession)
+        .where(DbSession.id == sess.id)
+        .values(
+            pending_totp=False,
+            totp_attempts=0,
+            expires_at=utcnow() + timedelta(days=settings.session_ttl_days),
+        )
+        .execution_options(synchronize_session=False)
+    )
     await db.commit()
-    return {"token": body.pending_token, "user": user_out(user)}
+    return {"token": body.pending_token, "user": user_out(user)}, True
 
 
 @router.post("/logout", status_code=204)

@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -63,7 +63,25 @@ async def list_suggestions(
     }
 
 
-async def _get_pending(db, user, sug_id):
+async def _claim_pending(db, user, sug_id, new_status: str) -> ContactSuggestion:
+    """Move a suggestion out of 'pending' atomically and return it.
+
+    Check-and-set in one UPDATE: a double-click (or two people working the
+    same list) used to both read 'pending' and both mint a Person. Now only
+    one request's UPDATE matches; the other waits on the row lock, re-checks
+    the WHERE once the first commits, and gets the 409."""
+    claimed = (
+        await db.execute(
+            update(ContactSuggestion)
+            .where(
+                ContactSuggestion.id == sug_id,
+                ContactSuggestion.org_id == user.org_id,
+                ContactSuggestion.status == "pending",
+            )
+            .values(status=new_status, updated_at=utcnow())
+            .returning(ContactSuggestion.id)
+        )
+    ).scalar_one_or_none()
     s = (
         await db.execute(
             select(ContactSuggestion).where(
@@ -73,7 +91,7 @@ async def _get_pending(db, user, sug_id):
     ).scalar_one_or_none()
     if s is None:
         raise HTTPException(status_code=404, detail="Suggestion not found")
-    if s.status != "pending":
+    if claimed is None:
         # A double-click (or stale list) must not mint a second Person or
         # silently flip an earlier decision.
         raise HTTPException(
@@ -90,7 +108,7 @@ async def add_suggestion(
     db: AsyncSession = Depends(get_db),
 ):
     """Turn a suggestion into a real Person and mark it handled."""
-    s = await _get_pending(db, user, sug_id)
+    s = await _claim_pending(db, user, sug_id, "added")
     first, last = _split_name(s.display_name, s.email)
     contact_type = (body.contact_type if body and body.contact_type else "Uncategorized")
     person = Person(
@@ -102,8 +120,6 @@ async def add_suggestion(
         contact_type=contact_type,
     )
     db.add(person)
-    s.status = "added"
-    s.updated_at = utcnow()
     await db.flush()
     await log_activity(db, user.org_id, "person", person.id, "created", user.id)
     result = {"person_id": str(person.id), "first_name": first, "last_name": last}
@@ -118,7 +134,5 @@ async def ignore_suggestion(
     db: AsyncSession = Depends(get_db),
 ):
     """Dismiss a suggestion for good — it won't be surfaced again."""
-    s = await _get_pending(db, user, sug_id)
-    s.status = "ignored"
-    s.updated_at = utcnow()
+    await _claim_pending(db, user, sug_id, "ignored")
     await db.commit()

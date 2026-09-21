@@ -16,7 +16,7 @@ import httpx
 from sqlalchemy import delete, select
 
 from app.config import settings
-from app.models import DeviceToken
+from app.models import DeviceToken, User
 
 log = logging.getLogger("push")
 
@@ -70,8 +70,17 @@ async def send_to_user(
             user_id,
         )
         return 0
+    # Joined to the user so a deactivated account is never pushed to, even if
+    # a device row outlives the deactivation cleanup (or re-registers through
+    # some path that forgot to check).
     tokens = (
-        (await db.execute(select(DeviceToken).where(DeviceToken.user_id == user_id)))
+        (
+            await db.execute(
+                select(DeviceToken)
+                .join(User, DeviceToken.user_id == User.id)
+                .where(DeviceToken.user_id == user_id, User.is_active.is_(True))
+            )
+        )
         .scalars()
         .all()
     )

@@ -6,11 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user, get_session_and_user, require_admin
+from app.models import DeviceToken, User
 from app.models import Session as DbSession
-from app.models import User
-from app.routes.auth import _record_failure, _throttle
+from app.routes.auth import _release, _reserve, verify_password
 from app.schemas import MeUpdateIn, ResetPasswordIn, UserAdminUpdateIn, UserCreateIn
-from app.security import hash_password, verify_password
+from app.security import hash_password
+from app.services.colloqui import leave_space
 
 router = APIRouter()
 
@@ -24,6 +25,8 @@ def user_row(u: User) -> dict:
         "is_active": u.is_active,
         "totp_enabled": u.totp_enabled,
         "notify_channel": u.notify_channel,
+        # Which chat account reminders go to — admins map these in Settings.
+        "colloqui_username": u.colloqui_username,
     }
 
 
@@ -81,13 +84,15 @@ async def update_me(
         # The current-password check is a password oracle for whoever holds
         # the session — same per-account budget as the login form, so a
         # stolen token can't brute-force its way to a password change.
+        # Reserved before the (awaited) argon2 check and forgiven on a
+        # match, so parallel guesses can't all slip past one check.
         throttle_keys = [f"user:{user.id}"]
-        _throttle(throttle_keys)
+        attempt = _reserve(throttle_keys)
         if not body.current_password or not await verify_password(
             body.current_password, user.password_hash
         ):
-            _record_failure(throttle_keys)
             raise HTTPException(status_code=401, detail="Current password is incorrect")
+        _release(throttle_keys, attempt)
         if len(body.new_password) < 8:
             raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
         user.password_hash = await hash_password(body.new_password)
@@ -119,13 +124,25 @@ async def update_user(
         raise HTTPException(status_code=400, detail="You cannot deactivate yourself")
     if body.is_admin is not None:
         u.is_admin = body.is_admin
+    leaving_chat_id = None
     if body.is_active is not None:
         u.is_active = body.is_active
         if body.is_active is False:
-            # Deactivation means out NOW, not when their session expires.
+            # Deactivation means out NOW, not when their session expires —
+            # and out everywhere: their phones stop receiving pushes and
+            # their chat account stops receiving task DMs. (Delivery also
+            # checks is_active; removing the routes is the belt to that
+            # pair of braces.) Reactivating means signing in, registering
+            # the device and being linked again.
             await db.execute(delete(DbSession).where(DbSession.user_id == u.id))
+            await db.execute(delete(DeviceToken).where(DeviceToken.user_id == u.id))
+            leaving_chat_id = u.colloqui_user_id
+            u.colloqui_user_id = None
+            u.colloqui_username = None
     result = user_row(u)
     await db.commit()
+    if leaving_chat_id is not None:
+        await leave_space(db, admin.org_id, leaving_chat_id)
     return result
 
 

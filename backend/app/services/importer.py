@@ -29,7 +29,13 @@ from app.models import (
     User,
     utcnow,
 )
-from app.services.common import add_tags, get_or_create_tag, log_activity
+from app.schemas import CLOSED_OPPORTUNITY_STATUSES, canonical_lead_status
+from app.services.common import (
+    add_tags,
+    canonical_checkbox,
+    get_or_create_tag,
+    log_activity,
+)
 
 log = logging.getLogger("importer")
 
@@ -278,12 +284,22 @@ def _apply_pairs(import_type: str, data: dict, buckets: dict) -> None:
                 data.setdefault("personal_website", personal)
 
 
+CF_NAME_MAX = 120  # custom_fields.name column width
+
+
 def parse_csv(content: bytes, import_type: str) -> tuple[list[dict], list[str]]:
     """Returns (rows, unmapped_headers). Each row:
     {data, tags, custom_fields}. Handles both of Copper's shapes: the per-list
     CSV export (named columns, repeated 'Tag' columns) and the full data
     export (Email/Phone/Social/Website value+type pairs, one 'Tags' column).
-    'Name cf_NNN' columns become real custom fields in both."""
+    'Name cf_NNN' columns become real custom fields in both.
+
+    A header nothing recognizes is NOT dropped: its column rides along as a
+    custom field named after the header (created as a text field on commit,
+    through the same path the cf_ headers take), and the header is listed in
+    unmapped_headers so the review screen can say so. Whether the importing
+    user may create field definitions at all is apply_definition_policy's
+    call, not the parser's."""
     header_map = HEADER_MAPS[import_type]
     text = content.decode("utf-8-sig", errors="replace")
     reader = csv.reader(io.StringIO(text))
@@ -324,8 +340,9 @@ def parse_csv(content: bytes, import_type: str) -> tuple[list[dict], list[str]]:
             elif h in SILENT_HEADERS:
                 plan.append(("skip", h))
             elif h:
-                plan.append(("skip", h))
-                unmapped.append(h)
+                plan.append(("cf", h[:CF_NAME_MAX].strip()))
+                if h not in unmapped:
+                    unmapped.append(h)
             else:
                 plan.append(("skip", h))
 
@@ -348,7 +365,8 @@ def parse_csv(content: bytes, import_type: str) -> tuple[list[dict], list[str]]:
             elif kind == "tags_csv":
                 tags.extend(t.strip() for t in cell.split(",") if t.strip())
             elif kind == "cf":
-                cfs[key] = cell
+                # Two columns with the same name: the first value wins.
+                cfs.setdefault(key, cell)
             elif kind == "pair":
                 pair_values[key] = cell
             elif kind == "pairtype":
@@ -372,6 +390,86 @@ def parse_csv(content: bytes, import_type: str) -> tuple[list[dict], list[str]]:
         if data or tags or cfs:
             rows.append({"data": data, "tags": tags, "custom_fields": cfs})
     return rows, unmapped
+
+
+async def apply_definition_policy(
+    db: AsyncSession, user: User, import_type: str, rows: list[dict], unmapped: list[str]
+) -> dict:
+    """Preview-time half of the import's definition policy; returns the header
+    report for the preview response.
+
+    Creating NEW custom-field or pipeline/stage definitions is an admin
+    action everywhere else in the app, and an import is no back door: a
+    non-admin's columns still fill fields that already exist, but a column
+    that would need a new field is removed from the rows here — and named in
+    discarded_headers, so the review screen can warn before anything is
+    committed instead of the data quietly going missing. The commit side
+    enforces the same rule on its own (_CommitContext.can_define); this
+    function is about telling the user the truth up front.
+
+      unmapped_headers     unrecognized headers whose values WILL be kept, as
+                           custom fields
+      discarded_headers    columns (unrecognized headers and cf_ fields alike)
+                           whose values will NOT be imported
+      discarded_pipelines  pipelines / stages named in the file that don't
+                           exist and won't be created (the deals still import,
+                           without them)"""
+    if user.is_admin:
+        return {
+            "unmapped_headers": unmapped,
+            "discarded_headers": [],
+            "discarded_pipelines": [],
+        }
+
+    entity_type = IMPORT_TYPES[import_type]
+    existing = {
+        name.lower()
+        for (name,) in await db.execute(
+            select(CustomField.name).where(
+                CustomField.org_id == user.org_id, CustomField.entity_type == entity_type
+            )
+        )
+    }
+    discarded: list[str] = []
+    for row in rows:
+        cfs = row.get("custom_fields") or {}
+        for name in [n for n in cfs if n.lower() not in existing]:
+            if name not in discarded:
+                discarded.append(name)
+            del cfs[name]
+    gone = {d.lower() for d in discarded}
+    kept = [h for h in unmapped if h[:CF_NAME_MAX].strip().lower() not in gone]
+
+    discarded_pipelines: list[str] = []
+    if import_type == "opportunities":
+        stages_by_pipeline: dict[str, set[str]] = {}
+        for pname, sname in await db.execute(
+            select(Pipeline.name, Stage.name)
+            .outerjoin(Stage, Stage.pipeline_id == Pipeline.id)
+            .where(Pipeline.org_id == user.org_id)
+        ):
+            known = stages_by_pipeline.setdefault(pname.lower().strip(), set())
+            if sname:
+                known.add(sname.lower().strip())
+        for row in rows:
+            pname = (row["data"].get("pipeline_name") or "").strip()
+            sname = (row["data"].get("stage_name") or "").strip()
+            if not pname:
+                continue
+            known = stages_by_pipeline.get(pname.lower())
+            if known is None:
+                label = pname
+            elif sname and sname.lower() not in known:
+                label = f"{pname} / {sname}"
+            else:
+                continue
+            if label not in discarded_pipelines:
+                discarded_pipelines.append(label)
+    return {
+        "unmapped_headers": kept,
+        "discarded_headers": discarded,
+        "discarded_pipelines": discarded_pipelines,
+    }
 
 
 def _full_name(data: dict) -> str:
@@ -546,6 +644,10 @@ class _CommitContext:
         self.field_objs: dict[uuid.UUID, CustomField] = {}
         self.fields_created: list[str] = []
         self.tags: dict[str, uuid.UUID] = {}
+        # May this import create custom-field / pipeline / stage definitions?
+        # Admin-only, like the settings screens that manage them. Off by
+        # default so a caller that forgets to decide gets the safe answer.
+        self.can_define: bool = False
 
 
 async def _tag_id(db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext, name: str) -> uuid.UUID:
@@ -616,6 +718,8 @@ async def _resolve_pipeline_stage(
                     )
                 )
             ).scalars().first()
+            if p is None and not ctx.can_define:
+                return None, None
             if p is None:
                 max_pos = (
                     await db.execute(
@@ -642,6 +746,8 @@ async def _resolve_pipeline_stage(
                     )
                 )
             ).scalars().first()
+            if s is None and not ctx.can_define:
+                return pipeline_id, None
             if s is None:
                 max_pos = (
                     await db.execute(
@@ -686,7 +792,10 @@ async def _resolve_person(
 async def _ensure_field(
     db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext, entity_type: str, name: str,
     sample_value: str | None = None,
-) -> uuid.UUID:
+) -> uuid.UUID | None:
+    """The id of the custom field called `name` (case-insensitively), created
+    if missing — or None when it is missing and this import may not create
+    definitions, in which case the caller drops the value."""
     key = f"{entity_type}:{name.lower()}"
     if key in ctx.fields:
         return ctx.fields[key]
@@ -699,6 +808,8 @@ async def _ensure_field(
             )
         )
     ).scalars().first()
+    if field is None and not ctx.can_define:
+        return None
     if field is None:
         max_pos = (
             await db.execute(
@@ -732,7 +843,9 @@ def _coerce_cf_value(ctx: _CommitContext, field_id: uuid.UUID, value) -> str:
         parsed = _parse_date(str(value))
         if parsed:
             value = parsed
-    elif field_type == "select":
+    elif field_type == "checkbox":
+        return canonical_checkbox(value) or "false"
+    elif field_type in ("select", "dropdown"):
         # Match the option's canonical casing; unknown values become new
         # options rather than silently vanishing from the dropdown.
         field = ctx.field_objs[field_id]
@@ -746,6 +859,28 @@ def _coerce_cf_value(ctx: _CommitContext, field_id: uuid.UUID, value) -> str:
     return str(value)
 
 
+async def _resolve_cf_values(
+    db: AsyncSession, org_id: uuid.UUID, ctx: _CommitContext, entity_type: str, cfs: dict
+) -> dict[uuid.UUID, str]:
+    """One row's custom values keyed by FIELD ID, ready to store. Keying by id
+    is the point: "Color" and "color" are the same field (names match
+    case-insensitively), and two entries for one field would be two inserts
+    of the same primary key. The first value wins. Values for fields that
+    don't exist and may not be created are dropped."""
+    out: dict[uuid.UUID, str] = {}
+    for name, value in (cfs or {}).items():
+        if value in (None, ""):
+            continue
+        name = str(name).strip()[:CF_NAME_MAX].strip()
+        if not name:
+            continue
+        field_id = await _ensure_field(db, org_id, ctx, entity_type, name, sample_value=value)
+        if field_id is None or field_id in out:
+            continue
+        out[field_id] = _coerce_cf_value(ctx, field_id, value)
+    return out
+
+
 async def _set_cf_values(
     db: AsyncSession,
     org_id: uuid.UUID,
@@ -755,11 +890,8 @@ async def _set_cf_values(
     cfs: dict,
     only_if_missing: bool = False,
 ) -> None:
-    for name, value in cfs.items():
-        if value in (None, ""):
-            continue
-        field_id = await _ensure_field(db, org_id, ctx, entity_type, name, sample_value=value)
-        value = _coerce_cf_value(ctx, field_id, value)
+    values = await _resolve_cf_values(db, org_id, ctx, entity_type, cfs)
+    for field_id, value in values.items():
         existing = (
             await db.execute(
                 select(CustomFieldValue).where(
@@ -780,6 +912,11 @@ async def _set_cf_values(
                     value=value,
                 )
             )
+    # Autoflush is off, so the lookup above only sees what has reached the
+    # database. Flush now: the next row in this chunk may merge into the very
+    # same record, and must find these values instead of inserting the same
+    # (field, record) key a second time.
+    await db.flush()
 
 
 def _to_datetime(iso_date: str) -> datetime:
@@ -831,6 +968,17 @@ async def _build_kwargs(
         close_date = data.pop("close_date", None)
         if close_date:
             kwargs["close_date"] = datetime.fromisoformat(close_date).date()
+        if kwargs["status"] in CLOSED_OPPORTUNITY_STATUSES:
+            # Reports date a win/loss by closed_at. An imported deal closed
+            # whenever the source system says it did — not at import time.
+            kwargs["closed_at"] = (
+                _to_datetime(close_date) if close_date else created_at or utcnow()
+            )
+    elif import_type == "leads":
+        # "new", "NEW" and "New" are one status; store the canonical casing.
+        status = canonical_lead_status(data.pop("status", None))
+        if status:
+            kwargs["status"] = status
 
     model = MODEL_BY_TYPE[import_type]
     columns = model.__table__.columns
@@ -886,11 +1034,17 @@ async def _commit_chunk(
                 continue
             kwargs = await _build_kwargs(db, org_id, ctx, import_type, row.get("data") or {})
             kwargs.pop("created_at", None)
+            # A merge only fills blanks, so it never changes an existing
+            # deal's status — and must not stamp a close time onto it either.
+            kwargs.pop("closed_at", None)
             for key, value in kwargs.items():
                 if value not in (None, "") and getattr(existing, key, None) in (None, ""):
                     setattr(existing, key, value)
             if row.get("tags"):
                 await add_tags(db, org_id, entity_type, existing.id, row["tags"])
+                # Pending tag links are invisible to the next row's lookup
+                # (autoflush is off) — and that row may target this record.
+                await db.flush()
             if row.get("custom_fields"):
                 await _set_cf_values(
                     db, org_id, ctx, entity_type, existing.id, row["custom_fields"],
@@ -910,16 +1064,16 @@ async def _commit_chunk(
                     "entity_id": rid,
                 }
             )
-        for name, value in (row.get("custom_fields") or {}).items():
-            if value in (None, ""):
-                continue
-            field_id = await _ensure_field(db, org_id, ctx, entity_type, name, sample_value=value)
+        values = await _resolve_cf_values(
+            db, org_id, ctx, entity_type, row.get("custom_fields") or {}
+        )
+        for field_id, value in values.items():
             cf_rows.append(
                 {
                     "field_id": field_id,
                     "entity_type": entity_type,
                     "entity_id": rid,
-                    "value": _coerce_cf_value(ctx, field_id, value),
+                    "value": value,
                 }
             )
         created += 1
@@ -947,6 +1101,10 @@ async def run_import_job(job_id: uuid.UUID) -> None:
         if job is None or job.status != "running":
             return
         ctx = _CommitContext()
+        # Definitions (custom fields, pipelines, stages) are admin-managed;
+        # the import runs with the rights of whoever committed it.
+        importer = await db.get(User, job.user_id) if job.user_id else None
+        ctx.can_define = bool(importer and importer.is_admin and importer.is_active)
         await _load_users(db, job.org_id, ctx)
         if job.import_type == "opportunities":
             await _load_persons(db, job.org_id, ctx)

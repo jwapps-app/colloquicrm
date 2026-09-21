@@ -30,6 +30,18 @@ def _hide_self_filter(request, user, stmt):
 
 router = APIRouter()
 
+# The fields a person's emails, calls and texts are matched by. Editing one
+# changes which synced events belong to them.
+_CONTACT_ADDRESS_FIELDS = ("work_email", "personal_email", "work_phone", "mobile_phone")
+
+
+async def _recompute_on_address_edit(db, person, old_values, actor):
+    if any(
+        field in old_values and old_values[field] != getattr(person, field)
+        for field in _CONTACT_ADDRESS_FIELDS
+    ):
+        await update_person_aggregates(db, person.org_id, {person.id})
+
 
 async def company_name_map(db, org_id, ids: set) -> dict[str, str]:
     ids = {uuid.UUID(i) for i in ids if i}
@@ -86,6 +98,7 @@ register_crud(
     enrich=enrich,
     fk_checks={"company_id": Company, "owner_id": User},
     merge_refs=[(Opportunity, "primary_person_id"), (Lead, "converted_person_id")],
+    after_update=_recompute_on_address_edit,
     after_merge=lambda db, user, target: update_person_aggregates(db, user.org_id, {target.id}),
     extra_filter=_hide_self_filter,
     merge_pool=[

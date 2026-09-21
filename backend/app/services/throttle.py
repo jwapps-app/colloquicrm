@@ -44,6 +44,36 @@ class SlidingWindowLimiter:
             self._events.setdefault(key, []).append(now)
         self._evict(now)
 
+    def reserve(self, keys: list[str], limit: int | None = None) -> float | None:
+        """Check-and-count in one step: None when ANY key is already at the
+        limit, otherwise the event is recorded against every key and its stamp
+        returned. There is no await between the check and the count, so a
+        burst of concurrent requests can't all pass the same check the way
+        exceeded() ... slow work ... record() let them. Pass the stamp to
+        release() when the attempt turns out not to deserve counting (the
+        login succeeded); leave it and the reservation simply IS the recorded
+        failure."""
+        if self.exceeded(keys, limit):
+            return None
+        now = time.monotonic()
+        for key in keys:
+            self._events.setdefault(key, []).append(now)
+        self._evict(now)
+        return now
+
+    def release(self, keys: list[str], stamp: float) -> None:
+        """Forget one reserve() — exactly that event, nobody else's."""
+        for key in keys:
+            events = self._events.get(key)
+            if not events:
+                continue
+            try:
+                events.remove(stamp)
+            except ValueError:
+                continue  # already aged out or evicted
+            if not events:
+                del self._events[key]
+
     def _evict(self, now: float) -> None:
         if len(self._events) <= self.max_keys:
             return

@@ -17,7 +17,7 @@ from app.models import (
     Stage,
     User,
 )
-from app.schemas import AutomationRuleIn, AutomationRuleUpdateIn
+from app.schemas import AutomationRuleIn, AutomationRuleUpdateIn, canonical_lead_status
 from app.services.automations import (
     ACTIONS,
     ENTITY_MODELS,
@@ -87,6 +87,12 @@ async def _validate_rule(
                 raise _bad("trigger_config.status must be a list of strings")
             if not statuses:
                 trigger_config.pop("status")
+            elif entity_type == "lead":
+                # Store the canonical spelling; matching is case-insensitive
+                # either way (see services/automations._candidates).
+                trigger_config["status"] = [
+                    canonical_lead_status(s) for s in statuses if canonical_lead_status(s)
+                ]
         if trigger_config.get("pipeline_id"):
             if entity_type != "opportunity":
                 raise _bad("trigger_config.pipeline_id only applies to opportunities")
@@ -143,13 +149,20 @@ async def _validate_rule(
 
 
 def _rule_out(rule: AutomationRule, fire_count: int = 0, last_fired_at=None) -> dict:
+    trigger_config = dict(rule.trigger_config or {})
+    if rule.entity_type == "lead" and isinstance(trigger_config.get("status"), list):
+        # Rules saved before lead statuses had one casing carry "new"; show
+        # every client the canonical "New" so its checkboxes line up.
+        trigger_config["status"] = [
+            canonical_lead_status(s) or s for s in trigger_config["status"]
+        ]
     return {
         "id": str(rule.id),
         "name": rule.name,
         "enabled": rule.enabled,
         "entity_type": rule.entity_type,
         "trigger_type": rule.trigger_type,
-        "trigger_config": rule.trigger_config or {},
+        "trigger_config": trigger_config,
         "action_type": rule.action_type,
         "action_config": rule.action_config or {},
         "created_by": str(rule.created_by) if rule.created_by else None,

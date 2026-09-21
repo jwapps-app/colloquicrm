@@ -1,0 +1,39 @@
+# Keep the build context to what the Dockerfile actually copies. Without this,
+# `COPY frontend/ ./` drags the host's node_modules/dist over the clean Linux
+# `npm ci` output, and local databases, uploads and env files ride along.
+.git
+.github
+.gitignore
+.dockerignore
+.DS_Store
+
+**/node_modules
+frontend/dist
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/.ruff_cache
+**/.pytest_cache
+
+# Runtime data and local config — never part of an image.
+backend/data
+backend/dev.db
+**/*.db
+.env
+**/.env
+**/.env.*
+!**/.env.example
+
+# Docs and compose files aren't needed inside the image.
+*.md
+!README.md
+docker-compose*.yml
+scripts
+sample data
+upload templates
+
+# Tests and dev tooling never ship.
+backend/tests
+backend/pytest.ini
+backend/requirements-dev.txt

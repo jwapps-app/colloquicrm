@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import delete, distinct, exists, inspect as sa_inspect, select
+from sqlalchemy import delete, distinct, exists, inspect as sa_inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -12,6 +12,7 @@ from app.models import (
     CustomFieldValue,
     EntityTag,
     Person,
+    PhoneEvent,
     Tag,
     Task,
     User,
@@ -150,6 +151,45 @@ async def add_tags(
         existing.add(name)
 
 
+# Custom-field values are strings on the wire and in the table. A checkbox is
+# the one type where the spelling matters: every client decides checked-ness
+# from the string, so there is exactly one spelling of each state.
+CHECKBOX_TRUE = frozenset({"true", "1", "yes", "y", "on", "t", "checked"})
+CHECKBOX_FALSE = frozenset({"false", "0", "no", "n", "off", "f", "unchecked"})
+
+
+def canonical_checkbox(value) -> str | None:
+    """A checkbox value as stored: "true" / "false" (None = no value).
+
+    Accepts what clients actually send — a JSON boolean (iOS, web), the stored
+    string echoed back, or a spreadsheet's "Yes"/"0"/"on". An unrecognized
+    non-empty string counts as checked, which is how it always displayed."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return "true" if value else "false"
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in CHECKBOX_FALSE:
+        return "false"
+    return "true"
+
+
+def custom_value_to_str(field_type: str | None, value) -> str | None:
+    """The stored form of one custom-field value; None means "clear it"."""
+    if value is None or value == "":
+        return None
+    if field_type == "checkbox":
+        return canonical_checkbox(value)
+    if isinstance(value, bool):
+        # str(True) is "True" — never let Python's spelling reach the table.
+        return "true" if value else "false"
+    return str(value)
+
+
 async def set_custom_fields(
     db: AsyncSession,
     org_id: uuid.UUID,
@@ -183,18 +223,19 @@ async def set_custom_fields(
                 )
             )
         ).scalar_one_or_none()
-        if value in (None, ""):
+        stored = custom_value_to_str(field.field_type, value)
+        if stored is None:
             if existing is not None:
                 await db.delete(existing)
         elif existing is not None:
-            existing.value = str(value)
+            existing.value = stored
         else:
             db.add(
                 CustomFieldValue(
                     field_id=field_id,
                     entity_type=entity_type,
                     entity_id=entity_id,
-                    value=str(value),
+                    value=stored,
                 )
             )
 
@@ -351,28 +392,69 @@ async def validate_entity_ref(
         raise HTTPException(status_code=404, detail=f"{entity_type} not found")
 
 
-async def cleanup_entity(db: AsyncSession, entity_type: str, entity_id: uuid.UUID) -> list[str]:
-    """Remove polymorphic satellites (tags, custom values, notes, attachment
-    rows) when an entity is deleted. Activities are kept as an audit trail.
-    Returns the stored_names of any deleted attachments — the caller unlinks
+async def remove_entity_satellites(
+    db: AsyncSession, entity_type: str, entity_ids: list[uuid.UUID]
+) -> list[str]:
+    """Everything that hangs off records which are being PERMANENTLY deleted
+    (trash purge, hard delete, the discarded half of a hard merge). The
+    polymorphic (entity_type, entity_id) columns carry no foreign key, so
+    nothing cascades — each satellite gets an explicit decision here, and
+    every permanent-delete path goes through this one function:
+
+      tags, custom values, notes, attachment rows  -> deleted
+      manual phone events logged on the record     -> deleted
+      tasks linked to the record                   -> kept, link detached
+                                                      (both halves nulled)
+      activities                                   -> kept as the audit trail
+
+    Returns the stored_names of the deleted attachments — the caller unlinks
     those files AFTER its commit (see services/attachments.py)."""
     from app.models import Note
     from app.services.attachments import collect_stored_names, delete_attachment_rows
 
+    if not entity_ids:
+        return []
     await db.execute(
         delete(EntityTag).where(
-            EntityTag.entity_type == entity_type, EntityTag.entity_id == entity_id
+            EntityTag.entity_type == entity_type, EntityTag.entity_id.in_(entity_ids)
         )
     )
     await db.execute(
         delete(CustomFieldValue).where(
             CustomFieldValue.entity_type == entity_type,
-            CustomFieldValue.entity_id == entity_id,
+            CustomFieldValue.entity_id.in_(entity_ids),
         )
     )
     await db.execute(
-        delete(Note).where(Note.entity_type == entity_type, Note.entity_id == entity_id)
+        delete(Note).where(Note.entity_type == entity_type, Note.entity_id.in_(entity_ids))
     )
-    stored = await collect_stored_names(db, entity_type, [entity_id])
-    await delete_attachment_rows(db, entity_type, [entity_id])
+    # Notes elsewhere that documented one of these calls lose the link, not
+    # the note. Postgres does that through the FK's ON DELETE SET NULL; the
+    # SQLite dev database runs without foreign keys, so do it by hand.
+    doomed_events = select(PhoneEvent.id).where(
+        PhoneEvent.entity_type == entity_type, PhoneEvent.entity_id.in_(entity_ids)
+    )
+    await db.execute(
+        update(Note).where(Note.phone_event_id.in_(doomed_events)).values(phone_event_id=None)
+    )
+    await db.execute(
+        delete(PhoneEvent).where(
+            PhoneEvent.entity_type == entity_type, PhoneEvent.entity_id.in_(entity_ids)
+        )
+    )
+    # The task outlives the record; a dangling pointer must not. Clients label
+    # an unlinked task by itself, exactly as they do for a never-linked one.
+    await db.execute(
+        update(Task)
+        .where(Task.entity_type == entity_type, Task.entity_id.in_(entity_ids))
+        .values(entity_type=None, entity_id=None)
+    )
+    stored = await collect_stored_names(db, entity_type, entity_ids)
+    await delete_attachment_rows(db, entity_type, entity_ids)
     return stored
+
+
+async def cleanup_entity(db: AsyncSession, entity_type: str, entity_id: uuid.UUID) -> list[str]:
+    """Single-record form of remove_entity_satellites (hard delete, hard
+    merge). Returns attachment stored_names to unlink after the commit."""
+    return await remove_entity_satellites(db, entity_type, [entity_id])

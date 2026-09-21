@@ -24,15 +24,23 @@ from app.models import (
     User,
     utcnow,
 )
+from pydantic import BaseModel
 from sqlalchemy import func
 
-from app.schemas import GoogleConfigIn
 from app.services import google as g
 from app.services.background import spawn
 from app.services.common import company_people
 from app.services.importer import find_duplicates
 
 router = APIRouter()
+
+
+class GoogleConfigBody(BaseModel):
+    client_id: str
+    # Blank (or omitted) means "keep the secret already stored" — the
+    # settings form never gets the secret back, so re-saving it sends "".
+    client_secret: str = ""
+
 
 # Binds the OAuth callback to the browser that asked for the auth URL: the
 # cookie holds a nonce whose hash rides in the signed state, and /callback
@@ -72,6 +80,9 @@ async def status(user: User = Depends(get_current_user), db: AsyncSession = Depe
         if backfill_total is None:
             addr_map, _ = await _org_contact_maps(db, user.org_id)
             backfill_total = g.count_backfill_addresses(addr_map)
+    # Additive: how much failed work is still owed a retry, and how much was
+    # given up on — so "no sync error" can't hide a hole in the archive.
+    retry_counts = await g.failure_counts(db, user.id) if account else {}
     return {
         "configured": cfg is not None,
         "client_id": cfg.client_id if cfg else None,
@@ -87,6 +98,7 @@ async def status(user: User = Depends(get_current_user), db: AsyncSession = Depe
             "gmail_backfill_done": backfill_done,
             "gmail_backfill_cursor": account.gmail_backfill_cursor if account else 0,
             "gmail_backfill_total": backfill_total,
+            **retry_counts,
         },
         "emails_matched": (
             await db.execute(
@@ -100,19 +112,27 @@ async def status(user: User = Depends(get_current_user), db: AsyncSession = Depe
 
 @router.post("/config")
 async def set_config(
-    body: GoogleConfigIn, admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
+    body: GoogleConfigBody, admin: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
+    client_id = body.client_id.strip()
+    client_secret = body.client_secret.strip()
+    if not client_id:
+        raise HTTPException(status_code=422, detail="Client ID is required")
     cfg = await _cfg(db, admin.org_id)
     if cfg is None:
+        if not client_secret:
+            raise HTTPException(status_code=422, detail="Client secret is required")
         cfg = GoogleIntegration(
-            org_id=admin.org_id,
-            client_id=body.client_id.strip(),
-            client_secret=body.client_secret.strip(),
+            org_id=admin.org_id, client_id=client_id, client_secret=client_secret
         )
         db.add(cfg)
     else:
-        cfg.client_id = body.client_id.strip()
-        cfg.client_secret = body.client_secret.strip()
+        cfg.client_id = client_id
+        if client_secret:
+            cfg.client_secret = client_secret
+        elif not cfg.client_secret:
+            # Nothing stored to fall back on (an earlier blank save wiped it).
+            raise HTTPException(status_code=422, detail="Client secret is required")
     await db.commit()  # visible before the client refetches
     return {"configured": True, "client_id": cfg.client_id, "redirect_uri": g.redirect_uri()}
 
@@ -182,6 +202,8 @@ async def callback(
     cfg = await _cfg(db, user.org_id)
     if cfg is None:
         return finish("not_configured")
+    org_id = user.org_id
+    await g._release_db(db)  # the token exchange must not sit inside a transaction
     try:
         tokens = await g.exchange_code(cfg, code)
         info = await g.get_userinfo(tokens["access_token"])
@@ -189,18 +211,35 @@ async def callback(
         return finish("exchange_error")
 
     refresh = tokens.get("refresh_token")
-    account = await _account(db, user.id)
-    if refresh is None and account is None:
-        # Without a refresh token we can't sync later; force re-consent.
+    account = await _account(db, user_id)
+    new_email = (info.get("email") or "").strip()
+    # A different Google identity than the one on file: everything that
+    # tracks sync position describes the OLD mailbox.
+    switched = (
+        account is not None
+        and bool(new_email)
+        and new_email.lower() != (account.email or "").strip().lower()
+    )
+    if switched and g.sync_in_progress(user_id):
+        # A running sync holds the old mailbox's position in memory and would
+        # write it back over the reset below. Rare, and retrying is cheap.
+        return finish("sync_running")
+    if refresh is None and (account is None or switched):
+        # Without a refresh token we can't sync later (and the stored one
+        # belongs to the other mailbox); force re-consent.
         return finish("no_refresh_token")
 
     if account is None:
         account = GoogleAccount(
-            user_id=user.id, org_id=user.org_id, email=info.get("email") or "", refresh_token=refresh
+            user_id=user_id, org_id=org_id, email=new_email, refresh_token=refresh
         )
         db.add(account)
     else:
-        account.email = info.get("email") or account.email
+        if switched:
+            # Start the new mailbox from scratch — history id, backfill walk
+            # and retry queue. Mail already archived from the old one stays.
+            await g.reset_mailbox_state(db, account)
+        account.email = new_email or account.email
         if refresh:
             account.refresh_token = refresh
     account.access_token = tokens["access_token"]
@@ -228,7 +267,22 @@ async def sync_now(user: User = Depends(get_current_user), db: AsyncSession = De
     account = await _account(db, user.id)
     if account is None:
         raise HTTPException(status_code=400, detail="No Google account connected")
-    spawn(g.sync_account_background(user.id, force_backfill=True))
+    # One sync per account at a time: if the scheduled pass (or an earlier
+    # click) is mid-sync, say so rather than queue a second walk behind it.
+    if not g.try_claim_sync(user.id):
+        raise HTTPException(
+            status_code=409,
+            detail="A sync is already running for this account — try again when it finishes",
+        )
+    try:
+        spawn(
+            g.sync_account_background(
+                user.id, force_backfill=True, claimed=True, label=account.email
+            )
+        )
+    except BaseException:
+        g.release_sync(user.id)
+        raise
     return {"status": "started"}
 
 
@@ -321,11 +375,14 @@ async def diagnose_backfill(admin: User = Depends(require_admin), db: AsyncSessi
         contact_map = await g._crm_email_map(db, admin.org_id)
         addresses = g._backfill_addresses(contact_map)
         out["total_addresses"] = len(addresses)
-        cursor = account.gmail_backfill_cursor or 0
-        chunk = addresses[cursor : cursor + g.BACKFILL_ADDRESSES_PER_CHECKPOINT]
+        cursor = g.backfill_position(addresses, account.gmail_backfill_after)
+        out["cursor"] = cursor
+        out["mid_group_page_saved"] = bool(account.gmail_backfill_page_token)
+        chunk = addresses[cursor : cursor + g.ADDRESSES_PER_QUERY]
         out["chunk_size"] = len(chunk)
         out["sample_addresses"] = chunk[:5]
 
+        await g._release_db(db)
         t0 = time.monotonic()
         ids = await g._search_contact_mail(access, chunk)
         out["search_ms"] = round((time.monotonic() - t0) * 1000)

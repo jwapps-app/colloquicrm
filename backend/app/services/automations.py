@@ -4,9 +4,19 @@ Each enabled rule pairs one trigger with one action. The engine sweeps every
 SWEEP_INTERVAL_SECONDS: for every rule it first RE-ARMS (deletes fire rows
 whose record no longer matches the trigger, so the rule can fire again after
 the next lapse), then evaluates the trigger with bounded SQL (never loads a
-whole table — WHERE + NOT EXISTS fire-row + LIMIT), executes the action, and
-records an automation_fires row. That row is both the idempotency guard
-(unique per rule+record) and the visible audit log.
+whole table — WHERE + NOT EXISTS fire-row + LIMIT). For each match it first
+CLAIMS the work — inserts and commits the automation_fires row — and only
+then executes the action, recording the outcome on that row. The row is the
+idempotency guard (unique per rule+record), the claim, and the visible audit
+log, in one.
+
+Claim-before-deliver is what makes overlapping sweeps safe (the 5-minute
+loop and an admin's "Run now", or two app instances): the unique constraint
+lets exactly one of them insert the row, and the loser never reaches the
+push/DM. The semantic is AT MOST ONCE — if delivery fails, the failure is
+written onto the fire row and the rule does not retry that record until it
+re-arms. A nag that occasionally goes missing is better than one that
+arrives twice, or forever.
 
 Design note — stage_entered is sweep-based state matching (opp.stage_id ==
 config stage, no fire row yet) rather than hook- or Activity-driven. The
@@ -28,7 +38,8 @@ import logging
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import and_, case, delete, or_, select
+from sqlalchemy import and_, case, delete, func, insert, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.db import SessionLocal
@@ -174,7 +185,11 @@ async def _candidates(db, rule: AutomationRule, now) -> list:
             stmt = stmt.where(Lead.converted_at.is_(None))
         statuses = cfg.get("status")
         if statuses and hasattr(model, "status"):
-            stmt = stmt.where(model.status.in_(list(statuses)))
+            # Case-insensitive: lead statuses are stored Title-Case ("New")
+            # while rules saved from the web app carry "new".
+            stmt = stmt.where(
+                func.lower(model.status).in_([str(s).strip().lower() for s in statuses])
+            )
         if cfg.get("pipeline_id") and model is Opportunity:
             stmt = stmt.where(Opportunity.pipeline_id == uuid.UUID(str(cfg["pipeline_id"])))
     elif rule.trigger_type == "stage_entered":
@@ -339,26 +354,83 @@ async def _execute_action(db, rule: AutomationRule, obj) -> dict:
 # ---- the sweep ----
 
 
-async def _process_rule(db, rule: AutomationRule, now) -> int:
-    await _rearm(db, rule, now)
-    fired = 0
-    for obj in await _candidates(db, rule, now):
-        detail = await _execute_action(db, rule, obj)
-        db.add(
-            AutomationFire(
+async def _claim(db, rule: AutomationRule, entity_id: uuid.UUID, label: str) -> uuid.UUID | None:
+    """Insert + COMMIT the fire row for (rule, record). Returns its id, or
+    None when another sweep already holds the claim. Committed before any
+    delivery on purpose: an uncommitted claim protects nothing."""
+    fire_id = uuid.uuid4()
+    try:
+        await db.execute(
+            insert(AutomationFire).values(
+                id=fire_id,
                 org_id=rule.org_id,
                 rule_id=rule.id,
                 entity_type=rule.entity_type,
-                entity_id=obj.id,
-                detail=detail,
+                entity_id=entity_id,
+                fired_at=utcnow(),
+                detail={"status": "pending", "action": rule.action_type, "record": label},
             )
         )
-        # Commit per fire: the action already happened out in the world
-        # (push/DM sent); losing the fire row to a later record's failure
-        # would re-fire it next sweep.
         await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        return None
+    return fire_id
+
+
+async def _record_outcome(db, fire_id: uuid.UUID, detail: dict) -> None:
+    await db.execute(
+        update(AutomationFire).where(AutomationFire.id == fire_id).values(detail=detail)
+    )
+    await db.commit()
+
+
+async def _process_rule(db, rule: AutomationRule, now) -> int:
+    await _rearm(db, rule, now)
+    model = ENTITY_MODELS[rule.entity_type]
+    # Work from plain (id, label) pairs. A failed action rolls the session
+    # back, which expires every ORM object loaded in it — touching one of
+    # those afterwards is implicit IO outside a greenlet. Each record is
+    # loaded fresh for its own turn instead.
+    candidates = [
+        (obj.id, record_label(rule.entity_type, obj)) for obj in await _candidates(db, rule, now)
+    ]
+    fired = 0
+    for entity_id, label in candidates:
+        fire_id = await _claim(db, rule, entity_id, label)
+        if fire_id is None:
+            continue  # an overlapping sweep got there first; it delivers
+        try:
+            obj = (
+                await db.execute(
+                    select(model).where(model.id == entity_id).execution_options(
+                        populate_existing=True
+                    )
+                )
+            ).scalar_one_or_none()
+            if obj is None:
+                detail = {"status": "skipped", "action": rule.action_type, "record": label,
+                          "error": "record no longer exists"}
+            else:
+                detail = await _execute_action(db, rule, obj)
+                detail["status"] = "done"
+            await _record_outcome(db, fire_id, detail)
+        except Exception as exc:
+            # The claim stays: at most once. What went wrong goes on the row
+            # (it is the audit log) instead of the row going away — deleting
+            # it would re-send next sweep whatever part of the action DID
+            # happen before the error.
+            log.exception("Rule %r failed on %s %s", rule.name, rule.entity_type, entity_id)
+            await db.rollback()
+            await _record_outcome(
+                db,
+                fire_id,
+                {"status": "failed", "action": rule.action_type, "record": label,
+                 "error": str(exc)[:500]},
+            )
+            continue
         fired += 1
-        log.info("Rule %r fired on %s %s: %s", rule.name, rule.entity_type, obj.id, detail)
+        log.info("Rule %r fired on %s %s: %s", rule.name, rule.entity_type, entity_id, detail)
     return fired
 
 

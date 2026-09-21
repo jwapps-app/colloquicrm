@@ -33,8 +33,10 @@ class Settings(BaseSettings):
     trusted_proxy_ips: str = "127.0.0.1/32,::1/128"
     # Public lead form abuse ceilings. A single form only accepts this many
     # submissions per UTC day (an absolute DoS cap on top of the per-IP
-    # limiter), and a submission whose Content-Length exceeds this byte bound
-    # is rejected before the body is parsed.
+    # limiter), and a submission bigger than this byte bound is rejected
+    # before the body is parsed — by Content-Length when there is one, and by
+    # counting the streamed bytes (main.py's body-limit middleware) when the
+    # request is chunked or lies about its length.
     form_daily_submission_cap: int = 500
     form_max_body_bytes: int = 65536
     # Public URL of this CRM's web app, used in links posted to chat and as

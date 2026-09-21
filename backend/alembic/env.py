@@ -14,7 +14,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Config values go through configparser interpolation, where a bare % is a
+# syntax error — and a correctly URL-encoded password is full of them
+# (p%40ss). Doubling is configparser's own escape; it reads back as one %.
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 

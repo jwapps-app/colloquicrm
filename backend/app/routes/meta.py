@@ -13,7 +13,7 @@ from app.schemas import (
     SavedFilterIn,
     SavedFilterUpdateIn,
 )
-from app.services.common import row_to_dict
+from app.services.common import canonical_checkbox, row_to_dict
 
 tags_router = APIRouter()
 custom_fields_router = APIRouter()
@@ -21,10 +21,15 @@ saved_filters_router = APIRouter()
 options_router = APIRouter()
 
 ENTITY_TYPES = {"person", "lead", "company", "opportunity"}
-# Mirrors CUSTOM_FIELD_TYPES in the web app — the controls ProfilePanel and
-# the importer actually render. Anything else would be stored as a type no
-# client knows how to edit.
-CUSTOM_FIELD_TYPES = {"text", "number", "date", "select", "checkbox", "url", "currency"}
+# Every type some client knows how to edit, and every type the importer can
+# create (text, date, select). The web app's list is text/number/date/select/
+# checkbox/url/currency; the iOS form switches on checkbox/date/dropdown/number
+# and treats the rest as text. "dropdown" is the iOS spelling of "select" —
+# accepted so a definition written for that client is never rejected here;
+# both mean "one of `options`" (the importer coerces them identically).
+CUSTOM_FIELD_TYPES = {
+    "text", "number", "date", "select", "dropdown", "checkbox", "url", "currency",
+}
 
 DEFAULT_CONTACT_TYPES = [
     "Personal",
@@ -192,6 +197,20 @@ async def update_custom_field(
         value = getattr(body, key)
         if value is not None:
             setattr(field, key, value)
+    if body.field_type == "checkbox":
+        # A field that becomes a checkbox inherits free-text values; give them
+        # the one spelling clients test for ("true"/"false").
+        values = (
+            (
+                await db.execute(
+                    select(CustomFieldValue).where(CustomFieldValue.field_id == field.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for v in values:
+            v.value = canonical_checkbox(v.value) or "false"
     if body.field_type == "date":
         # Convert existing values (e.g. Copper's 7/6/2026) so date pickers
         # can read them.

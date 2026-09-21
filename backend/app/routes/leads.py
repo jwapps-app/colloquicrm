@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -21,6 +21,7 @@ from app.models import (
 from app.schemas import ConvertIn, LeadIn
 from app.services.common import (
     add_tags,
+    custom_value_to_str,
     display_name_map,
     get_tag_maps,
     log_activity,
@@ -62,6 +63,8 @@ register_crud(
         "updated_at": Lead.updated_at,
     },
     filterable={"status": Lead.status, "owner_id": Lead.owner_id, "source": Lead.source},
+    # Statuses are stored Title-Case ("New"); ?status=new must still match.
+    ci_filters={"status"},
     default_sort="last_name",
     required_any=["first_name", "last_name"],
     enrich=enrich,
@@ -115,7 +118,9 @@ async def _copy_custom_fields(
                 field_id=person_field.id,
                 entity_type="person",
                 entity_id=person_id,
-                value=value,
+                # Same-named person field may be a different type than the
+                # lead's; store the value in the person field's spelling.
+                value=custom_value_to_str(person_field.field_type, value),
             )
         )
 
@@ -127,6 +132,25 @@ async def convert_lead(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # Claim the conversion first, in one conditional UPDATE. Two requests used
+    # to both read converted_at IS NULL and both create a Person (and company,
+    # and opportunity). The row lock this takes is held to the commit below,
+    # so a concurrent convert waits, re-checks the WHERE, matches nothing and
+    # gets the 409; if anything further down fails, the rollback un-claims.
+    now = utcnow()
+    claimed = (
+        await db.execute(
+            update(Lead)
+            .where(
+                Lead.id == lead_id,
+                Lead.org_id == user.org_id,
+                Lead.deleted_at.is_(None),
+                Lead.converted_at.is_(None),
+            )
+            .values(status="Converted", converted_at=now, updated_at=now)
+            .returning(Lead.id)
+        )
+    ).scalar_one_or_none()
     lead = (
         await db.execute(
             select(Lead).where(
@@ -136,19 +160,40 @@ async def convert_lead(
     ).scalar_one_or_none()
     if lead is None:
         raise HTTPException(status_code=404, detail="lead not found")
-    if lead.converted_at is not None:
+    if claimed is None:
         raise HTTPException(status_code=409, detail="Lead is already converted")
 
     company_id = None
-    if body.create_company and (lead.company_name or "").strip():
+    if body.company_id is not None:
+        # The caller picked the company — the only unambiguous answer when
+        # several share the lead's company name.
+        picked = (
+            await db.execute(
+                select(Company.id).where(
+                    Company.id == body.company_id,
+                    Company.org_id == user.org_id,
+                    Company.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if picked is None:
+            raise HTTPException(status_code=404, detail="company not found")
+        company_id = picked
+    elif body.create_company and (lead.company_name or "").strip():
         name = lead.company_name.strip()
+        # Company names aren't unique (the duplicates page exists for exactly
+        # that), so a name can match several. Deterministic pick: the oldest
+        # active match — the original, not whichever later copy.
         company = (
             await db.execute(
-                select(Company).where(
+                select(Company)
+                .where(
                     Company.org_id == user.org_id,
                     func.lower(Company.name) == name.lower(),
                     Company.deleted_at.is_(None),
                 )
+                .order_by(Company.created_at, Company.id)
+                .limit(1)
             )
         ).scalar_one_or_none()
         if company is None:
@@ -212,8 +257,7 @@ async def convert_lead(
         await log_activity(db, user.org_id, "opportunity", opp.id, "created", user.id)
         opportunity_id = opp.id
 
-    lead.status = "Converted"
-    lead.converted_at = utcnow()
+    # status/converted_at were set by the claim above.
     lead.converted_person_id = person.id
 
     await log_activity(
