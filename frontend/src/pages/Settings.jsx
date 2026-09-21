@@ -7,7 +7,7 @@ import AutomationsSection from '../components/AutomationsSection';
 import FormsSection from '../components/FormsSection';
 import FormModal from '../components/FormModal';
 import InlineField from '../components/InlineField';
-import { Loading } from '../components/ui';
+import { Loading, SecretInput, withoutBlankSecrets } from '../components/ui';
 import { fmtDate, fmtDateTime } from '../format';
 import { CF_ENTITY_TYPES, CUSTOM_FIELD_TYPES } from '../constants/options';
 
@@ -140,6 +140,8 @@ function ProfileSection() {
     setBusy(false);
   }
 
+  const [pwError, setPwError] = useState('');
+
   async function savePassword(e) {
     e.preventDefault();
     if (next !== confirm) {
@@ -147,6 +149,7 @@ function ProfileSection() {
       return;
     }
     setBusy(true);
+    setPwError('');
     try {
       await patch('/users/me', { current_password: current, new_password: next });
       setCurrent('');
@@ -154,7 +157,9 @@ function ProfileSection() {
       setConfirm('');
       toast.success('Password changed');
     } catch (err) {
-      toast.error(err.message);
+      // A wrong current password is a 401 that leaves the session alone
+      // (api.js step-up handling) — say so next to the field, where it's fixed.
+      setPwError(err.message);
     }
     setBusy(false);
   }
@@ -273,6 +278,11 @@ function ProfileSection() {
           <span>Confirm new password</span>
           <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required autoComplete="new-password" />
         </label>
+        {pwError && (
+          <div className="form-error" role="alert">
+            {pwError}
+          </div>
+        )}
         <div className="form-actions">
           <button className="btn btn-primary" type="submit" disabled={busy}>
             Change password
@@ -292,6 +302,8 @@ function SecuritySection() {
   const [qr, setQr] = useState(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  // Wrong authenticator code (a 401 that keeps the session) — shown by the input.
+  const [codeError, setCodeError] = useState('');
 
   async function begin() {
     setBusy(true);
@@ -315,6 +327,7 @@ function SecuritySection() {
   async function enable(e) {
     e.preventDefault();
     setBusy(true);
+    setCodeError('');
     try {
       await post('/auth/totp/enable', { code: code.trim() });
       setUser({ ...user, totp_enabled: true });
@@ -322,7 +335,7 @@ function SecuritySection() {
       setCode('');
       toast.success('Two-factor authentication enabled');
     } catch (err) {
-      toast.error(err.message);
+      setCodeError(err.message);
     }
     setBusy(false);
   }
@@ -330,13 +343,14 @@ function SecuritySection() {
   async function disable(e) {
     e.preventDefault();
     setBusy(true);
+    setCodeError('');
     try {
       await post('/auth/totp/disable', { code: code.trim() });
       setUser({ ...user, totp_enabled: false });
       setCode('');
       toast.success('Two-factor authentication disabled');
     } catch (err) {
-      toast.error(err.message);
+      setCodeError(err.message);
     }
     setBusy(false);
   }
@@ -366,6 +380,11 @@ function SecuritySection() {
               required
             />
           </label>
+          {codeError && (
+            <div className="form-error" role="alert">
+              {codeError}
+            </div>
+          )}
           <div className="form-actions">
             <button className="btn btn-danger" type="submit" disabled={busy || code.length !== 6}>
               Disable 2FA
@@ -415,6 +434,11 @@ function SecuritySection() {
               autoFocus
             />
           </label>
+          {codeError && (
+            <div className="form-error" role="alert">
+              {codeError}
+            </div>
+          )}
           <div className="form-actions">
             <button type="button" className="btn" onClick={() => setSetup(null)}>
               Cancel
@@ -442,9 +466,11 @@ function SessionsSection() {
       .then((d) => {
         if (on) setSessions(Array.isArray(d) ? d : d?.items || []);
       })
-      .catch(() => {
-        // Older backend without the sessions endpoint — hide the card.
-        if (on) setSessions([]);
+      .catch((e) => {
+        if (!on) return;
+        // Only a backend without the endpoint (404) hides the card; any other
+        // failure is shown — "couldn't load" is not "no sessions".
+        setSessions(e.status === 404 ? [] : 'error');
       });
     return () => {
       on = false;
@@ -462,6 +488,25 @@ function SessionsSection() {
     }
   }
 
+  if (sessions === 'error') {
+    return (
+      <div className="card settings-card">
+        <h3>Active sessions</h3>
+        <div className="muted panel-empty">
+          Couldn&apos;t load your sessions.{' '}
+          <button
+            className="linklike"
+            onClick={() => {
+              setSessions(null);
+              setVersion((v) => v + 1);
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (!sessions || sessions.length === 0) return null;
 
   return (
@@ -679,6 +724,47 @@ function UsersSection() {
   const [users, setUsers] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [version, setVersion] = useState(0);
+  // Colloqui accounts to map CRM users onto: null = integration not set up
+  // (no column), 'error' = couldn't list them, else the remote users.
+  const [colloquiUsers, setColloquiUsers] = useState(null);
+  const [linkBusy, setLinkBusy] = useState(null);
+
+  useEffect(() => {
+    let on = true;
+    get('/integrations/colloqui/status')
+      .then((s) => {
+        if (!on || !s?.configured) return null;
+        return get('/integrations/colloqui/users').then((list) => {
+          if (on) setColloquiUsers(Array.isArray(list) ? list : []);
+        });
+      })
+      .catch(() => {
+        if (on) setColloquiUsers('error');
+      });
+    return () => {
+      on = false;
+    };
+  }, []);
+
+  /** Map (or un-map) a CRM user's Colloqui account — an admin-only action;
+   * the server verifies the remote account and records its username. */
+  async function setColloquiLink(u, colloquiUserId) {
+    setLinkBusy(u.id);
+    try {
+      if (colloquiUserId) {
+        const res = await post('/integrations/colloqui/link', { colloqui_user_id: colloquiUserId, user_id: u.id });
+        toast.success(`${u.display_name} linked to @${res?.colloqui_username || 'their Colloqui account'}`);
+      } else {
+        await del(`/integrations/colloqui/link?user_id=${encodeURIComponent(u.id)}`);
+        toast.success(`${u.display_name} unlinked from Colloqui`);
+      }
+      bustCache('/users');
+      setVersion((v) => v + 1);
+    } catch (e) {
+      toast.error(e.message);
+    }
+    setLinkBusy(null);
+  }
 
   useEffect(() => {
     let on = true;
@@ -779,6 +865,7 @@ function UsersSection() {
                 <th className="no-sort">Email</th>
                 <th className="no-sort">Role</th>
                 <th className="no-sort">Status</th>
+                {colloquiUsers !== null && <th className="no-sort">Colloqui account</th>}
                 <th className="no-sort"></th>
               </tr>
             </thead>
@@ -792,6 +879,39 @@ function UsersSection() {
                   <td>{u.email}</td>
                   <td>{u.is_admin ? <span className="badge badge-admin">Admin</span> : 'Member'}</td>
                   <td>{u.is_active === false ? <span className="badge badge-muted">Inactive</span> : 'Active'}</td>
+                  {colloquiUsers !== null && (
+                    <td>
+                      {colloquiUsers === 'error' ? (
+                        <span className="muted">{u.colloqui_username ? `@${u.colloqui_username}` : '—'}</span>
+                      ) : (
+                        (() => {
+                          // /users carries the linked username; the option
+                          // values are Colloqui user ids.
+                          const linked = colloquiUsers.find((cu) => cu.username === u.colloqui_username);
+                          const orphan = u.colloqui_username && !linked;
+                          return (
+                            <select
+                              className="user-colloqui"
+                              aria-label={`Colloqui account for ${u.display_name}`}
+                              value={linked ? linked.id : orphan ? '__orphan__' : ''}
+                              disabled={linkBusy === u.id}
+                              onChange={(e) => {
+                                if (e.target.value !== '__orphan__') setColloquiLink(u, e.target.value);
+                              }}
+                            >
+                              <option value="">Not linked</option>
+                              {orphan && <option value="__orphan__">@{u.colloqui_username} (not on the server)</option>}
+                              {colloquiUsers.map((cu) => (
+                                <option key={cu.id} value={cu.id}>
+                                  {cu.display_name} (@{cu.username})
+                                </option>
+                              ))}
+                            </select>
+                          );
+                        })()
+                      )}
+                    </td>
+                  )}
                   <td>
                     {u.id !== me?.id && (
                       <button className="btn btn-small" onClick={() => toggleAdmin(u)}>
@@ -875,7 +995,8 @@ function ColloquiSection() {
         if (!on) return;
         setStatus(s);
         setBaseUrl(s.base_url || '');
-        if (s.configured) {
+        // Only admins link accounts, so only they need the remote user list.
+        if (s.configured && user?.is_admin) {
           get('/integrations/colloqui/users')
             .then((u) => on && setColloquiUsers(u))
             .catch(() => on && setColloquiUsers([]));
@@ -898,7 +1019,11 @@ function ColloquiSection() {
     e.preventDefault();
     setBusy(true);
     try {
-      const res = await post('/integrations/colloqui/connect', { base_url: baseUrl, api_key: apiKey });
+      // A blank key on a configured integration is left out: "keep the stored one".
+      const res = await post(
+        '/integrations/colloqui/connect',
+        withoutBlankSecrets({ base_url: baseUrl, api_key: apiKey }, ['api_key'])
+      );
       setApiKey('');
       setBootstrapNote(res.bootstrap_note || null);
       setVersion((v) => v + 1);
@@ -940,10 +1065,8 @@ function ColloquiSection() {
     if (!target) return;
     setBusy(true);
     try {
-      await post('/integrations/colloqui/link', {
-        colloqui_user_id: target.id,
-        colloqui_username: target.username,
-      });
+      // The server looks the account up itself and records its username.
+      await post('/integrations/colloqui/link', { colloqui_user_id: target.id });
       setVersion((v) => v + 1);
       toast.success(`Linked to @${target.username}`);
     } catch (err) {
@@ -996,14 +1119,8 @@ function ColloquiSection() {
             />
           </label>
           <label className="field">
-            <span>API key {status.configured && <span className="muted">(saved — enter again to replace)</span>}</span>
-            <input
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="colq_…"
-              required={!status.configured}
-              autoComplete="off"
-            />
+            <span>API key {status.configured && <span className="muted">(saved — leave blank to keep it)</span>}</span>
+            <SecretInput value={apiKey} onChange={setApiKey} saved={!!status.configured} placeholder="colq_…" />
           </label>
           {bootstrapNote && <p className="bootstrap-note">✓ {bootstrapNote}</p>}
           <details className="howto">
@@ -1035,8 +1152,9 @@ function ColloquiSection() {
                 anything the CRM posts.
               </p>
               <p>
-                Afterwards, everyone picks their own account under <em>My Colloqui account</em> below —
-                that's what routes due-task DMs to the right person.
+                Afterwards, an administrator maps each CRM user to their Colloqui account — under
+                Settings → Users, or <em>My Colloqui account</em> below for yourself. That's what routes
+                due-task DMs to the right person.
               </p>
             </div>
           </details>
@@ -1063,7 +1181,19 @@ function ColloquiSection() {
       {status.configured && (
         <div className="link-block">
           <h4>My Colloqui account</h4>
-          {status.me?.colloqui_user_id ? (
+          {/* Linking decides who receives whose reminders and who is invited
+              into the CRM space, so it is an administrator's call. Everyone
+              else sees their mapping read-only. */}
+          {!user?.is_admin ? (
+            status.me?.colloqui_user_id ? (
+              <p>
+                Linked to <strong>@{status.me.colloqui_username || 'unknown'}</strong> — due-task reminders
+                arrive as DMs. <span className="muted">Ask an administrator if this needs to change.</span>
+              </p>
+            ) : (
+              <p className="muted">Not linked yet. Ask an administrator to link your Colloqui account.</p>
+            )
+          ) : status.me?.colloqui_user_id ? (
             <p>
               Linked to <strong>@{status.me.colloqui_username || 'unknown'}</strong> — due-task reminders
               arrive as DMs.{' '}
@@ -1075,7 +1205,7 @@ function ColloquiSection() {
             <Loading small />
           ) : (
             <form className="form-inline" onSubmit={linkAccount}>
-              <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+              <select value={selected} onChange={(e) => setSelected(e.target.value)} aria-label="Your Colloqui user">
                 <option value="">Pick your Colloqui user…</option>
                 {colloquiUsers.map((u) => (
                   <option key={u.id} value={u.id}>
@@ -1088,11 +1218,47 @@ function ColloquiSection() {
               </button>
             </form>
           )}
+          {user?.is_admin && (
+            <p className="muted">Map other people&apos;s accounts under Settings → Users.</p>
+          )}
         </div>
       )}
 
       {status.last_error && <p className="form-error">Last error: {status.last_error}</p>}
     </div>
+  );
+}
+
+/** Failed Gmail work that is still owed a retry, or was given up on — shown
+ * only when there is any, so a clean "no sync error" can't hide a gap. */
+function GmailRetryCounts({ me }) {
+  const n = (k) => Number(me?.[k]) || 0;
+  const pending = { messages: n('gmail_messages_pending_retry'), addresses: n('gmail_addresses_pending_retry') };
+  const givenUp = { messages: n('gmail_messages_given_up'), addresses: n('gmail_addresses_given_up') };
+  const describe = ({ messages, addresses }) =>
+    [
+      messages ? `${messages} message${messages === 1 ? '' : 's'}` : null,
+      addresses ? `${addresses} contact address${addresses === 1 ? '' : 'es'}` : null,
+    ]
+      .filter(Boolean)
+      .join(' and ');
+  const hasPending = pending.messages + pending.addresses > 0;
+  const hasGivenUp = givenUp.messages + givenUp.addresses > 0;
+  if (!hasPending && !hasGivenUp) return null;
+  return (
+    <>
+      {hasPending && (
+        <p className="gmail-hint">
+          ↻ {describe(pending)} couldn&apos;t be fetched and will be retried on the next syncs.
+        </p>
+      )}
+      {hasGivenUp && (
+        <p className="form-error">
+          {describe(givenUp)} failed repeatedly and {givenUp.messages + givenUp.addresses === 1 ? 'was' : 'were'} given
+          up on — that mail is missing from the timelines.
+        </p>
+      )}
+    </>
   );
 }
 
@@ -1129,7 +1295,11 @@ function GoogleSection() {
     e.preventDefault();
     setBusy(true);
     try {
-      await post('/integrations/google/config', { client_id: clientId, client_secret: clientSecret });
+      // Blank secret = omitted = the server keeps the stored one.
+      await post(
+        '/integrations/google/config',
+        withoutBlankSecrets({ client_id: clientId, client_secret: clientSecret }, ['client_secret'])
+      );
       setClientSecret('');
       setVersion((v) => v + 1);
       toast.success('Google OAuth client saved');
@@ -1170,7 +1340,10 @@ function GoogleSection() {
       toast.success('Sync started — email history and interaction counts update in the background');
       setVersion((v) => v + 1);
     } catch (e) {
-      toast.error(e.message);
+      // 409 = a sync (manual or scheduled) is already in flight. Not an error
+      // worth alarming anyone over — it's doing what they asked for.
+      if (e.status === 409) toast.info('A Google sync is already running — it will finish on its own. Check back in a minute.');
+      else toast.error(e.message);
     }
     setBusy(false);
   }
@@ -1214,8 +1387,9 @@ function GoogleSection() {
         {status.me?.connected && <span className="badge status-won">Connected</span>}
       </div>
       <p className="muted">
-        Read-only Contacts and Calendar sync. Google is never used to sign in to the CRM — this only
-        pulls your contacts for import and matches calendar events to People, Leads and Companies.
+        Read-only Contacts, Calendar and Gmail sync. Google is never used to sign in to the CRM — this
+        pulls your contacts for import, matches calendar events to People, Leads and Companies, and
+        shows mail exchanged with them on their timelines.
       </p>
 
       {user?.is_admin && (
@@ -1225,10 +1399,14 @@ function GoogleSection() {
             <div className="howto-body">
               <ol>
                 <li>Go to <strong>console.cloud.google.com</strong> → create (or pick) a project.</li>
-                <li>APIs &amp; Services → Library: enable the <strong>People API</strong> and the
-                  <strong> Google Calendar API</strong>.</li>
+                <li>APIs &amp; Services → Library: enable the <strong>People API</strong>, the
+                  <strong> Google Calendar API</strong> and the <strong>Gmail API</strong>.</li>
                 <li>APIs &amp; Services → OAuth consent screen: External (or Internal for a Workspace
-                  domain), fill in the app name, add the two scopes if prompted.</li>
+                  domain), fill in the app name, and add the scopes the CRM requests — all read-only:
+                  <code> openid</code>, <code>email</code>, <code>…/auth/contacts.readonly</code>,
+                  <code> …/auth/calendar.readonly</code> and <code>…/auth/gmail.readonly</code>. Gmail
+                  read access is a restricted scope: an External app stays in Testing (add each user as
+                  a test user) unless you take it through Google&apos;s verification.</li>
                 <li>APIs &amp; Services → Credentials → Create credentials →
                   <strong> OAuth client ID</strong> → type <strong>Web application</strong>.</li>
                 <li>Add this exact redirect URI, then paste the client ID and secret below.</li>
@@ -1250,14 +1428,9 @@ function GoogleSection() {
           </label>
           <label className="field">
             <span>
-              Client secret {status.configured && <span className="muted">(saved — enter again to replace)</span>}
+              Client secret {status.configured && <span className="muted">(saved — leave blank to keep it)</span>}
             </span>
-            <input
-              value={clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
-              autoComplete="off"
-              required={!status.configured}
-            />
+            <SecretInput value={clientSecret} onChange={setClientSecret} saved={!!status.configured} />
           </label>
           <div className="form-actions">
             <button className="btn btn-small btn-primary" type="submit" disabled={busy || !clientId || (!clientSecret && !status.configured)}>
@@ -1300,9 +1473,16 @@ function GoogleSection() {
                         emails and interaction counts keep filling in.
                       </p>
                     </div>
-                  ) : (
+                  ) : status.me.gmail_backfill_done ? (
                     <p className="muted">✓ History backfill complete.</p>
+                  ) : (
+                    // Not done and nothing to measure yet: it hasn't started.
+                    <p className="muted">
+                      History backfill hasn&apos;t started yet — it begins with the next sync (or hit
+                      &ldquo;Sync now&rdquo;).
+                    </p>
                   )}
+                  <GmailRetryCounts me={status.me} />
                 </>
               ) : (
                 <p className="gmail-hint">
@@ -1372,7 +1552,11 @@ function RingCentralSection() {
     e.preventDefault();
     setBusy(true);
     try {
-      await post('/integrations/ringcentral/connect', { client_id: clientId, client_secret: clientSecret, jwt });
+      // Blank secrets are omitted — the server keeps the stored ones.
+      await post(
+        '/integrations/ringcentral/connect',
+        withoutBlankSecrets({ client_id: clientId, client_secret: clientSecret, jwt }, ['client_secret', 'jwt'])
+      );
       setClientSecret('');
       setJwt('');
       setVersion((v) => v + 1);
@@ -1400,7 +1584,8 @@ function RingCentralSection() {
       toast.success(`Synced ${res.calls_synced} calls, ${res.sms_synced} texts`);
       setVersion((v) => v + 1);
     } catch (e) {
-      toast.error(e.message);
+      if (e.status === 409) toast.info('A RingCentral sync is already running — it will finish on its own.');
+      else toast.error(e.message);
     }
     setBusy(false);
   }
@@ -1446,16 +1631,18 @@ function RingCentralSection() {
             </div>
           </details>
           <label className="field">
-            <span>Client ID</span>
-            <input value={clientId} onChange={(e) => setClientId(e.target.value)} required={!status.configured} autoComplete="off" />
+            {/* Not a secret, but the status endpoint doesn't return it and the
+                server requires it on every connect. */}
+            <span>Client ID {status.configured && <span className="muted">(re-enter to reconnect)</span>}</span>
+            <input value={clientId} onChange={(e) => setClientId(e.target.value)} required autoComplete="off" />
           </label>
           <label className="field">
-            <span>Client secret {status.configured && <span className="muted">(saved — re-enter to replace)</span>}</span>
-            <input value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} required={!status.configured} autoComplete="off" />
+            <span>Client secret {status.configured && <span className="muted">(saved — leave blank to keep it)</span>}</span>
+            <SecretInput value={clientSecret} onChange={setClientSecret} saved={!!status.configured} />
           </label>
           <label className="field">
-            <span>JWT credential</span>
-            <textarea rows={3} value={jwt} onChange={(e) => setJwt(e.target.value)} required={!status.configured} />
+            <span>JWT credential {status.configured && <span className="muted">(saved — leave blank to keep it)</span>}</span>
+            <SecretInput value={jwt} onChange={setJwt} saved={!!status.configured} />
           </label>
           <div className="form-actions">
             {status.configured && (
@@ -1507,6 +1694,8 @@ const GOOGLE_RESULT_MESSAGES = {
   not_configured: 'The Google OAuth client is not configured.',
   exchange_error: 'Google rejected the token exchange — check the client ID and secret.',
   no_refresh_token: 'Google did not return an offline token — try again (you may need to remove the app at myaccount.google.com/permissions first).',
+  sync_running:
+    'A Google sync is running right now, so the account wasn’t switched. Give it a minute to finish, then connect again.',
 };
 
 export default function Settings() {

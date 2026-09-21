@@ -8,6 +8,7 @@ import { Loading } from './ui';
 
 const HOURS = Array.from({ length: 11 }, (_, i) => i + 8); // 8 AM – 6 PM
 const MINUTES = [0, 15, 30, 45];
+const PAGE = 50; // open tasks fetched per request
 
 // Default task time: an hour from now rounded up to the quarter hour,
 // clamped into the 8 AM–6 PM window (else tomorrow morning).
@@ -36,6 +37,10 @@ export default function TasksPanel({ entityType, entityId }) {
   const toast = useToast();
   const { user } = useAuth();
   const [tasks, setTasks] = useState(null);
+  // The server's count of open tasks here — the panel loads PAGE at a time
+  // and says so when there are more, rather than passing a slice off as all.
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
   const [name, setName] = useState('');
   const [picking, setPicking] = useState(false);
   const [whenDate, setWhenDate] = useState('');
@@ -46,12 +51,26 @@ export default function TasksPanel({ entityType, entityId }) {
 
   const loadEpoch = useRef(0);
 
-  async function load() {
+  async function load(wantPages = pages) {
     const epoch = ++loadEpoch.current;
     try {
-      const d = await get('/tasks', { entity_type: entityType, entity_id: entityId, status: 'open', page_size: 50 });
-      if (epoch !== loadEpoch.current) return; // superseded by a newer load
-      setTasks(d?.items || []);
+      const items = [];
+      let count = 0;
+      for (let page = 1; page <= wantPages; page += 1) {
+        const d = await get('/tasks', {
+          entity_type: entityType,
+          entity_id: entityId,
+          status: 'open',
+          page,
+          page_size: PAGE,
+        });
+        if (epoch !== loadEpoch.current) return; // superseded by a newer load
+        items.push(...(d?.items || []));
+        count = Number(d?.total) || 0;
+        if (items.length >= count || !(d?.items || []).length) break;
+      }
+      setTasks(items);
+      setTotal(Math.max(count, items.length));
     } catch (e) {
       if (epoch !== loadEpoch.current) return;
       toast.error(e.message);
@@ -61,7 +80,9 @@ export default function TasksPanel({ entityType, entityId }) {
 
   useEffect(() => {
     setTasks(null);
-    load();
+    setTotal(0);
+    setPages(1);
+    load(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, entityId]);
 
@@ -112,6 +133,7 @@ export default function TasksPanel({ entityType, entityId }) {
     try {
       await post(`/tasks/${t.id}/complete`);
       setTasks((ts) => ts.filter((x) => x.id !== t.id));
+      setTotal((n) => Math.max(0, n - 1));
       toast.success('Done');
       // Completing a recurring task spawns its next occurrence server-side —
       // refetch so it shows up right away.
@@ -119,6 +141,12 @@ export default function TasksPanel({ entityType, entityId }) {
     } catch (e) {
       toast.error(e.message);
     }
+  }
+
+  function showAll() {
+    const want = Math.ceil(total / PAGE);
+    setPages(want);
+    load(want);
   }
 
   const now = new Date();
@@ -150,6 +178,14 @@ export default function TasksPanel({ entityType, entityId }) {
               </label>
             );
           })}
+          {total > tasks.length && (
+            <div className="muted panel-more">
+              Showing {tasks.length} of {total} open tasks —{' '}
+              <button type="button" className="linklike" onClick={showAll}>
+                Show all
+              </button>
+            </div>
+          )}
         </div>
       )}
 

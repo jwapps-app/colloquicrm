@@ -5,6 +5,19 @@ const TOKEN_KEY = 'crm_token';
 // code) rather than an expired session — don't redirect for these.
 const NO_REDIRECT_PATHS = ['/auth/login', '/auth/setup', '/auth/totp', '/auth/bootstrap'];
 
+// Step-up checks on an already-authenticated session: the server answers 401
+// for a wrong current password / authenticator code. That must surface inline,
+// not sign the user out — unless the 401 is really the session dying, which
+// the auth dependency reports with one of SESSION_DEAD_DETAILS.
+const STEP_UP_REQUESTS = ['PATCH /users/me', 'POST /auth/totp/enable', 'POST /auth/totp/disable'];
+const SESSION_DEAD_DETAILS = [
+  'Not authenticated',
+  'Invalid session',
+  'Session expired',
+  'Account disabled',
+  'Two-factor verification required',
+];
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -68,7 +81,8 @@ async function request(method, path, { params, body, formData } = {}) {
     throw new Error('Network error — could not reach the server.');
   }
 
-  if (res.status === 401 && !NO_REDIRECT_PATHS.includes(path)) {
+  const stepUp = STEP_UP_REQUESTS.includes(`${method} ${path}`);
+  if (res.status === 401 && !stepUp && !NO_REDIRECT_PATHS.includes(path)) {
     throw unauthorized(method, path);
   }
 
@@ -82,6 +96,13 @@ async function request(method, path, { params, body, formData } = {}) {
     } catch {
       data = text;
     }
+  }
+
+  if (res.status === 401 && stepUp) {
+    // Only a recognisable verification failure stays inline. A dead session —
+    // or a 401 with no readable detail (proxy page) — still goes to login.
+    const detail = data && typeof data === 'object' && typeof data.detail === 'string' ? data.detail : '';
+    if (!detail || SESSION_DEAD_DETAILS.includes(detail)) throw unauthorized(method, path);
   }
 
   if (!res.ok) {
@@ -102,7 +123,29 @@ async function request(method, path, { params, body, formData } = {}) {
   return data;
 }
 
-export async function download(path, params) {
+/** Filename from a Content-Disposition header. RFC 5987 `filename*=` (what
+ * Starlette emits for non-ASCII names) wins over the plain `filename=`. */
+export function dispositionFilename(dispo) {
+  if (!dispo) return null;
+  const star = dispo.match(/filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i);
+  if (star) {
+    const raw = star[2].trim().replace(/^"|"$/g, '');
+    try {
+      const name = decodeURIComponent(raw);
+      if (name) return name;
+    } catch {
+      // malformed percent-encoding — fall through to filename=
+    }
+  }
+  const quoted = dispo.match(/(?:^|;)\s*filename\s*=\s*"((?:[^"\\]|\\.)*)"/i);
+  if (quoted) return quoted[1].replace(/\\(.)/g, '$1') || null;
+  const bare = dispo.match(/(?:^|;)\s*filename\s*=\s*([^;]+)/i);
+  return bare ? bare[1].trim() || null : null;
+}
+
+/** Fetch with auth and hand the body to the browser as a file. `fallbackName`
+ * is used when the response names no file (or names it unreadably). */
+export async function download(path, params, fallbackName = 'export.csv') {
   const headers = {};
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -122,10 +165,10 @@ export async function download(path, params) {
   }
   const blob = await res.blob();
   const dispo = res.headers.get('Content-Disposition') || '';
-  const m = dispo.match(/filename="?([^";]+)"?/);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = m ? m[1] : 'export.csv';
+  // Path separators never belong in a download name, whatever the header says.
+  a.download = (dispositionFilename(dispo) || fallbackName || 'download').replace(/[\\/]/g, '_');
   document.body.appendChild(a);
   a.click();
   a.remove();

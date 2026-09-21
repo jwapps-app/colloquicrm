@@ -11,31 +11,52 @@ export function useEmailBodies() {
   const [open, setOpen] = useState(null);
   const [bodies, setBodies] = useState({});
 
+  async function load(id) {
+    setBodies((b) => ({ ...b, [id]: { loading: true } }));
+    try {
+      const body = await get(`/emails/${id}/body`);
+      setBodies((b) => ({ ...b, [id]: { ...body, loading: false } }));
+    } catch (e) {
+      setBodies((b) => ({ ...b, [id]: { error: e.message, loading: false } }));
+    }
+  }
+
   async function toggle(id) {
     if (open === id) {
       setOpen(null);
       return;
     }
     setOpen(id);
-    if (!bodies[id]) {
-      setBodies((b) => ({ ...b, [id]: { loading: true } }));
-      try {
-        const body = await get(`/emails/${id}/body`);
-        setBodies((b) => ({ ...b, [id]: { ...body, loading: false } }));
-      } catch (e) {
-        setBodies((b) => ({ ...b, [id]: { error: e.message, loading: false } }));
-      }
-    }
+    // Only a successful body is a cache hit — a failed fetch is tried again
+    // on the next open instead of pinning its error for the page's lifetime.
+    if (!bodies[id] || bodies[id].error) await load(id);
   }
 
-  return { open, toggle, bodies, close: () => setOpen(null) };
+  /** Refetch a body whose load failed (the Retry button in <EmailBody>). */
+  const retry = (id) => {
+    if (!bodies[id]?.loading) load(id);
+  };
+
+  return { open, toggle, bodies, retry, close: () => setOpen(null) };
 }
 
-export function EmailBody({ body, children }) {
+export function EmailBody({ body, onRetry, children }) {
   return (
     <div className="email-body-wrap">
       {body?.loading && <Loading small />}
-      {body?.error && <div className="form-error">{body.error}</div>}
+      {body?.error && (
+        <div className="form-error">
+          {body.error}
+          {onRetry && (
+            <>
+              {' '}
+              <button type="button" className="linklike" onClick={onRetry}>
+                Retry
+              </button>
+            </>
+          )}
+        </div>
+      )}
       {body?.body_text && <div className="email-body">{body.body_text}</div>}
       {!body?.body_text && body?.body_html && (
         <iframe title="email" className="email-frame" sandbox="" srcDoc={body.body_html} />

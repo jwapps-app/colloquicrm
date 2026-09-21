@@ -50,7 +50,7 @@ export default function Feed() {
   const [hasMore, setHasMore] = useState(false);
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
-  const { open: openEmail, toggle: toggleEmail, bodies, close: closeEmail } = useEmailBodies();
+  const { open: openEmail, toggle: toggleEmail, bodies, retry: retryEmail, close: closeEmail } = useEmailBodies();
   // Set when a failed load-more rolls the page back: that page's data is
   // already loaded, so the effect run the rollback triggers must not append
   // it again. Clicking "Load more" then re-requests the failed page.
@@ -169,6 +169,8 @@ export default function Feed() {
                             role="button"
                             tabIndex={0}
                             onKeyDown={(e) => {
+                              // Enter on a record chip inside must follow the chip's link.
+                              if (e.target !== e.currentTarget) return;
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
                                 toggleEmail(it.id);
@@ -184,7 +186,7 @@ export default function Feed() {
                           </div>
                           {!open && it.snippet && <div className="muted email-snippet">{it.snippet}</div>}
                           {open && (
-                            <EmailBody body={b}>
+                            <EmailBody body={b} onRetry={() => retryEmail(it.id)}>
                               {user?.id === it.owner_user_id && it.gmail_id && (
                                 <a
                                   className="muted email-open"

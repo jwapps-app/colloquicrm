@@ -7,7 +7,17 @@ export const CONTACT_TYPES = ['Potential Customer', 'Current Customer', 'Uncateg
   (v) => ({ value: v, label: v })
 );
 
-export const LEAD_STATUSES = ['new', 'open', 'contacted', 'qualified', 'unqualified'].map(opt);
+// Canonical Title-Case values — exactly what the server stores and returns
+// (it normalizes input case-insensitively, but filters, automation rules and
+// option matching here all compare against these literals).
+export const LEAD_STATUSES = ['New', 'Open', 'Contacted', 'Qualified', 'Unqualified', 'Converted'].map(opt);
+
+// "Converted" is set by the convert action, not picked by hand on a new lead.
+export const LEAD_CREATE_STATUSES = LEAD_STATUSES.filter((o) => o.value !== 'Converted');
+
+/** CSS class for a status badge. Class names stay lowercase whatever the
+ * stored casing is ("New" → status-new). */
+export const statusClass = (status) => `status-${String(status || '').toLowerCase().replace(/\s+/g, '-')}`;
 
 export const OPPORTUNITY_STATUSES = ['open', 'won', 'lost', 'abandoned'].map(opt);
 

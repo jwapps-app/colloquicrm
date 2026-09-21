@@ -21,8 +21,29 @@ export function money(value, currency, { maxFractionDigits } = {}) {
   }
 }
 
-/** Whole-dollar money — no cents. Used for report totals. */
-export const money0 = (value) => money(value, 'USD', { maxFractionDigits: 0 });
+/** Whole-unit money — no cents. Used for report totals. The caller names the
+ * currency the figure is in; amounts in different currencies are never added. */
+export const money0 = (value, currency) => money(value, currency || 'USD', { maxFractionDigits: 0 });
+
+/** Sum rows' `value` per currency — never across. Returns [[currency, total]]
+ * with the largest pile first (ties alphabetical) so the order is stable. */
+export function sumByCurrency(rows) {
+  const sums = new Map();
+  (rows || []).forEach((r) => {
+    const n = Number(r.value);
+    if (!n) return;
+    const cur = r.currency || 'USD';
+    sums.set(cur, (sums.get(cur) || 0) + n);
+  });
+  return [...sums.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+/** "$12,000 · €3,400" — one subtotal per currency. */
+export function moneyTotals(rows, { empty = money0(0, 'USD') } = {}) {
+  const sums = sumByCurrency(rows);
+  if (sums.length === 0) return empty;
+  return sums.map(([cur, total]) => money0(total, cur)).join(' · ');
+}
 
 /** Parse a server timestamp. Naive datetimes (no zone suffix) are UTC —
  * SQLite dev returns them that way; Postgres sends +00:00. Date-only
@@ -40,6 +61,16 @@ export function fmtDate(iso) {
   if (!iso) return '—';
   const d = parseWhen(iso);
   return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString();
+}
+
+/** An all-day calendar date. The server stores these at 12:00 UTC of the
+ * intended day, so the date must be read in UTC — the viewer's zone would
+ * shift it across midnight (west of UTC for a midnight stamp, far east of it
+ * for a noon one). */
+export function fmtAllDayDate(iso) {
+  if (!iso) return '—';
+  const d = parseWhen(iso);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString(undefined, { timeZone: 'UTC' });
 }
 
 export function fmtDateTime(iso) {

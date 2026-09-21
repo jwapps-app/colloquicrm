@@ -8,7 +8,8 @@ const columns = [
   { key: 'name', label: 'Name', render: (c) => <strong>{c.name}</strong> },
   { key: 'email_domain', label: 'Email domain', render: (c) => c.email_domain || '—' },
   { key: 'contact_type', label: 'Contact type', render: (c) => (c.contact_type ? humanize(c.contact_type) : '—') },
-  { key: 'work_phone', label: 'Phone', render: (c) => c.work_phone || '—' },
+  // Not in the server's sortable map (routes/companies.py).
+  { key: 'work_phone', label: 'Phone', sortable: false, render: (c) => c.work_phone || '—' },
 ];
 
 export default function CompaniesList() {

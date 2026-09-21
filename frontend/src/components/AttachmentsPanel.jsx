@@ -55,7 +55,9 @@ export default function AttachmentsPanel({ entityType, entityId }) {
 
   async function open(a) {
     try {
-      await download(`/attachments/${a.id}/download`);
+      // The attachment's own name is the fallback when the response header
+      // can't be read — never the CSV-export default.
+      await download(`/attachments/${a.id}/download`, undefined, a.filename || 'attachment');
     } catch (e) {
       toast.error(e.message);
     }
@@ -106,6 +108,9 @@ export default function AttachmentsPanel({ entityType, entityId }) {
               role="button"
               tabIndex={0}
               onKeyDown={(e) => {
+                // Row-level only: Enter/Space on the nested Delete button
+                // bubbles here and must not start a download.
+                if (e.target !== e.currentTarget) return;
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   open(a);

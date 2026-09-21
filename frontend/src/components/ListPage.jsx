@@ -1,9 +1,40 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { bustCache, cachedGet, del, download, get, post } from '../api';
 import { useToast } from './Toast';
 import FormModal from './FormModal';
 import { Empty, Loading } from './ui';
+
+// Filters a link may carry in the URL ("View all" from a related panel or the
+// board): /people?company_id=…, /opportunities?status=open&pipeline_id=….
+// Every key is one the server's `filterable` maps know.
+const URL_FILTER_KEYS = [
+  'status',
+  'contact_type',
+  'source',
+  'owner_id',
+  'tag',
+  'company_id',
+  'primary_person_id',
+  'pipeline_id',
+  'stage_id',
+];
+// Chip text for a URL filter this list has no dropdown for.
+const URL_FILTER_LABELS = {
+  company_id: 'one company',
+  primary_person_id: 'one person',
+  stage_id: 'one stage',
+  pipeline_id: 'one pipeline',
+};
+
+function filtersFromUrl(searchParams) {
+  const f = {};
+  URL_FILTER_KEYS.forEach((k) => {
+    const v = searchParams.get(k);
+    if (v) f[k] = v;
+  });
+  return f;
+}
 
 /**
  * Generic entity list page: debounced search, sortable columns, filter bar,
@@ -31,6 +62,7 @@ export default function ListPage({
 }) {
   const nav = useNavigate();
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // The sort you choose becomes this list's default (per device).
   const prefsKey = `crm_list:${entityType}`;
@@ -47,9 +79,15 @@ export default function ListPage({
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState(() => readPrefs().sort || defaultSort);
+  // A remembered sort is only honoured while a sortable column still offers
+  // it — a key the server can't sort by would show one order and claim another.
+  const sortKeys = columns.filter((c) => c.sortable !== false).map((c) => c.sortKey || c.key);
+  const [sort, setSort] = useState(() => {
+    const remembered = readPrefs().sort;
+    return remembered && (remembered === defaultSort || sortKeys.includes(remembered)) ? remembered : defaultSort;
+  });
   const [order, setOrder] = useState(() => readPrefs().order || defaultOrder);
-  const [filters, setFilters] = useState({});
+  const [filters, setFilters] = useState(() => filtersFromUrl(searchParams));
   const [tags, setTags] = useState([]);
   const [users, setUsers] = useState([]);
   const [saved, setSaved] = useState([]);
@@ -63,6 +101,33 @@ export default function ListPage({
   const [exporting, setExporting] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const pageSize = 25;
+
+  // A later navigation to this same list with different URL filters (the
+  // component stays mounted) re-seeds them. Our own URL edits are skipped —
+  // they've already updated `filters`.
+  const urlKey = searchParams.toString();
+  const seenUrlKey = useRef(urlKey);
+  useEffect(() => {
+    if (seenUrlKey.current === urlKey) return;
+    seenUrlKey.current = urlKey;
+    setFilters(filtersFromUrl(searchParams));
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlKey]);
+
+  function dropUrlFilters(keys) {
+    const next = new URLSearchParams(searchParams);
+    let changed = false;
+    (keys || URL_FILTER_KEYS).forEach((k) => {
+      if (next.has(k)) {
+        next.delete(k);
+        changed = true;
+      }
+    });
+    if (!changed) return;
+    seenUrlKey.current = next.toString();
+    setSearchParams(next, { replace: true });
+  }
 
   // Debounced search.
   useEffect(() => {
@@ -144,6 +209,9 @@ export default function ListPage({
 
   function setFilter(key, value) {
     setPage(1);
+    // The URL only seeds filters; once the user changes one, stop advertising
+    // the old value there (a reload would bring it back).
+    dropUrlFilters([key]);
     setFilters((f) => {
       const next = { ...f };
       if (value) next[key] = value;
@@ -337,11 +405,24 @@ export default function ListPage({
             ))}
           </select>
         ))}
+        {/* Filters that arrived by link and have no dropdown here — shown so the
+            narrowed list never looks like the whole list. */}
+        {Object.keys(filters)
+          .filter((k) => !defs.some((d) => d.key === k))
+          .map((k) => (
+            <span key={k} className="chip">
+              <span>Only {URL_FILTER_LABELS[k] || k}</span>
+              <button type="button" className="chip-x" onClick={() => setFilter(k, '')} aria-label={`Remove ${k} filter`}>
+                ×
+              </button>
+            </span>
+          ))}
         {hasFilters && (
           <button
             className="btn btn-ghost"
             onClick={() => {
               setFilters({});
+              dropUrlFilters();
               setQInput('');
               setQ('');
               setPage(1);
@@ -473,12 +554,35 @@ export default function ListPage({
                       />
                     </th>
                     {columns.map((c) => {
-                      const key = c.sortKey || c.key;
-                      const active = sort === key && c.sortable !== false;
+                      // Columns the server can't order by carry sortable:false —
+                      // plain header text, no button, no arrow.
+                      if (c.sortable === false) {
+                        return (
+                          <th key={c.key} className="no-sort">
+                            {c.label}
+                          </th>
+                        );
+                      }
+                      const active = sort === (c.sortKey || c.key);
                       return (
-                        <th key={c.key} onClick={() => onSort(c)} className={c.sortable === false ? 'no-sort' : ''}>
-                          {c.label}
-                          {active && <span className="sort-arrow">{order === 'asc' ? ' ▲' : ' ▼'}</span>}
+                        <th
+                          key={c.key}
+                          className="sortable"
+                          aria-sort={active ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
+                        >
+                          <button
+                            type="button"
+                            className="th-sort"
+                            onClick={() => onSort(c)}
+                            title={`Sort by ${c.label}`}
+                          >
+                            {c.label}
+                            {active && (
+                              <span className="sort-arrow" aria-hidden="true">
+                                {order === 'asc' ? ' ▲' : ' ▼'}
+                              </span>
+                            )}
+                          </button>
                         </th>
                       );
                     })}
@@ -493,6 +597,10 @@ export default function ListPage({
                       role="button"
                       tabIndex={0}
                       onKeyDown={(e) => {
+                        // Only when the row itself has focus — Space on the
+                        // row's checkbox (or Enter on a link inside a cell)
+                        // bubbles here and must not navigate.
+                        if (e.target !== e.currentTarget) return;
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
                           nav(`${route}/${row.id}`);

@@ -103,6 +103,13 @@ export default function DuplicatesBanner({ entityType, onMerged }) {
             return (
               <div key={key} className="dup-group">
                 <div className="dup-reason">{g.reason}</div>
+                {/* `count` is the group's true size; `items` is capped server-side. */}
+                {Number(g.count) > g.items.length && (
+                  <div className="muted dup-partial">
+                    Showing {g.items.length} of {g.count} matching records — merge these, and the rest come up
+                    in the next review.
+                  </div>
+                )}
                 {g.items.map((it) => (
                   <label key={it.id} className="dup-item">
                     <input

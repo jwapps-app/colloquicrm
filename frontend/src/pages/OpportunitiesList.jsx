@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import ListPage from '../components/ListPage';
 import OpportunityBoard from './OpportunityBoard';
 import { usePipelines } from '../hooks';
 import { fmtDate, humanize, money } from '../format';
 import { applyFirstStage } from '../pipelines';
-import { CURRENCIES, OPPORTUNITY_STATUSES } from '../constants/options';
+import { CURRENCIES, OPPORTUNITY_STATUSES, statusClass } from '../constants/options';
 
 export default function OpportunitiesList() {
   const [mode, setMode] = useState('table');
+  const nav = useNavigate();
   const pipelines = usePipelines();
 
   const stageMap = useMemo(() => {
@@ -19,7 +21,7 @@ export default function OpportunitiesList() {
   const columns = useMemo(
     () => [
       { key: 'name', label: 'Name', render: (o) => <strong>{o.name}</strong> },
-      { key: 'company_name', label: 'Company', render: (o) => o.company_name || '—' },
+      { key: 'company_name', label: 'Company', sortable: false, render: (o) => o.company_name || '—' },
       {
         key: 'stage_id',
         label: 'Pipeline / Stage',
@@ -32,7 +34,7 @@ export default function OpportunitiesList() {
       {
         key: 'status',
         label: 'Status',
-        render: (o) => <span className={`badge status-${o.status}`}>{humanize(o.status)}</span>,
+        render: (o) => <span className={`badge ${statusClass(o.status)}`}>{humanize(o.status)}</span>,
       },
       { key: 'value', label: 'Value', render: (o) => money(o.value, o.currency) },
       { key: 'close_date', label: 'Close date', render: (o) => fmtDate(o.close_date) },
@@ -83,7 +85,14 @@ export default function OpportunitiesList() {
           <h1>Opportunities</h1>
           <div className="page-head-actions">{toggle}</div>
         </div>
-        <OpportunityBoard pipelines={pipelines} />
+        <OpportunityBoard
+          pipelines={pipelines}
+          onViewAll={(filters) => {
+            // The table is the unabridged view: same filters, paginated.
+            nav(`/opportunities?${new URLSearchParams(filters).toString()}`);
+            setMode('table');
+          }}
+        />
       </div>
     );
   }

@@ -25,7 +25,7 @@ function PersonOpportunities({ personId, companyId, refreshKey = 0 }) {
   const [creating, setCreating] = useState(false);
   // refreshKey comes from the parent (bumped after a merge) so absorbed
   // opportunities appear without a manual reload.
-  const items = useRelated('/opportunities', { primary_person_id: personId }, [personId, refreshKey, localKey]);
+  const { items, total } = useRelated('/opportunities', { primary_person_id: personId }, [personId, refreshKey, localKey]);
 
   const createFields = [
     { key: 'name', label: 'Name', required: true },
@@ -67,6 +67,8 @@ function PersonOpportunities({ personId, companyId, refreshKey = 0 }) {
       <RelatedPanel
         title="Opportunities"
         items={items}
+        total={total}
+        viewAllTo={`/opportunities?primary_person_id=${personId}`}
         empty="No opportunities."
         action={
           <button className="btn btn-small" onClick={() => setCreating(true)}>
@@ -138,7 +140,8 @@ function SocialFinder({ person, onSave }) {
       </div>
       {!result && (
         <div className="muted panel-empty">
-          Searches their email signatures and Gravatar — nothing leaves your server.
+          Searches their stored email signatures and Gravatar. The Gravatar lookup sends a hash of their
+          email address to gravatar.com — not the address itself, but a stable identifier for it.
         </div>
       )}
       {result && suggestions.length === 0 && (

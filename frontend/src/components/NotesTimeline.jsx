@@ -22,7 +22,7 @@ export default function NotesTimeline({ entityType, entityId }) {
   const [activities, setActivities] = useState(null);
   const [emails, setEmails] = useState(null);
   const [phoneEvents, setPhoneEvents] = useState(null);
-  const { open: openEmail, toggle: toggleEmail, bodies } = useEmailBodies();
+  const { open: openEmail, toggle: toggleEmail, bodies, retry: retryEmail } = useEmailBodies();
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [logCall, setLogCall] = useState(false);
@@ -80,9 +80,15 @@ export default function NotesTimeline({ entityType, entityId }) {
 
   const merged = useMemo(() => {
     if (!notes || !activities || !emails || !phoneEvents) return null;
+    // A linked note renders under its call/text — but only if that event is
+    // actually on screen. The phone query is capped and can fail, so a note
+    // whose parent isn't loaded stays in the timeline as a standalone item
+    // rather than vanishing.
+    const shownEvents = new Set(phoneEvents.map((p) => p.id));
     return [
-      // Notes attached to a call render under that call, not standalone.
-      ...notes.filter((n) => !n.phone_event_id).map((n) => ({ ...n, _type: 'note', _at: n.created_at })),
+      ...notes
+        .filter((n) => !n.phone_event_id || !shownEvents.has(n.phone_event_id))
+        .map((n) => ({ ...n, _type: 'note', _at: n.created_at, _orphanLinked: !!n.phone_event_id })),
       // 'note_added' duplicates the note itself — the note is shown directly.
       ...activities
         .filter((a) => a.kind !== 'note_added')
@@ -170,6 +176,23 @@ export default function NotesTimeline({ entityType, entityId }) {
     }
   }
 
+  // Notes linked to a phone event (call or text), shown under that event.
+  const linkedNotes = (eventId) =>
+    (notesByCall[eventId] || []).map((n) => (
+      <div key={n.id} className="call-note">
+        <div className="call-note-body">{n.body}</div>
+        <div className="call-note-meta muted">
+          {n.author_name || 'Someone'} · {fmtDateTime(n.created_at)}
+          {(user?.is_admin || user?.id === n.author_id) && (
+            <>
+              {' · '}
+              <button className="linklike" onClick={() => detachNote(n.id)}>unlink</button>
+            </>
+          )}
+        </div>
+      </div>
+    ));
+
   return (
     <div className="timeline-col">
       <form className="card composer" onSubmit={addNote}>
@@ -237,20 +260,7 @@ export default function NotesTimeline({ entityType, entityId }) {
                   {item.recording_id ? ' · recorded' : ''}
                 </div>
 
-                {(notesByCall[item.id] || []).map((n) => (
-                  <div key={n.id} className="call-note">
-                    <div className="call-note-body">{n.body}</div>
-                    <div className="call-note-meta muted">
-                      {n.author_name || 'Someone'} · {fmtDateTime(n.created_at)}
-                      {(user?.is_admin || user?.id === n.author_id) && (
-                        <>
-                          {' · '}
-                          <button className="linklike" onClick={() => detachNote(n.id)}>unlink</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                {linkedNotes(item.id)}
 
                 {composerFor === item.id ? (
                   <div className="call-note-composer">
@@ -313,6 +323,7 @@ export default function NotesTimeline({ entityType, entityId }) {
                   <span className="muted"> · {fmtDateTime(item._at)}</span>
                 </div>
                 {item.text && <div className="sms-body">{item.text}</div>}
+                {linkedNotes(item.id)}
               </div>
             ) : item._type === 'email' ? (
               <div key={`e-${item.id}`} className={'timeline-item email-item' + (openEmail === item.id ? ' open' : '')}>
@@ -322,6 +333,8 @@ export default function NotesTimeline({ entityType, entityId }) {
                   role="button"
                   tabIndex={0}
                   onKeyDown={(e) => {
+                    // Enter on the nested Gmail link must follow the link.
+                    if (e.target !== e.currentTarget) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       toggleEmail(item.id);
@@ -349,13 +362,16 @@ export default function NotesTimeline({ entityType, entityId }) {
                 {openEmail !== item.id && item.snippet && (
                   <div className="muted email-snippet">{item.snippet}</div>
                 )}
-                {openEmail === item.id && <EmailBody body={bodies[item.id]} />}
+                {openEmail === item.id && <EmailBody body={bodies[item.id]} onRetry={() => retryEmail(item.id)} />}
               </div>
             ) : item._type === 'note' ? (
               <div key={`n-${item.id}`} className="timeline-item note-item">
                 <div className="timeline-head">
                   <strong>{item.author_name || 'Someone'}</strong>
-                  <span className="muted"> added a note · {fmtDateTime(item.created_at)}</span>
+                  <span className="muted">
+                    {' '}
+                    added a note{item._orphanLinked ? ' on a call or text not shown here' : ''} · {fmtDateTime(item.created_at)}
+                  </span>
                   {(user?.is_admin || user?.id === item.author_id) && (
                     <button className="icon-btn tiny" onClick={() => deleteNote(item.id)} title="Delete note" aria-label="Delete note">
                       ×

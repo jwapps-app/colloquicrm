@@ -63,7 +63,13 @@ export default function ProfilePanel({ entity, entityType, fields, onSave, users
       if (d.field_type === 'checkbox') {
         control = (
           <label className="cf-checkbox">
-            <input type="checkbox" checked={!!value} onChange={(e) => saveCustom(d, e.target.checked)} />
+            {/* Custom values are strings: the server canonicalizes a checkbox
+                to "true"/"false", so truthiness would read "false" as checked. */}
+            <input
+              type="checkbox"
+              checked={value === 'true' || value === true}
+              onChange={(e) => saveCustom(d, e.target.checked)}
+            />
           </label>
         );
       } else if (d.field_type === 'select') {

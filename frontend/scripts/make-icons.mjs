@@ -1,4 +1,10 @@
-// Generates solid-color placeholder PWA icons (no network needed).
+// DEVELOPMENT FIXTURE — placeholder icons only. Not part of the build.
+//
+// Generates solid-color placeholder PWA icons (no network needed) for a fresh
+// checkout that has no artwork yet. It is NOT the branding pipeline and no
+// package.json script runs it. Running it OVERWRITES public/icon-192.png and
+// public/icon-512.png — the real, shipped icons — with flat-color squares, so
+// don't run it in a checkout whose icons you want to keep.
 import { deflateSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
 

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import ListPage from '../components/ListPage';
 import DuplicatesBanner from '../components/DuplicatesBanner';
 import { fullName, humanize, money } from '../format';
-import { CURRENCIES, LEAD_STATUSES } from '../constants/options';
+import { CURRENCIES, LEAD_CREATE_STATUSES, LEAD_STATUSES, statusClass } from '../constants/options';
 
 const columns = [
   {
@@ -16,12 +16,14 @@ const columns = [
       </span>
     ),
   },
-  { key: 'email', label: 'Email' },
-  { key: 'company_name', label: 'Company', render: (l) => l.company_name || '—' },
+  // The server's sortable map has no email/company column — an arrow there
+  // would lie about the order.
+  { key: 'email', label: 'Email', sortable: false },
+  { key: 'company_name', label: 'Company', sortable: false, render: (l) => l.company_name || '—' },
   {
     key: 'status',
     label: 'Status',
-    render: (l) => (l.status ? <span className={`badge status-${l.status}`}>{humanize(l.status)}</span> : '—'),
+    render: (l) => (l.status ? <span className={`badge ${statusClass(l.status)}`}>{humanize(l.status)}</span> : '—'),
   },
   { key: 'value', label: 'Value', render: (l) => money(l.value, l.currency) },
 ];
@@ -32,7 +34,7 @@ const createFields = [
   { key: 'email', label: 'Email', type: 'email' },
   { key: 'company_name', label: 'Company' },
   { key: 'title', label: 'Title' },
-  { key: 'status', label: 'Status', type: 'select', options: LEAD_STATUSES },
+  { key: 'status', label: 'Status', type: 'select', options: LEAD_CREATE_STATUSES },
   { key: 'value', label: 'Value', type: 'number' },
   { key: 'currency', label: 'Currency', type: 'select', options: CURRENCIES, default: 'USD' },
   { key: 'source', label: 'Source' },

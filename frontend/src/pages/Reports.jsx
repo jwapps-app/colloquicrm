@@ -12,6 +12,8 @@ const RANGES = [
 ];
 
 // Stage segment colors — accent family, darkest first (earliest stage).
+// Synthetic "No stage" / "Unassigned" rows — neutral, not part of the ramp.
+const UNASSIGNED_COLOR = '#c4c7cf';
 const STAGE_COLORS = ['#6d28d9', '#7c3aed', '#9d6ef0', '#b794f6', '#d0bcf9', '#e5d8fc'];
 
 function compact(n) {
@@ -21,7 +23,21 @@ function compact(n) {
   if (abs >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
   return String(Math.round(n));
 }
-const compactMoney = (n) => '$' + compact(n);
+/** Compact money for chart axes, in the report's own currency. */
+function compactMoneyIn(currency) {
+  let nf;
+  try {
+    nf = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency || 'USD',
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    });
+  } catch {
+    return (n) => `${currency} ${compact(n)}`;
+  }
+  return (n) => nf.format(Number(n) || 0);
+}
 const pct = (x) => (x === null || x === undefined ? '—' : Math.round(x * 100) + '%');
 
 /** Inline failure state for one report section, with a retry affordance. */
@@ -43,8 +59,55 @@ function Tiles({ tiles }) {
         <div key={t.label} className="report-tile">
           <strong>{t.value}</strong>
           <span className="muted">{t.label}</span>
+          {t.hint && <span className="muted report-tile-hint">{t.hint}</span>}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Amounts in currencies other than the report's — listed, never added in. */
+function otherCurrencies(byCurrency, reportCurrency, field) {
+  return Object.entries(byCurrency || {})
+    .filter(([cur, c]) => cur !== reportCurrency && Number(c?.[field]))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([cur, c]) => ({ cur, text: money0(c[field], cur) }));
+}
+
+/** A money cell: the report-currency figure, with any other currencies'
+ * figures on their own lines underneath. */
+function MoneyCell({ value, currency, byCurrency, field }) {
+  const others = otherCurrencies(byCurrency, currency, field);
+  return (
+    <td className="num">
+      {money0(value, currency)}
+      {others.map((o) => (
+        <div key={o.cur} className="muted report-othercur">
+          + {o.text}
+        </div>
+      ))}
+    </td>
+  );
+}
+
+/** Shown when a report holds deals in more than one currency. `describe`
+ * turns one by_currency entry into text. */
+function MixedCurrencyNote({ currency, byCurrency, describe }) {
+  const rows = Object.entries(byCurrency || {})
+    .filter(([cur]) => cur !== currency)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (rows.length === 0) return null;
+  return (
+    <div className="report-mixed" role="note">
+      <strong>Mixed currencies.</strong> Money figures and charts here cover {currency} deals only — other currencies
+      are not converted or added in. Counts and rates include every deal.
+      <ul>
+        {rows.map(([cur, c]) => (
+          <li key={cur}>
+            <strong>{cur}</strong>: {describe(c, cur)}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -132,15 +195,26 @@ function PipelineSection({ data }) {
   if (data === null) return <Loading small label="Loading pipeline…" />;
   const pipelines = data.pipelines || [];
   const withOpps = pipelines.some((p) => p.totals.open_count > 0);
+  const cur = data.currency || 'USD';
+  const plural = (n) => `${n} deal${n === 1 ? '' : 's'}`;
   return (
     <>
       <Tiles
         tiles={[
-          { label: 'Open value', value: money0(data.totals.open_value) },
-          { label: 'Weighted forecast', value: money0(data.totals.weighted_forecast) },
+          { label: `Open value (${cur})`, value: money0(data.totals.open_value, cur) },
+          { label: `Weighted forecast (${cur})`, value: money0(data.totals.weighted_forecast, cur) },
           { label: 'Open opportunities', value: data.totals.open_count },
         ]}
       />
+      {data.mixed_currencies && (
+        <MixedCurrencyNote
+          currency={cur}
+          byCurrency={data.totals.by_currency}
+          describe={(c, code) =>
+            `${money0(c.open_value, code)} open · ${money0(c.weighted_forecast, code)} weighted (${plural(c.open_count)})`
+          }
+        />
+      )}
       {!withOpps ? (
         <Empty label="No open opportunities yet." hint="Open deals will show up here by stage." />
       ) : (
@@ -153,10 +227,16 @@ function PipelineSection({ data }) {
                 <div className="report-subhead">
                   <h3>{p.name}</h3>
                   <span className="muted">
-                    {money0(p.totals.open_value)} open · {money0(p.totals.weighted_forecast)}{' '}
+                    {money0(p.totals.open_value, cur)} open · {money0(p.totals.weighted_forecast, cur)}{' '}
                     weighted
                   </span>
                 </div>
+                {p.unassigned && (
+                  <p className="muted report-footnote">
+                    Open opportunities with no pipeline or stage. They count toward the totals above but appear on no
+                    board — open them and pick a pipeline.
+                  </p>
+                )}
                 {barTotal > 0 && (
                   <div className="stack-bar">
                     {p.stages.map(
@@ -167,9 +247,9 @@ function PipelineSection({ data }) {
                             className="stack-seg"
                             style={{
                               flexGrow: s.total_value,
-                              background: STAGE_COLORS[i % STAGE_COLORS.length],
+                              background: s.unassigned ? UNASSIGNED_COLOR : STAGE_COLORS[i % STAGE_COLORS.length],
                             }}
-                            title={`${s.name}: ${money0(s.total_value)} (${s.count})`}
+                            title={`${s.name}: ${money0(s.total_value, cur)} (${s.count})`}
                           />
                         )
                     )}
@@ -188,26 +268,37 @@ function PipelineSection({ data }) {
                     </thead>
                     <tbody>
                       {p.stages.map((s, i) => (
-                        <tr key={s.stage_id}>
+                        <tr key={s.stage_id} className={s.unassigned ? 'report-unassigned' : undefined}>
                           <td>
                             <i
                               className="legend-swatch"
-                              style={{ background: STAGE_COLORS[i % STAGE_COLORS.length] }}
+                              style={{
+                                background: s.unassigned ? UNASSIGNED_COLOR : STAGE_COLORS[i % STAGE_COLORS.length],
+                              }}
                             />
                             {s.name}
                           </td>
-                          <td className="num">{s.win_probability}%</td>
+                          {/* A synthetic row has no stage probability — the
+                              figure is the deals' own effective average. */}
+                          <td className="num" title={s.unassigned ? 'Average of these deals’ own win probabilities' : undefined}>
+                            {s.unassigned ? `~${s.win_probability}%` : `${s.win_probability}%`}
+                          </td>
                           <td className="num">{s.count}</td>
-                          <td className="num">{money0(s.total_value)}</td>
-                          <td className="num">{money0(s.weighted_value)}</td>
+                          <MoneyCell value={s.total_value} currency={cur} byCurrency={s.by_currency} field="total_value" />
+                          <MoneyCell value={s.weighted_value} currency={cur} byCurrency={s.by_currency} field="weighted_value" />
                         </tr>
                       ))}
                       <tr className="report-total">
                         <td>Total</td>
                         <td className="num" />
                         <td className="num">{p.totals.open_count}</td>
-                        <td className="num">{money0(p.totals.open_value)}</td>
-                        <td className="num">{money0(p.totals.weighted_forecast)}</td>
+                        <MoneyCell value={p.totals.open_value} currency={cur} byCurrency={p.totals.by_currency} field="open_value" />
+                        <MoneyCell
+                          value={p.totals.weighted_forecast}
+                          currency={cur}
+                          byCurrency={p.totals.by_currency}
+                          field="weighted_forecast"
+                        />
                       </tr>
                     </tbody>
                   </table>
@@ -226,23 +317,36 @@ function SalesSection({ data }) {
   if (!s.won_count && !s.lost_count) {
     return <Empty label="No won or lost opportunities in this range yet." />;
   }
+  const cur = data.currency || 'USD';
   return (
     <>
       <Tiles
         tiles={[
           { label: 'Win rate', value: pct(s.win_rate) },
-          { label: 'Won value', value: money0(s.won_value) },
+          { label: `Won value (${cur})`, value: money0(s.won_value, cur) },
           { label: 'Deals won', value: s.won_count },
-          { label: 'Avg deal size', value: s.avg_deal_size === null ? '—' : money0(s.avg_deal_size) },
+          {
+            label: `Avg deal size (${cur})`,
+            value: s.avg_deal_size === null ? '—' : money0(s.avg_deal_size, cur),
+          },
           {
             label: 'Avg days to close',
             value: s.avg_days_to_close === null ? '—' : s.avg_days_to_close,
           },
         ]}
       />
+      {data.mixed_currencies && (
+        <MixedCurrencyNote
+          currency={cur}
+          byCurrency={data.by_currency}
+          describe={(c, code) =>
+            `${money0(c.won_value, code)} won (${c.won_count}) · ${money0(c.lost_value, code)} lost (${c.lost_count})`
+          }
+        />
+      )}
       <BarChart
         series={data.series}
-        fmt={compactMoney}
+        fmt={compactMoneyIn(cur)}
         bars={[
           { key: 'won_value', label: 'Won', color: 'var(--success)' },
           { key: 'lost_value', label: 'Lost', color: '#fca5a5' },
@@ -251,7 +355,7 @@ function SalesSection({ data }) {
       <Legend
         items={[
           { label: `Won (${s.won_count})`, color: 'var(--success)' },
-          { label: `Lost (${s.lost_count} · ${money0(s.lost_value)})`, color: '#fca5a5' },
+          { label: `Lost (${s.lost_count} · ${money0(s.lost_value, cur)})`, color: '#fca5a5' },
         ]}
       />
     </>
@@ -328,7 +432,13 @@ function ActivitySection({ data }) {
 function LeadsSection({ data }) {
   if (data === null) return <Loading small label="Loading leads…" />;
   const s = data.summary;
-  if (!s.new_leads && !s.converted) {
+  // Two different questions, two different numbers:
+  //  - flow: conversions that HAPPENED in the period (whenever the lead was created)
+  //  - cohort: of the leads CREATED in the period, how many have converted so far
+  // Only the cohort figure is a rate (it can't pass 100%).
+  const convertedInPeriod = s.converted_in_period ?? s.converted ?? 0;
+  const cohortConverted = s.cohort_converted ?? 0;
+  if (!s.new_leads && !convertedInPeriod) {
     return <Empty label="No leads in this range yet." />;
   }
   return (
@@ -336,8 +446,12 @@ function LeadsSection({ data }) {
       <Tiles
         tiles={[
           { label: 'New leads', value: s.new_leads },
-          { label: 'Converted', value: s.converted },
-          { label: 'Conversion rate', value: pct(s.conversion_rate) },
+          { label: 'Conversions in period', value: convertedInPeriod, hint: 'any lead, whenever created' },
+          {
+            label: 'New-lead conversion rate',
+            value: pct(s.conversion_rate),
+            hint: `${cohortConverted} of ${s.new_leads} new leads converted so far`,
+          },
           {
             label: 'Avg days to convert',
             value: s.avg_days_to_convert === null ? '—' : s.avg_days_to_convert,
@@ -348,13 +462,13 @@ function LeadsSection({ data }) {
         series={data.series}
         bars={[
           { key: 'new_count', label: 'New', color: 'var(--accent)' },
-          { key: 'converted_count', label: 'Converted', color: 'var(--success)' },
+          { key: 'converted_count', label: 'Conversions', color: 'var(--success)' },
         ]}
       />
       <Legend
         items={[
           { label: 'New leads', color: 'var(--accent)' },
-          { label: 'Converted', color: 'var(--success)' },
+          { label: 'Conversions in period', color: 'var(--success)' },
         ]}
       />
       {data.by_source.length > 0 && (
@@ -364,8 +478,9 @@ function LeadsSection({ data }) {
               <tr>
                 <th>Source</th>
                 <th className="num">New</th>
-                <th className="num">Converted</th>
-                <th className="num">Conversion</th>
+                <th className="num">Conversions in period</th>
+                <th className="num">Of new, converted</th>
+                <th className="num">New-lead conversion</th>
               </tr>
             </thead>
             <tbody>
@@ -374,6 +489,7 @@ function LeadsSection({ data }) {
                   <td>{row.source}</td>
                   <td className="num">{row.new_count}</td>
                   <td className="num">{row.converted_count}</td>
+                  <td className="num">{row.cohort_converted ?? '—'}</td>
                   <td className="num">{pct(row.conversion_rate)}</td>
                 </tr>
               ))}
@@ -381,6 +497,11 @@ function LeadsSection({ data }) {
           </table>
         </div>
       )}
+      <p className="muted report-footnote">
+        The conversion rate follows the leads created in this range: how many of them have converted so far. It is
+        separate from &ldquo;Conversions in period&rdquo;, which counts every conversion that happened in the range —
+        including leads created earlier.
+      </p>
     </>
   );
 }

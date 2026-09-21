@@ -16,7 +16,7 @@ export default function EmailSearch() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
-  const { open, toggle, bodies } = useEmailBodies();
+  const { open, toggle, bodies, retry } = useEmailBodies();
   const boxRef = useRef(null);
 
   useEffect(() => {
@@ -135,7 +135,7 @@ export default function EmailSearch() {
                     })}
                   </div>
                 )}
-                {open === m.id && <EmailBody body={b} />}
+                {open === m.id && <EmailBody body={b} onRetry={() => retry(m.id)} />}
               </div>
             );
           })}

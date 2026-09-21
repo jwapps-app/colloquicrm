@@ -5,11 +5,13 @@ import DuplicatesBanner from '../components/DuplicatesBanner';
 import { useContactTypes } from '../hooks';
 import { fmtDate, fullName, humanize } from '../format';
 
+// `sortable: false` = the server's sortable map (routes/people.py) has no such
+// key; it would silently fall back to the default order.
 const columns = [
   { key: 'name', label: 'Name', sortKey: 'last_name', render: (p) => <strong>{fullName(p)}</strong> },
-  { key: 'work_email', label: 'Email', render: (p) => p.work_email || p.personal_email || '—' },
+  { key: 'work_email', label: 'Email', sortable: false, render: (p) => p.work_email || p.personal_email || '—' },
   { key: 'contact_type', label: 'Contact type', render: (p) => (p.contact_type ? humanize(p.contact_type) : '—') },
-  { key: 'company_name', label: 'Company', render: (p) => p.company_name || '—' },
+  { key: 'company_name', label: 'Company', sortable: false, render: (p) => p.company_name || '—' },
   { key: 'last_contacted_at', label: 'Last contacted', render: (p) => fmtDate(p.last_contacted_at) },
   { key: 'interaction_count', label: 'Interactions', render: (p) => p.interaction_count ?? 0 },
 ];

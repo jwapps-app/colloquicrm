@@ -25,8 +25,8 @@ export default function CompanyDetail() {
   // Bumped after a merge so the absorbed record's people and opportunities
   // appear without a manual reload.
   const [relatedKey, setRelatedKey] = useState(0);
-  const people = useRelated('/people', { company_id: id }, [id, relatedKey]);
-  const opps = useRelated('/opportunities', { company_id: id }, [id, relatedKey]);
+  const { items: people, total: peopleTotal } = useRelated('/people', { company_id: id }, [id, relatedKey]);
+  const { items: opps, total: oppsTotal } = useRelated('/opportunities', { company_id: id }, [id, relatedKey]);
 
   if (error) return <div className="page"><Empty label="Company not found." hint={error} /></div>;
   if (!company) return <Loading label="Loading company…" />;
@@ -80,6 +80,8 @@ export default function CompanyDetail() {
           <RelatedPanel
             title="People"
             items={people}
+            total={peopleTotal}
+            viewAllTo={`/people?company_id=${id}`}
             empty="No people at this company."
             renderItem={(p) => (
               <Link key={p.id} to={`/people/${p.id}`} className="related-item">
@@ -91,6 +93,8 @@ export default function CompanyDetail() {
           <RelatedPanel
             title="Opportunities"
             items={opps}
+            total={oppsTotal}
+            viewAllTo={`/opportunities?company_id=${id}`}
             empty="No opportunities."
             renderItem={(o) => (
               <Link key={o.id} to={`/opportunities/${o.id}`} className="related-item">
