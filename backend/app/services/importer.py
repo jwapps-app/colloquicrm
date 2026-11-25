@@ -30,6 +30,7 @@ from app.models import (
     utcnow,
 )
 from app.schemas import CLOSED_OPPORTUNITY_STATUSES, canonical_lead_status
+from app.services.entities import BY_PLURAL
 from app.services.common import (
     add_tags,
     canonical_checkbox,
@@ -63,12 +64,8 @@ SILENT_HEADERS = {
     "Last Contacted",  # people map it; elsewhere it's computed data
 }
 
-IMPORT_TYPES = {
-    "people": "person",
-    "leads": "lead",
-    "companies": "company",
-    "opportunities": "opportunity",
-}
+# import type (the plural, as in the URL and the CSV's file name) -> entity type
+IMPORT_TYPES = {plural: rec.name for plural, rec in BY_PLURAL.items()}
 
 _NAME_COLS = {
     "First Name": "first_name",
@@ -619,12 +616,7 @@ async def find_duplicates(
     return duplicates_found
 
 
-MODEL_BY_TYPE = {
-    "people": Person,
-    "leads": Lead,
-    "companies": Company,
-    "opportunities": Opportunity,
-}
+MODEL_BY_TYPE = {plural: rec.model for plural, rec in BY_PLURAL.items()}
 
 OPP_STATUS = {"open": "open", "won": "won", "lost": "lost", "abandoned": "abandoned"}
 

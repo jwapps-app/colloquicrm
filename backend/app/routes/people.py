@@ -9,6 +9,7 @@ from app.deps import get_current_user
 from app.models import Company, Lead, Opportunity, Person, User
 from app.schemas import PersonIn
 from app.services.common import display_name_map, overdue_task_entity_ids
+from app.services.contacts import EMAIL_FIELDS, PHONE_FIELDS, address_fields, email_columns
 from app.services.crud import register_crud
 from app.services.interactions import update_person_aggregates
 from app.services.socials import find_for_person
@@ -24,15 +25,14 @@ def _hide_self_filter(request, user, stmt):
     if not own:
         return stmt
     return stmt.where(
-        func.coalesce(func.lower(Person.work_email), "") != own,
-        func.coalesce(func.lower(Person.personal_email), "") != own,
+        *[func.coalesce(func.lower(col), "") != own for col in email_columns("person")]
     )
 
 router = APIRouter()
 
 # The fields a person's emails, calls and texts are matched by. Editing one
 # changes which synced events belong to them.
-_CONTACT_ADDRESS_FIELDS = ("work_email", "personal_email", "work_phone", "mobile_phone")
+_CONTACT_ADDRESS_FIELDS = address_fields("person")
 
 
 async def _recompute_on_address_edit(db, person, old_values, actor):
@@ -82,8 +82,7 @@ register_crud(
     search_cols=[
         Person.first_name,
         Person.last_name,
-        Person.work_email,
-        Person.personal_email,
+        *email_columns("person"),
         Person.title,
     ],
     sortable={
@@ -110,8 +109,8 @@ register_crud(
     after_merge=lambda db, user, target: update_person_aggregates(db, user.org_id, {target.id}),
     extra_filter=_hide_self_filter,
     merge_pool=[
-        ["work_email", "personal_email"],
-        ["work_phone", "mobile_phone"],
+        list(EMAIL_FIELDS["person"]),
+        list(PHONE_FIELDS["person"]),
         ["work_website", "personal_website"],
     ],
 )

@@ -1,7 +1,7 @@
 import math
 import uuid
 from datetime import date, datetime, timezone
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -451,3 +451,183 @@ class ImportRowIn(BaseModel):
 class ImportCommitIn(BaseModel):
     type: str
     rows: list[ImportRowIn]
+
+
+# ---- responses ----
+# The shapes that are assembled by hand (services/timeline.py and the list
+# endpoints built on it) rather than read off a model. Declaring them puts
+# them in /docs and turns a drifting serializer into a loud failure;
+# tests/test_contract.py pins the same key sets from the client's side.
+# Timestamps and ids are already strings by the time they get here.
+
+
+class RelatedOut(BaseModel):
+    entity_type: str
+    entity_id: str
+    label: str | None
+
+
+class EmailOut(BaseModel):
+    id: str
+    subject: str | None
+    snippet: str | None
+    from_email: str | None
+    from_name: str | None
+    is_outgoing: bool
+    sent_at: str | None
+    gmail_id: str
+    owner_user_id: str | None
+
+
+class EmailListOut(BaseModel):
+    items: list[EmailOut]
+
+
+class EmailSearchItemOut(EmailOut):
+    related: list[RelatedOut]
+
+
+class EmailSearchOut(BaseModel):
+    items: list[EmailSearchItemOut]
+    page: int
+    has_more: bool
+
+
+class PhoneEventOut(BaseModel):
+    id: str
+    kind: str  # call | sms
+    direction: str
+    other_number: str
+    other_name: str | None
+    happened_at: str | None
+    duration_seconds: int | None
+    result: str | None
+    text: str | None
+    recording_id: str | None
+
+
+class PhoneEventListOut(BaseModel):
+    items: list[PhoneEventOut]
+
+
+class NoteOut(BaseModel):
+    id: str
+    entity_type: str
+    entity_id: str
+    body: str
+    phone_event_id: str | None
+    author_id: str | None
+    created_at: str
+    author_name: str | None
+
+
+class NoteListOut(BaseModel):
+    items: list[NoteOut]
+
+
+class ActivityOut(BaseModel):
+    id: str
+    entity_type: str | None
+    entity_id: str | None
+    kind: str
+    payload: dict | None
+    actor_id: str | None
+    created_at: str
+    actor_name: str | None
+
+
+class ActivityPageOut(BaseModel):
+    items: list[ActivityOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class AttendeeOut(BaseModel):
+    email: str
+    display_name: str | None
+
+
+class CalendarEventOut(BaseModel):
+    id: str
+    summary: str | None
+    location: str | None
+    starts_at: str | None
+    ends_at: str | None
+    all_day: bool
+    html_link: str | None
+    attendees: list[AttendeeOut]
+
+
+class CalendarEventListOut(BaseModel):
+    items: list[CalendarEventOut]
+
+
+# Timeline items (the feed and a record's own timeline). Routes returning
+# these set response_model_exclude_unset, so the optional keys below appear
+# only where the serializer put them: the feed's shape stays exactly as
+# published, and the record timeline adds what its page needs.
+
+
+class _TimelineItem(BaseModel):
+    at: str
+    id: str
+    related: list[RelatedOut]
+
+
+class EmailItemOut(_TimelineItem):
+    type: Literal["email"]
+    subject: str | None
+    snippet: str | None
+    from_email: str | None
+    from_name: str | None
+    is_outgoing: bool
+    gmail_id: str
+    owner_user_id: str | None
+
+
+class PhoneItemOut(_TimelineItem):
+    type: Literal["call", "sms"]
+    direction: str
+    other_number: str
+    other_name: str | None
+    duration_seconds: int | None
+    result: str | None
+    text: str | None
+    recording_id: str | None
+    entity_type: str | None
+    entity_id: str | None
+    # Record timeline only: that record's notes about this call or text.
+    notes: list[NoteOut] | None = None
+
+
+class NoteItemOut(_TimelineItem):
+    type: Literal["note"]
+    body: str
+    author_name: str | None
+    entity_type: str
+    entity_id: str
+    # Record timeline only.
+    author_id: str | None = None
+    phone_event_id: str | None = None
+
+
+class ActivityItemOut(_TimelineItem):
+    type: Literal["activity"]
+    kind: str
+    payload: dict | None
+    actor_name: str | None
+    entity_type: str | None
+    entity_id: str | None
+
+
+TimelineItemOut = Annotated[
+    EmailItemOut | PhoneItemOut | NoteItemOut | ActivityItemOut, Field(discriminator="type")
+]
+
+
+class TimelinePageOut(BaseModel):
+    items: list[TimelineItemOut]
+    page: int
+    page_size: int
+    has_more: bool

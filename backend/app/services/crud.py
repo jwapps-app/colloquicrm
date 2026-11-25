@@ -13,31 +13,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import (
-    Activity,
-    Attachment,
     CustomField,
-    CustomFieldValue,
     EntityTag,
-    Note,
-    PhoneEvent,
     Pipeline,
     Stage,
     Tag,
-    Task,
     User,
     utcnow,
 )
 from app.services.attachments import unlink_stored
+from app.services.entities import move_satellites, plural, purge_satellites
 from app.services.common import (
-    add_tags,
-    cleanup_entity,
     entity_label,
     get_cf_maps,
     get_or_create_tag,
     get_tag_maps,
     log_activity,
     prune_orphan_tags,
-    remove_entity_satellites,
     row_to_dict,
     set_custom_fields,
     set_tags,
@@ -47,9 +39,6 @@ Enricher = Callable[[AsyncSession, User, list[dict]], Awaitable[None]]
 
 EXPORT_MAX_ROWS = 100_000
 BATCH = 500
-
-PLURALS = {"person": "people", "company": "companies", "opportunity": "opportunities"}
-
 
 class BulkIn(BaseModel):
     action: str  # delete | add_tags | set_owner
@@ -81,7 +70,7 @@ def register_crud(
     required_any: list[str] | None = None,
     has_extras: bool = True,
     enrich: Enricher | None = None,
-    after_create: Callable | None = None,  # (db, obj, actor) or legacy (obj, actor) — post-flush, pre-commit
+    after_create: Callable | None = None,  # (db, obj, actor) — post-flush, pre-commit
     after_update: Callable | None = None,  # (db, obj, old_values, actor) — old_values = changed fields' prior values; runs pre-commit
     merge_refs: list[tuple] | None = None,  # (Model, fk attr name) to re-point on merge
     after_merge: Callable | None = None,
@@ -96,11 +85,6 @@ def register_crud(
     router. body_model serves both create and PATCH (exclude_unset)."""
 
     soft_delete = hasattr(model, "deleted_at")
-    # Hooks written before after_create grew a db argument take (obj, actor).
-    after_create_wants_db = (
-        after_create is not None and len(inspect.signature(after_create).parameters) >= 3
-    )
-
     def _active(stmt: Select) -> Select:
         # Trashed records are invisible everywhere except the trash view.
         return stmt.where(model.deleted_at.is_(None)) if soft_delete else stmt
@@ -376,8 +360,7 @@ def register_crud(
                 write_header(writer, [])
                 yield buf.getvalue()
 
-        plural = PLURALS.get(entity_type, f"{entity_type}s")
-        filename = f"{plural}-{utcnow().date().isoformat()}.csv"
+        filename = f"{plural(entity_type)}-{utcnow().date().isoformat()}.csv"
         # no-store: a whole-book export must not linger in a shared cache or
         # proxy.
         return StreamingResponse(
@@ -435,9 +418,7 @@ def register_crud(
                     continue
                 # Same satellite policy as every other permanent delete.
                 # Attachment files only go once the delete commits below.
-                stored_to_unlink.extend(
-                    await remove_entity_satellites(db, entity_type, chunk)
-                )
+                stored_to_unlink.extend(await purge_satellites(db, entity_type, chunk))
                 await db.execute(
                     delete(model).where(model.org_id == user.org_id, model.id.in_(chunk))
                 )
@@ -518,7 +499,7 @@ def register_crud(
         await apply_extras(db, user, obj, tags, cfs)
         await log_activity(db, user.org_id, entity_type, obj.id, "created", user.id)
         if after_create is not None:
-            r = after_create(db, obj, user) if after_create_wants_db else after_create(obj, user)
+            r = after_create(db, obj, user)
             if inspect.iscoroutine(r):
                 await r
         result = (await serialize(db, user, [obj]))[0]
@@ -586,7 +567,7 @@ def register_crud(
             # attached so a restore brings the record back whole.
             obj.deleted_at = utcnow()
         else:
-            stored_to_unlink = await cleanup_entity(db, entity_type, obj.id)
+            stored_to_unlink = await purge_satellites(db, entity_type, [obj.id])
             await db.delete(obj)
         await log_activity(
             db, user.org_id, None, None, f"{entity_type}_deleted", user.id, {"label": label}
@@ -709,57 +690,10 @@ def register_crud(
             extra = "Also (from merge): " + ", ".join(overflow)
             target.details = f"{target.details}\n{extra}" if target.details else extra
 
-        # Satellites keyed by (entity_type, entity_id) follow the survivor.
-        for sat_model in (Note, Task, Activity, PhoneEvent, Attachment):
-            await db.execute(
-                update(sat_model)
-                .where(
-                    sat_model.entity_type == entity_type,
-                    sat_model.entity_id == source.id,
-                )
-                .values(entity_id=target.id)
-            )
-
-        if has_extras:
-            source_tags = [
-                name
-                for (name,) in await db.execute(
-                    select(Tag.name)
-                    .join(EntityTag, EntityTag.tag_id == Tag.id)
-                    .where(EntityTag.entity_type == entity_type, EntityTag.entity_id == source.id)
-                )
-            ]
-            if source_tags:
-                await add_tags(db, user.org_id, entity_type, target.id, source_tags)
-
-            taken = {
-                fid
-                for (fid,) in await db.execute(
-                    select(CustomFieldValue.field_id).where(
-                        CustomFieldValue.entity_type == entity_type,
-                        CustomFieldValue.entity_id == target.id,
-                    )
-                )
-            }
-            source_field_ids = [
-                fid
-                for (fid,) in await db.execute(
-                    select(CustomFieldValue.field_id).where(
-                        CustomFieldValue.entity_type == entity_type,
-                        CustomFieldValue.entity_id == source.id,
-                    )
-                )
-            ]
-            movable = [fid for fid in source_field_ids if fid not in taken]
-            if movable:
-                await db.execute(
-                    update(CustomFieldValue)
-                    .where(
-                        CustomFieldValue.entity_id == source.id,
-                        CustomFieldValue.field_id.in_(movable),
-                    )
-                    .values(entity_id=target.id)
-                )
+        # Everything keyed by (entity_type, entity_id) follows the survivor:
+        # notes, tasks, activity, calls, attachments, tags and custom values —
+        # whatever services/entities.SATELLITES lists.
+        await move_satellites(db, entity_type, source.id, target.id)
 
         for ref_model, attr in merge_refs or []:
             await db.execute(
@@ -776,7 +710,7 @@ def register_crud(
         else:
             # Attachments already re-pointed at the target above, so this only
             # sweeps satellites that genuinely belong to the discarded source.
-            stored_to_unlink = await cleanup_entity(db, entity_type, source.id)
+            stored_to_unlink = await purge_satellites(db, entity_type, [source.id])
             await db.delete(source)
         if hasattr(target, "updated_at"):
             target.updated_at = utcnow()

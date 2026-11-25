@@ -53,9 +53,9 @@ from app.models import (
     User,
     utcnow,
 )
-from app.services import colloqui, push
-from app.services.colloqui import ColloquiError
+from app.services import notifications
 from app.services.common import add_tags, entity_label
+from app.services.entities import LABELLED_MODELS
 
 log = logging.getLogger("automations")
 
@@ -63,7 +63,8 @@ SWEEP_INTERVAL_SECONDS = 300
 # Bound the work of any single rule in one pass; the rest fires next sweep.
 MAX_FIRES_PER_RULE = 200
 
-ENTITY_MODELS = {"lead": Lead, "person": Person, "opportunity": Opportunity, "task": Task}
+# What a rule can watch: three of the record types, and tasks.
+ENTITY_MODELS = {n: LABELLED_MODELS[n] for n in ("lead", "person", "opportunity", "task")}
 
 # Trigger/action catalog — the single source of truth for validation (routes)
 # and evaluation (here). trigger: allowed entity types + required config keys.
@@ -277,10 +278,9 @@ async def _act_create_task(db, rule: AutomationRule, obj, label: str) -> dict:
 
 
 async def _act_notify(db, rule: AutomationRule, obj, label: str) -> dict:
-    """Route exactly like due-task reminders: crm_push users get an APNs push
-    (with the attention badge), colloqui_chat users get a DM, broken DM links
-    fall back to the #tasks channel — and if no channel is available at all
-    the fire still logs, it just delivers nowhere."""
+    """Routed like every other personal notice (notifications.deliver). If no
+    channel is available at all the fire still logs, it just delivers
+    nowhere."""
     cfg = rule.action_config or {}
     message = str(cfg.get("message") or "{name} needs attention").replace("{name}", label)
     recipient = await _resolve_user(db, rule.org_id, cfg.get("recipient"), obj, rule)
@@ -295,38 +295,18 @@ async def _act_notify(db, rule: AutomationRule, obj, label: str) -> dict:
         log.warning("Rule %s: no resolvable recipient; notify undelivered", rule.id)
         return detail
 
-    if colloqui._wants_push(recipient):
-        sent = await push.send_to_user(
-            db,
-            recipient.id,
-            "Automation",
-            message,
-            {"kind": "automation", "entity_type": rule.entity_type, "entity_id": str(obj.id)},
-            badge=await colloqui._attention_count(db, recipient.id),
-        )
-        if sent:
-            detail["delivered"] = "push"
-            return detail
-        # No working device — fall through to chat so it isn't lost.
-
-    row = await colloqui.get_integration(db, rule.org_id)
-    if not colloqui.is_enabled(row):
-        log.warning("Rule %s: no push devices and no chat integration; notify undelivered", rule.id)
-        return detail
-    client = colloqui._client_for(row)
-    content = f"⚙️ {message}\n{link}"
-    if recipient.colloqui_user_id:
-        try:
-            dm = await client.open_dm(str(recipient.colloqui_user_id))
-            await client.send_message(dm["id"], content)
-            detail["delivered"] = "dm"
-            return detail
-        except ColloquiError as exc:
-            log.warning("Rule %s: DM failed (%s); posting to #tasks", rule.id, exc)
-    await client.send_message(
-        str(row.tasks_channel_id), f"⚙️ {colloqui._mention(recipient)} — {message}\n{link}"
+    detail["delivered"] = await notifications.deliver(
+        db,
+        rule.org_id,
+        recipient,
+        title="Automation",
+        body=message,
+        data={"kind": "automation", "entity_type": rule.entity_type, "entity_id": str(obj.id)},
+        dm_text=f"⚙️ {message}\n{link}",
+        channel_text=lambda who: f"⚙️ {who} — {message}\n{link}",
     )
-    detail["delivered"] = "channel"
+    if detail["delivered"] is None:
+        log.warning("Rule %s: no push devices and no chat integration; notify undelivered", rule.id)
     return detail
 
 

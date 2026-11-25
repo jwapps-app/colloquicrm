@@ -71,6 +71,55 @@ export function useEntity(apiPath, id) {
   return { entity, save, error, refresh };
 }
 
+/**
+ * Load something a component shows, and say honestly how that went.
+ *
+ *   const { data, error, loading, reload } = useLoad(() => get('/things'), [id]);
+ *
+ * `data` is null until the first load for the current `deps` succeeds, then
+ * the loaded value; it is kept across reload(), so a refresh after a save
+ * doesn't blank the list. `error` is the Error of the latest load when it
+ * failed (null otherwise) — a failed fetch is never presented as "empty".
+ * `loading` is true while a request is in flight. A response that arrives
+ * after `deps` changed (or after unmount) is dropped.
+ *
+ * `load` may return anything; shape the response inside it. To treat a
+ * particular failure as a value (a 404 meaning "feature absent"), catch it
+ * in `load` and return that value.
+ */
+export function useLoad(load, deps = []) {
+  const [state, setState] = useState({ data: null, error: null, loading: true });
+  const [tick, setTick] = useState(0);
+  const loadedFor = useRef(null);
+
+  useEffect(() => {
+    let on = true;
+    // New deps mean a different thing is being shown: drop the old one.
+    // A reload of the same thing keeps what is on screen until it lands.
+    const key = JSON.stringify(deps);
+    const fresh = loadedFor.current !== key;
+    loadedFor.current = key;
+    setState((s) => ({ data: fresh ? null : s.data, error: null, loading: true }));
+    Promise.resolve()
+      .then(load)
+      .then((data) => {
+        if (on) setState({ data, error: null, loading: false });
+      })
+      .catch((error) => {
+        if (on) setState((s) => ({ data: s.data, error, loading: false }));
+      });
+    return () => {
+      on = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick, ...deps]);
+
+  const reload = () => setTick((t) => t + 1);
+  const setData = (next) =>
+    setState((s) => ({ ...s, data: typeof next === 'function' ? next(s.data) : next }));
+  return { ...state, reload, setData };
+}
+
 export const RELATED_PAGE_SIZE = 100;
 
 // Load a related list for a detail page (first RELATED_PAGE_SIZE rows).

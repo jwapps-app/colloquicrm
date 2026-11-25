@@ -33,7 +33,6 @@ export default function SuggestionsPanel({ onAdded }) {
     return () => {
       mounted.current = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function scan() {

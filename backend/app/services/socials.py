@@ -26,8 +26,8 @@ from app.services.google import (
     GoogleError,
     ensure_access_token,
     fetch_message_body,
-    normalize_email,
 )
+from app.services.contacts import raw_emails, record_emails
 
 log = logging.getLogger("socials")
 
@@ -122,8 +122,8 @@ async def _ensure_body(db, msg: EmailMessage) -> bool:
 
 
 async def find_for_person(db, person: Person) -> dict:
-    emails = [e for e in (person.work_email, person.personal_email) if e]
-    normalized = [normalize_email(e) for e in emails]
+    emails = raw_emails("person", person)
+    normalized = record_emails("person", person)
     results = {"linkedin": [], "facebook": []}
     scanned = 0
     fetched = 0

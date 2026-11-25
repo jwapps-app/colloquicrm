@@ -89,8 +89,9 @@ class FakeGoogle:
 async def fake_google(monkeypatch):
     fake = FakeGoogle()
     client = httpx.AsyncClient(transport=httpx.MockTransport(fake.handle))
-    monkeypatch.setattr(google, "_get_client", lambda: client)
-    monkeypatch.setattr(google, "SessionLocal", fake.session_factory)
+    monkeypatch.setattr(google.client, "_get_client", lambda: client)
+    monkeypatch.setattr(google.sync, "SessionLocal", fake.session_factory)
+    monkeypatch.setattr(google.suggestions, "SessionLocal", fake.session_factory)
     yield fake
     await client.aclose()
 
@@ -301,7 +302,7 @@ async def test_no_google_request_is_made_inside_a_database_transaction(
         fake_google.requests.append("token refresh")
         return {"access_token": "tok", "expires_in": 3600}
 
-    monkeypatch.setattr(google, "_post_form", refresh)
+    monkeypatch.setattr(google.client, "_post_form", refresh)
     fake_google.events["tok"] = [
         _event(f"meeting-{i}", utcnow() + timedelta(days=i + 1)) for i in range(3)
     ]

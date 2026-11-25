@@ -7,10 +7,10 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.deps import as_utc, get_current_user
+from app.deps import get_current_user
 from app.models import Task, User, utcnow
 from app.schemas import MAX_TASK_DATE, TaskIn
-from app.services import colloqui
+from app.services import notifications
 from app.services.background import after_commit
 from app.services.common import (
     display_name_map,
@@ -70,8 +70,8 @@ def _notify_later(db, task_id, event, actor_id, assignee_id) -> None:
     the ORM objects belong to a transaction that will be over by then."""
     after_commit(
         db,
-        lambda: colloqui.schedule(
-            colloqui.notify_task_event(
+        lambda: notifications.schedule(
+            notifications.notify_task_event(
                 task_id, event, actor_id=actor_id, assignee_id=assignee_id
             )
         ),
@@ -214,7 +214,7 @@ async def complete_task(
         )
         _notify_later(db, t.id, "completed", user.id, t.assignee_id)
         next_due = (
-            _next_due(as_utc(t.due_at), t.repeat_every, t.repeat_unit)
+            _next_due(t.due_at, t.repeat_every, t.repeat_unit)
             if t.repeat_every and t.repeat_unit and t.due_at
             else None
         )

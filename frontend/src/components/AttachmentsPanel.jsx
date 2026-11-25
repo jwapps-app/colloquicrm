@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { del, download, get, upload } from '../api';
+import { useLoad } from '../hooks';
 import { useToast } from './Toast';
 import { fmtDate, humanSize } from '../format';
 import { Loading } from './ui';
@@ -8,28 +9,12 @@ import { Loading } from './ui';
  * clicking a row downloads the file through the authed blob helper. */
 export default function AttachmentsPanel({ entityType, entityId }) {
   const toast = useToast();
-  const [items, setItems] = useState(null);
-  const [error, setError] = useState(null);
+  const { data: items, error, reload } = useLoad(
+    () => get('/attachments', { entity_type: entityType, entity_id: entityId }).then((d) => d?.items || []),
+    [entityType, entityId]
+  );
   const [uploading, setUploading] = useState(false);
-  const [version, setVersion] = useState(0);
   const fileRef = useRef(null);
-
-  useEffect(() => {
-    let on = true;
-    setError(null);
-    get('/attachments', { entity_type: entityType, entity_id: entityId })
-      .then((d) => {
-        if (on) setItems(d?.items || []);
-      })
-      .catch((e) => {
-        if (!on) return;
-        setError(e.message);
-        setItems([]);
-      });
-    return () => {
-      on = false;
-    };
-  }, [entityType, entityId, version]);
 
   async function onPick(e) {
     const file = e.target.files?.[0];
@@ -43,7 +28,7 @@ export default function AttachmentsPanel({ entityType, entityId }) {
     try {
       await upload('/attachments', fd);
       toast.success(`Uploaded ${file.name}`);
-      setVersion((v) => v + 1);
+      reload();
     } catch (err) {
       // 413 is the per-file cap. 507 (the org's storage budget is used up)
       // and 429 (too many uploads this hour) explain themselves in the
@@ -68,7 +53,7 @@ export default function AttachmentsPanel({ entityType, entityId }) {
     if (!window.confirm(`Delete "${a.filename}"? This can't be undone.`)) return;
     try {
       await del(`/attachments/${a.id}`);
-      setVersion((v) => v + 1);
+      reload();
     } catch (err) {
       toast.error(err.message);
     }
@@ -87,15 +72,15 @@ export default function AttachmentsPanel({ entityType, entityId }) {
         </button>
         <input type="file" ref={fileRef} onChange={onPick} hidden />
       </div>
-      {items === null ? (
-        <Loading small label="Loading…" />
-      ) : error ? (
+      {error ? (
         <div className="muted panel-empty">
           Couldn&apos;t load attachments.{' '}
-          <button className="linklike" onClick={() => setVersion((v) => v + 1)}>
+          <button className="linklike" onClick={reload}>
             Retry
           </button>
         </div>
+      ) : items === null ? (
+        <Loading small label="Loading…" />
       ) : items.length === 0 ? (
         <div className="muted panel-empty">No attachments.</div>
       ) : (

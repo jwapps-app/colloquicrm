@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +23,20 @@ from app.db import Base
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _trigram_indexes(table: str, *columns: str) -> list[Index]:
+    """GIN pg_trgm indexes, one per column (the extension is created by the
+    migration that first added them)."""
+    return [
+        Index(
+            f"ix_{table}_{col}_trgm",
+            col,
+            postgresql_using="gin",
+            postgresql_ops={col: "gin_trgm_ops"},
+        )
+        for col in columns
+    ]
 
 
 class Org(Base):
@@ -182,7 +197,11 @@ class Lead(Base):
     Converting creates a Person (+ optional Company and Opportunity)."""
 
     __tablename__ = "leads"
-    __table_args__ = (Index("ix_leads_org_last_name", "org_id", "last_name"),)
+    __table_args__ = (
+        Index("ix_leads_org_last_name", "org_id", "last_name"),
+        # Case-insensitive email lookups (import duplicate detection).
+        Index("ix_leads_email_lower", text("lower(email)")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
@@ -408,6 +427,9 @@ class EmailMessage(Base):
         UniqueConstraint("org_id", "rfc_message_id"),
         Index("ix_email_messages_org_sent", "org_id", "sent_at"),
         Index("ix_email_messages_owner_gmail", "owner_user_id", "gmail_id"),
+        # Email search is a leading-wildcard ILIKE over these columns; only a
+        # trigram index can serve that.
+        *_trigram_indexes("email_messages", "subject", "snippet", "from_name", "from_email", "body_text"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -435,6 +457,8 @@ class EmailMessage(Base):
 
 class EmailParticipant(Base):
     __tablename__ = "email_participants"
+    # Company timelines match participants by domain: email LIKE '%@domain'.
+    __table_args__ = (*_trigram_indexes("email_participants", "email"),)
 
     email_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("email_messages.id", ondelete="CASCADE"), primary_key=True

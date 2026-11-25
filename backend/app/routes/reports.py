@@ -1,9 +1,8 @@
 """Read-only reporting aggregates.
 
 All endpoints are org-scoped, bearer-authed, and exclude soft-deleted rows.
-Time-series bucketing happens in Python from narrow (date-only) row sets so
-the SQL stays dialect-safe (Postgres and the SQLite dev database) — counts
-and sums that don't need per-bucket dates use SQL aggregation.
+Time-series bucketing happens in Python from narrow (date-only) row sets;
+counts and sums that don't need per-bucket dates use SQL aggregation.
 """
 
 import uuid
@@ -47,7 +46,7 @@ def _parse_range(range_: str) -> tuple[str, datetime | None]:
 
 
 def _to_date(v) -> date | None:
-    """datetime (naive SQLite or tz-aware Postgres) or date -> date."""
+    """datetime or date -> date."""
     if v is None:
         return None
     if isinstance(v, datetime):

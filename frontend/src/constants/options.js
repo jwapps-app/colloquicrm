@@ -1,4 +1,5 @@
 import { humanize } from '../format';
+import { RECORD_TYPES } from './entities';
 
 const opt = (v) => ({ value: v, label: humanize(v) });
 
@@ -41,16 +42,6 @@ export const PREFIXES = ['Mr.', 'Mrs.', 'Miss', 'Ms.', 'Dr.'].map((v) => ({ valu
 
 export const CUSTOM_FIELD_TYPES = ['text', 'number', 'date', 'select', 'checkbox', 'url', 'currency'].map(opt);
 
-export const IMPORT_TYPES = [
-  { value: 'people', label: 'People' },
-  { value: 'leads', label: 'Leads' },
-  { value: 'companies', label: 'Companies' },
-  { value: 'opportunities', label: 'Opportunities' },
-];
+export const IMPORT_TYPES = RECORD_TYPES.map((r) => ({ value: r.plural, label: r.pluralLabel }));
 
-export const CF_ENTITY_TYPES = [
-  { value: 'person', label: 'People' },
-  { value: 'lead', label: 'Leads' },
-  { value: 'company', label: 'Companies' },
-  { value: 'opportunity', label: 'Opportunities' },
-];
+export const CF_ENTITY_TYPES = RECORD_TYPES.map((r) => ({ value: r.type, label: r.pluralLabel }));

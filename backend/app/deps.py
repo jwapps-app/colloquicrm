@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
@@ -8,14 +8,6 @@ from app.db import get_db
 from app.models import Session as DbSession
 from app.models import User, utcnow
 from app.security import hash_token
-
-
-def as_utc(dt: datetime) -> datetime:
-    """SQLite returns naive datetimes even for timezone=True columns; values
-    are always stored as UTC, so attach the zone when missing."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 def bearer_token(request: Request) -> str:
@@ -41,14 +33,14 @@ async def get_session_and_user(
     sess, user = row
     if sess.pending_totp:
         raise HTTPException(status_code=401, detail="Two-factor verification required")
-    if as_utc(sess.expires_at) < utcnow():
+    if sess.expires_at < utcnow():
         await db.delete(sess)
         # The raise rolls the transaction back — commit or the row lives forever.
         await db.commit()
         raise HTTPException(status_code=401, detail="Session expired")
     if not user.is_active:
         raise HTTPException(status_code=401, detail="Account disabled")
-    if utcnow() - as_utc(sess.last_seen_at) > timedelta(hours=1):
+    if utcnow() - sess.last_seen_at > timedelta(hours=1):
         sess.last_seen_at = utcnow()
     return sess, user
 

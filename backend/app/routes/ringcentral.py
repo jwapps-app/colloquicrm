@@ -1,16 +1,17 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user, require_admin
-from app.models import Company, Lead, Person, PhoneEvent, RingCentralIntegration, User, utcnow
+from app.models import PhoneEvent, RingCentralIntegration, User, utcnow
 from pydantic import BaseModel
 
+from app.schemas import PhoneEventListOut
 from app.services import ringcentral as rc
-from app.services.common import company_people
+from app.services import contacts, timeline
 
 router = APIRouter()
 
@@ -132,11 +133,10 @@ async def diagnose_number(
     cfg = await _cfg(db, admin.org_id)
     if cfg is None:
         raise HTTPException(status_code=400, detail="RingCentral is not connected")
-    normalized = rc.normalize_phone(number)
+    normalized = contacts.normalize_phone(number)
     if not normalized:
         return {"input": number, "normalized": None, "note": "could not normalize"}
-    phone_map = await rc._crm_phone_map(db, admin.org_id)
-    match = phone_map.get(normalized)
+    match = (await contacts.load_contact_index(db, admin.org_id)).by_number.get(normalized)
     from datetime import timedelta
 
     from app.config import settings as _settings
@@ -187,10 +187,7 @@ async def diagnose_number(
     }
 
 
-PHONE_ENTITY_MODELS = {"person": Person, "lead": Lead, "company": Company}
-
-
-@router.get("/events")
+@router.get("/events", response_model=PhoneEventListOut)
 async def phone_events(
     entity_type: str,
     entity_id: uuid.UUID,
@@ -198,54 +195,16 @@ async def phone_events(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    model = PHONE_ENTITY_MODELS.get(entity_type)
-    if model is None:
-        raise HTTPException(status_code=422, detail="entity_type must be person, lead or company")
-    obj = (
-        await db.execute(select(model).where(model.id == entity_id, model.org_id == user.org_id))
-    ).scalar_one_or_none()
-    if obj is None:
-        raise HTTPException(status_code=404, detail=f"{entity_type} not found")
-
-    if entity_type == "company":
-        # A company's call/text history is everyone associated with it: events
-        # matched to any person's number, events logged directly on those
-        # people, plus anything logged on the company itself.
-        people = await company_people(db, user.org_id, entity_id)
-        numbers = {
-            n
-            for p in people
-            for n in (rc.normalize_phone(p.work_phone), rc.normalize_phone(p.mobile_phone))
-            if n
-        }
-        conditions = [
-            (PhoneEvent.entity_type == "company") & (PhoneEvent.entity_id == entity_id)
-        ]
-        if numbers:
-            conditions.append(PhoneEvent.other_number.in_(numbers))
-        person_ids = [p.id for p in people]
-        if person_ids:
-            conditions.append(
-                (PhoneEvent.entity_type == "person")
-                & (PhoneEvent.entity_id.in_(person_ids))
-            )
-    else:
-        numbers = [
-            n
-            for n in (rc.normalize_phone(obj.work_phone), rc.normalize_phone(obj.mobile_phone))
-            if n
-        ]
-        conditions = [
-            (PhoneEvent.entity_type == entity_type) & (PhoneEvent.entity_id == entity_id)
-        ]
-        if numbers:
-            conditions.append(PhoneEvent.other_number.in_(numbers))
-
+    """The newest calls and texts on a person's, lead's or company's
+    timeline (see timeline.phone_belongs for what counts)."""
+    scope = await timeline.require_scope(
+        db, user.org_id, entity_type, entity_id, correspondents_only=True
+    )
     events = (
         (
             await db.execute(
                 select(PhoneEvent)
-                .where(PhoneEvent.org_id == user.org_id, or_(*conditions))
+                .where(PhoneEvent.org_id == user.org_id, timeline.phone_belongs(scope))
                 .order_by(PhoneEvent.happened_at.desc())
                 .limit(min(max(limit, 1), 200))
             )
@@ -253,20 +212,4 @@ async def phone_events(
         .scalars()
         .all()
     )
-    return {
-        "items": [
-            {
-                "id": str(e.id),
-                "kind": e.kind,
-                "direction": e.direction,
-                "other_number": e.other_number,
-                "other_name": e.other_name,
-                "happened_at": e.happened_at.isoformat() if e.happened_at else None,
-                "duration_seconds": e.duration_seconds,
-                "result": e.result,
-                "text": e.text,
-                "recording_id": e.recording_id,
-            }
-            for e in events
-        ]
-    }
+    return {"items": [timeline.phone_row(e) for e in events]}

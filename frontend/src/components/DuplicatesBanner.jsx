@@ -4,8 +4,7 @@ import { get, post } from '../api';
 import { useToast } from './Toast';
 import Modal from './Modal';
 import { entityPath, fmtDate } from '../format';
-
-const MERGE_PATHS = { person: '/people', company: '/companies', lead: '/leads' };
+import { recordPath, recordType } from '../constants/entities';
 
 const groupKey = (g) => g.items.map((i) => i.id).join(':');
 
@@ -35,7 +34,7 @@ export default function DuplicatesBanner({ entityType, onMerged }) {
     };
   }, [entityType, version]);
 
-  if (!MERGE_PATHS[entityType]) return null;
+  if (!recordType(entityType)?.duplicates) return null;
 
   async function mergeGroup(g) {
     const key = groupKey(g);
@@ -52,7 +51,7 @@ export default function DuplicatesBanner({ entityType, onMerged }) {
     try {
       for (const s of sources) {
         // Sequential on purpose — parallel merges into the same target race.
-        await post(`${MERGE_PATHS[entityType]}/${target.id}/merge`, { source_id: s.id });
+        await post(`${recordPath(entityType)}/${target.id}/merge`, { source_id: s.id });
         merged += 1;
       }
       toast.success(

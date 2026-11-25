@@ -6,6 +6,10 @@ services:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
       POSTGRES_DB: app
+    ports:
+      # For running the backend outside a container during development
+      # (README quick start). Loopback only.
+      - "127.0.0.1:${DEV_PG_PORT:-5495}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

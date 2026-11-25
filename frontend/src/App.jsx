@@ -75,7 +75,6 @@ export default function App() {
       }
       setReady(true);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function retryBoot() {

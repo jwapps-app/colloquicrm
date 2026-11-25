@@ -10,7 +10,6 @@ this is a relationship record, not a phone archive.
 
 import asyncio
 import logging
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -19,7 +18,8 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Lead, Person, PhoneEvent, RingCentralIntegration, utcnow
+from app.models import PhoneEvent, RingCentralIntegration, utcnow
+from app.services.contacts import load_contact_index, normalize_phone, people_with_numbers
 
 log = logging.getLogger("ringcentral")
 
@@ -28,25 +28,6 @@ SYNC_INTERVAL_SECONDS = 600
 
 class RingCentralError(Exception):
     pass
-
-
-def normalize_phone(raw: str | None, default_country: str = "1") -> str | None:
-    """Loose E.164 normalization. US-centric default: 10 digits get +1."""
-    if not raw:
-        return None
-    digits = re.sub(r"[^\d+]", "", str(raw))
-    if not digits:
-        return None
-    if digits.startswith("+"):
-        return "+" + re.sub(r"\D", "", digits)
-    digits = re.sub(r"\D", "", digits)
-    if len(digits) == 10:
-        return f"+{default_country}{digits}"
-    if len(digits) == 11 and digits.startswith(default_country):
-        return f"+{digits}"
-    if len(digits) > 11:
-        return f"+{digits}"
-    return None  # too short to be a real number (extensions etc.)
 
 
 _client: httpx.AsyncClient | None = None
@@ -170,31 +151,6 @@ async def fetch_own_numbers(access: str) -> list[str]:
         page += 1
 
 
-async def _crm_phone_map(db, org_id: uuid.UUID) -> dict[str, tuple[str, uuid.UUID]]:
-    out: dict[str, tuple[str, uuid.UUID]] = {}
-    rows = await db.execute(
-        select(Person.id, Person.work_phone, Person.mobile_phone).where(
-            Person.org_id == org_id, Person.deleted_at.is_(None)
-        )
-    )
-    for pid, work, mobile in rows:
-        for p in (work, mobile):
-            n = normalize_phone(p)
-            if n:
-                out[n] = ("person", pid)
-    rows = await db.execute(
-        select(Lead.id, Lead.work_phone, Lead.mobile_phone).where(
-            Lead.org_id == org_id, Lead.deleted_at.is_(None)
-        )
-    )
-    for lid, work, mobile in rows:
-        for p in (work, mobile):
-            n = normalize_phone(p)
-            if n:
-                out.setdefault(n, ("lead", lid))
-    return out
-
-
 def _parse_when(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -242,27 +198,13 @@ async def _walk_pages(db, access: str, url: str, params: dict, store_page) -> in
     return stored
 
 
-async def _recompute_touched(db, cfg: RingCentralIntegration, phone_map: dict, touched: set[str]) -> None:
+async def _recompute_touched(db, cfg: RingCentralIntegration, touched: set[str]) -> None:
     # Only people with NEW events on this page — recomputing everyone with
     # any history burned thousands of queries every cycle once real call logs
     # existed. Same transaction as the rows, so a committed page never leaves
-    # a count behind it.
-    if not touched:
-        return
-    # The phone map keeps one owner per number, but a shared line (a front
-    # desk, a couple) belongs to everyone who lists it — and an event on it
-    # counts for each of them. One read of the org's numbers per page that
-    # actually stored something, not one per number.
-    rows = await db.execute(
-        select(Person.id, Person.work_phone, Person.mobile_phone).where(
-            Person.org_id == cfg.org_id, Person.deleted_at.is_(None)
-        )
-    )
-    person_ids = {
-        pid
-        for pid, work, mobile in rows
-        if normalize_phone(work) in touched or normalize_phone(mobile) in touched
-    }
+    # a count behind it. A shared line (a front desk, a couple) belongs to
+    # everyone who lists it, and an event on it counts for each of them.
+    person_ids = await people_with_numbers(db, cfg.org_id, touched)
     if person_ids:
         from app.services.interactions import update_person_aggregates
 
@@ -305,7 +247,7 @@ async def sync_calls(
             )
             touched.add(number)
             stored += 1
-        await _recompute_touched(db, cfg, phone_map, touched)
+        await _recompute_touched(db, cfg, touched)
         return stored
 
     return await _walk_pages(
@@ -352,7 +294,7 @@ async def sync_sms(
             )
             touched.add(number)
             stored += 1
-        await _recompute_touched(db, cfg, phone_map, touched)
+        await _recompute_touched(db, cfg, touched)
         return stored
 
     return await _walk_pages(
@@ -372,7 +314,7 @@ async def sync_org(db, cfg: RingCentralIntegration) -> dict:
     if not cfg.own_numbers:
         await _release_db(db)
         cfg.own_numbers = await fetch_own_numbers(access)
-    phone_map = await _crm_phone_map(db, cfg.org_id)
+    phone_map = dict((await load_contact_index(db, cfg.org_id)).by_number)
     for own in cfg.own_numbers or []:
         phone_map.pop(own, None)  # never match the account's own numbers
     if not phone_map:

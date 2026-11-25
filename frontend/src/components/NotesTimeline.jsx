@@ -3,8 +3,12 @@ import { del, get, patch, post } from '../api';
 import { EmailBody, useEmailBodies } from './EmailBody';
 import { useToast } from './Toast';
 import { useAuth } from '../auth';
-import { fmtDateTime, humanize, parseWhen } from '../format';
+import { fmtDateTime, humanize } from '../format';
 import { Loading, Empty } from './ui';
+import { callMeta, callTitle, emailTitle, gmailUrl, smsTitle } from './timelineText';
+import { recordType } from '../constants/entities';
+
+const PAGE_SIZE = 50;
 
 function payloadSummary(payload) {
   if (!payload || typeof payload !== 'object') return null;
@@ -18,10 +22,13 @@ function payloadSummary(payload) {
 export default function NotesTimeline({ entityType, entityId }) {
   const toast = useToast();
   const { user } = useAuth();
-  const [notes, setNotes] = useState(null);
-  const [activities, setActivities] = useState(null);
-  const [emails, setEmails] = useState(null);
-  const [phoneEvents, setPhoneEvents] = useState(null);
+  // The server merges, orders and pages the record's notes, activity,
+  // emails, calls and texts (GET /timeline); `items` is every page loaded so
+  // far, newest first. null = first load still in flight.
+  const [items, setItems] = useState(null);
+  const [pages, setPages] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const { open: openEmail, toggle: toggleEmail, bodies, retry: retryEmail } = useEmailBodies();
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
@@ -32,78 +39,65 @@ export default function NotesTimeline({ entityType, entityId }) {
   const [attachFor, setAttachFor] = useState(null); // call id with open attach picker
   const loadEpoch = useRef(0);
 
-  async function load() {
+  const fetchPage = (page) =>
+    get('/timeline', { entity_type: entityType, entity_id: entityId, page, page_size: PAGE_SIZE });
+
+  // (Re)load the first `count` pages — after a change, everything already on
+  // screen is refreshed, not just the newest page.
+  async function load(count = pages) {
     const epoch = ++loadEpoch.current;
     try {
-      const phoneable = entityType === 'person' || entityType === 'lead' || entityType === 'company';
-      const [n, a, em, ph] = await Promise.all([
-        get('/notes', { entity_type: entityType, entity_id: entityId }),
-        get('/activities', { entity_type: entityType, entity_id: entityId, page: 1, page_size: 50 }),
-        entityType === 'opportunity'
-          ? Promise.resolve({ items: [] })
-          : get('/emails', { entity_type: entityType, entity_id: entityId }).catch(() => ({ items: [] })),
-        phoneable
-          ? get('/integrations/ringcentral/events', { entity_type: entityType, entity_id: entityId }).catch(() => ({ items: [] }))
-          : Promise.resolve({ items: [] }),
-      ]);
-      if (epoch !== loadEpoch.current) return; // superseded by a newer load
-      setNotes(n?.items || []);
-      setActivities(a?.items || []);
-      setEmails(em?.items || []);
-      setPhoneEvents(ph?.items || []);
+      const loaded = [];
+      let more = false;
+      for (let page = 1; page <= count; page += 1) {
+        const d = await fetchPage(page);
+        if (epoch !== loadEpoch.current) return; // superseded by a newer load
+        loaded.push(...(d?.items || []));
+        more = !!d?.has_more;
+        if (!more) break;
+      }
+      setItems(loaded);
+      setHasMore(more);
     } catch (e) {
       if (epoch !== loadEpoch.current) return;
       toast.error(e.message);
-      setNotes((v) => v || []);
-      setActivities((v) => v || []);
-      setEmails((v) => v || []);
-      setPhoneEvents((v) => v || []);
+      setItems((v) => v || []);
+    }
+  }
+
+  async function loadMore() {
+    const epoch = ++loadEpoch.current;
+    setLoadingMore(true);
+    try {
+      const d = await fetchPage(pages + 1);
+      if (epoch !== loadEpoch.current) return;
+      setItems((prev) => [...(prev || []), ...(d?.items || [])]);
+      setHasMore(!!d?.has_more);
+      setPages((n) => n + 1);
+    } catch (e) {
+      if (epoch === loadEpoch.current) toast.error(e.message);
+    } finally {
+      setLoadingMore(false);
     }
   }
 
   useEffect(() => {
-    setNotes(null);
-    setActivities(null);
-    setEmails(null);
-    setPhoneEvents(null);
-    load();
+    setItems(null);
+    setPages(1);
+    setHasMore(false);
+    load(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, entityId]);
 
-  const notesByCall = useMemo(() => {
-    const map = {};
-    (notes || []).forEach((n) => {
-      if (n.phone_event_id) (map[n.phone_event_id] ||= []).push(n);
-    });
-    return map;
-  }, [notes]);
-
-  const merged = useMemo(() => {
-    if (!notes || !activities || !emails || !phoneEvents) return null;
-    // A linked note renders under its call/text — but only if that event is
-    // actually on screen. The phone query is capped and can fail, so a note
-    // whose parent isn't loaded stays in the timeline as a standalone item
-    // rather than vanishing.
-    const shownEvents = new Set(phoneEvents.map((p) => p.id));
-    return [
-      ...notes
-        .filter((n) => !n.phone_event_id || !shownEvents.has(n.phone_event_id))
-        .map((n) => ({ ...n, _type: 'note', _at: n.created_at, _orphanLinked: !!n.phone_event_id })),
-      // 'note_added' duplicates the note itself — the note is shown directly.
-      ...activities
-        .filter((a) => a.kind !== 'note_added')
-        .map((a) => ({ ...a, _type: 'activity', _at: a.created_at })),
-      ...emails.map((e) => ({ ...e, _type: 'email', _at: e.sent_at || e.created_at })),
-      ...phoneEvents.map((p) => ({ ...p, _type: p.kind, _at: p.happened_at })),
-    ].sort((x, y) => parseWhen(y._at) - parseWhen(x._at));
-  }, [notes, activities, emails, phoneEvents]);
-
+  // Notes of this record not yet tied to a call or text — what "Attach
+  // existing note" offers. (A note already on a call shown here arrives
+  // inside that call's `notes`, not as an item.)
   const unattachedNotes = useMemo(
-    () => (notes || []).filter((n) => !n.phone_event_id),
-    [notes]
+    () => (items || []).filter((i) => i.type === 'note' && !i.phone_event_id),
+    [items]
   );
 
-  const canLogCall = entityType === 'person' || entityType === 'lead';
+  const canLogCall = !!recordType(entityType)?.logsCalls;
 
   async function addNote(e) {
     e.preventDefault();
@@ -170,15 +164,15 @@ export default function NotesTimeline({ entityType, entityId }) {
     if (!window.confirm('Delete this note?')) return;
     try {
       await del(`/notes/${id}`);
-      setNotes((n) => n.filter((x) => x.id !== id));
+      setItems((list) => (list || []).filter((x) => !(x.type === 'note' && x.id === id)));
     } catch (e) {
       toast.error(e.message);
     }
   }
 
-  // Notes linked to a phone event (call or text), shown under that event.
-  const linkedNotes = (eventId) =>
-    (notesByCall[eventId] || []).map((n) => (
+  // This record's notes about a call or text, shown under that event.
+  const linkedNotes = (event) =>
+    (event.notes || []).map((n) => (
       <div key={n.id} className="call-note">
         <div className="call-note-body">{n.body}</div>
         <div className="call-note-meta muted">
@@ -235,32 +229,23 @@ export default function NotesTimeline({ entityType, entityId }) {
         </div>
       </form>
 
-      {merged === null ? (
+      {items === null ? (
         <Loading label="Loading timeline…" />
-      ) : merged.length === 0 ? (
+      ) : items.length === 0 ? (
         <Empty label="No notes or activity yet." hint="Notes you add will show up here." />
       ) : (
         <div className="timeline">
-          {merged.map((item) =>
-            item._type === 'call' ? (
+          {items.map((item) =>
+            item.type === 'call' ? (
               <div key={`c-${item.id}`} className="timeline-item phone-item">
                 <div className="timeline-head">
                   <span className="phone-icon">☎</span>
-                  <strong>
-                    {item.direction === 'outbound' ? 'Outgoing call' : 'Incoming call'}
-                    {item.result && item.result !== 'Call connected' && item.result !== 'Accepted' ? ` — ${item.result}` : ''}
-                  </strong>
-                  <span className="muted"> · {fmtDateTime(item._at)}</span>
+                  <strong>{callTitle(item)}</strong>
+                  <span className="muted"> · {fmtDateTime(item.at)}</span>
                 </div>
-                <div className="muted">
-                  {item.duration_seconds != null && item.duration_seconds > 0
-                    ? `${Math.floor(item.duration_seconds / 60)}m ${item.duration_seconds % 60}s · `
-                    : ''}
-                  {item.other_number}
-                  {item.recording_id ? ' · recorded' : ''}
-                </div>
+                <div className="muted">{callMeta(item)}</div>
 
-                {linkedNotes(item.id)}
+                {linkedNotes(item)}
 
                 {composerFor === item.id ? (
                   <div className="call-note-composer">
@@ -315,17 +300,17 @@ export default function NotesTimeline({ entityType, entityId }) {
                   </div>
                 )}
               </div>
-            ) : item._type === 'sms' ? (
+            ) : item.type === 'sms' ? (
               <div key={`s-${item.id}`} className="timeline-item phone-item sms-item">
                 <div className="timeline-head">
                   <span className="phone-icon">💬</span>
-                  <strong>{item.direction === 'outbound' ? 'Text sent' : 'Text received'}</strong>
-                  <span className="muted"> · {fmtDateTime(item._at)}</span>
+                  <strong>{smsTitle(item)}</strong>
+                  <span className="muted"> · {fmtDateTime(item.at)}</span>
                 </div>
                 {item.text && <div className="sms-body">{item.text}</div>}
-                {linkedNotes(item.id)}
+                {linkedNotes(item)}
               </div>
-            ) : item._type === 'email' ? (
+            ) : item.type === 'email' ? (
               <div key={`e-${item.id}`} className={'timeline-item email-item' + (openEmail === item.id ? ' open' : '')}>
                 <div
                   className="timeline-head email-toggle"
@@ -342,12 +327,12 @@ export default function NotesTimeline({ entityType, entityId }) {
                   }}
                 >
                   <span className="email-dir">{item.is_outgoing ? '↗' : '↘'}</span>
-                  <strong>{item.is_outgoing ? 'Email sent' : `Email from ${item.from_name || item.from_email || 'unknown'}`}</strong>
-                  <span className="muted"> · {fmtDateTime(item._at)}</span>
-                  {user?.id === item.owner_user_id && item.gmail_id && (
+                  <strong>{emailTitle(item)}</strong>
+                  <span className="muted"> · {fmtDateTime(item.at)}</span>
+                  {gmailUrl(item, user) && (
                     <a
                       className="email-open muted"
-                      href={`https://mail.google.com/mail/u/0/#all/${item.gmail_id}`}
+                      href={gmailUrl(item, user)}
                       target="_blank"
                       rel="noreferrer"
                       title="Open in Gmail"
@@ -364,13 +349,13 @@ export default function NotesTimeline({ entityType, entityId }) {
                 )}
                 {openEmail === item.id && <EmailBody body={bodies[item.id]} onRetry={() => retryEmail(item.id)} />}
               </div>
-            ) : item._type === 'note' ? (
+            ) : item.type === 'note' ? (
               <div key={`n-${item.id}`} className="timeline-item note-item">
                 <div className="timeline-head">
                   <strong>{item.author_name || 'Someone'}</strong>
                   <span className="muted">
                     {' '}
-                    added a note{item._orphanLinked ? ' on a call or text not shown here' : ''} · {fmtDateTime(item.created_at)}
+                    added a note{item.phone_event_id ? ' on a call or text not shown here' : ''} · {fmtDateTime(item.at)}
                   </span>
                   {(user?.is_admin || user?.id === item.author_id) && (
                     <button className="icon-btn tiny" onClick={() => deleteNote(item.id)} title="Delete note" aria-label="Delete note">
@@ -384,11 +369,18 @@ export default function NotesTimeline({ entityType, entityId }) {
               <div key={`a-${item.id}`} className="timeline-item activity-item">
                 <div className="timeline-head">
                   <strong>{item.actor_name || 'System'}</strong>
-                  <span className="muted"> {humanize(item.kind).toLowerCase()} · {fmtDateTime(item.created_at)}</span>
+                  <span className="muted"> {humanize(item.kind).toLowerCase()} · {fmtDateTime(item.at)}</span>
                 </div>
                 {payloadSummary(item.payload) && <div className="muted activity-payload">{payloadSummary(item.payload)}</div>}
               </div>
             )
+          )}
+          {hasMore && (
+            <div className="feed-more">
+              <button className="btn" disabled={loadingMore} onClick={loadMore}>
+                {loadingMore ? 'Loading…' : 'Load older'}
+              </button>
+            </div>
           )}
         </div>
       )}

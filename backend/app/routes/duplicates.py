@@ -13,7 +13,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import Company, Lead, Person, User
 from app.services.common import entity_label
-from app.services.google import normalize_email
+from app.services.contacts import email_columns, normalize_email, primary_email
 
 router = APIRouter()
 
@@ -21,15 +21,13 @@ MAX_GROUPS = 50
 MAX_ITEMS = 10
 
 
-def _email_canon(col, dialect: str):
-    """SQL twin of services.google.normalize_email, so grouping happens in the
+def _email_canon(col, fold_gmail: bool = True):
+    """SQL twin of services.contacts.normalize_email, so grouping happens in the
     database instead of Python over the whole table: lowercase, and for Gmail
-    inboxes strip the +suffix and dots from the local part. split_part isn't
-    available on the SQLite dev database — there duplicates match on the
-    lowercased address only (Postgres, the real deployment, gets the full
-    Gmail folding)."""
+    inboxes strip the +suffix and dots from the local part. `fold_gmail` off
+    is for values that aren't mailboxes (a company's email domain)."""
     lowered = func.lower(func.trim(col))
-    if dialect != "postgresql":
+    if not fold_gmail:
         return lowered
     local = func.split_part(lowered, "@", 1)
     domain = func.split_part(lowered, "@", 2)
@@ -86,13 +84,13 @@ async def _ranked_groups(db, members) -> list[tuple[tuple, int, list]]:
     return [(key, n, ids) for key, (n, ids) in out.items()]
 
 
-async def _email_groups(db, org_id, model, email_cols, dialect):
+async def _email_groups(db, org_id, model, email_cols, fold_gmail: bool = True):
     """Groups of records sharing a normalized address."""
     parts = [
         select(
             model.id.label("rid"),
             model.created_at.label("created_at"),
-            _email_canon(col, dialect).label("em"),
+            _email_canon(col, fold_gmail).label("em"),
         ).where(model.org_id == org_id, model.deleted_at.is_(None), _present(col))
         for col in email_cols
     ]
@@ -141,7 +139,7 @@ async def _person_sublabels(db, org_id, people: dict) -> dict[uuid.UUID, str | N
     out = {}
     need_company = {}
     for pid, p in people.items():
-        out[pid] = p.work_email or p.personal_email
+        out[pid] = primary_email("person", p)
         if out[pid] is None and p.company_id is not None:
             need_company[pid] = p.company_id
     if need_company:
@@ -165,7 +163,6 @@ async def find_duplicates(
     if entity_type not in ("person", "company", "lead"):
         raise HTTPException(status_code=422, detail=f"Unknown entity type: {entity_type}")
     org_id = user.org_id
-    dialect = db.get_bind().dialect.name
 
     # (reason, true count, [ids]) per match dimension, primary dimension
     # first — when the same group shows up under both, only the first
@@ -173,13 +170,13 @@ async def find_duplicates(
     raw: list[tuple[str, int, list]] = []
     if entity_type == "person":
         for (em,), n, ids in await _email_groups(
-            db, org_id, Person, (Person.work_email, Person.personal_email), dialect
+            db, org_id, Person, email_columns("person")
         ):
             raw.append((f"Same email: {normalize_email(em)}", n, ids))
         name_groups = await _key_groups(db, org_id, Person, Person.first_name, Person.last_name)
         model = Person
     elif entity_type == "lead":
-        for (em,), n, ids in await _email_groups(db, org_id, Lead, (Lead.email,), dialect):
+        for (em,), n, ids in await _email_groups(db, org_id, Lead, email_columns("lead")):
             raw.append((f"Same email: {normalize_email(em)}", n, ids))
         name_groups = await _key_groups(db, org_id, Lead, Lead.first_name, Lead.last_name)
         model = Lead
@@ -187,7 +184,7 @@ async def find_duplicates(
         # Companies: exact name, then shared email domain.
         name_groups = await _key_groups(db, org_id, Company, Company.name)
         for (dom,), n, ids in await _email_groups(
-            db, org_id, Company, (Company.email_domain,), "generic"
+            db, org_id, Company, (Company.email_domain,), fold_gmail=False
         ):
             raw.append((f"Same domain: {dom}", n, ids))
         model = Company

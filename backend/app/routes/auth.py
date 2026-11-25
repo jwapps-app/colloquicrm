@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.deps import as_utc, bearer_token, get_current_user, get_session_and_user
+from app.deps import bearer_token, get_current_user, get_session_and_user
 from app.models import Org, Session as DbSession, User, utcnow
 from app.schemas import LoginIn, SetupIn, TotpCodeIn, TotpVerifyIn
 from app.security import (
@@ -159,11 +159,9 @@ async def setup(body: SetupIn, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
     # Serialize concurrent /setup calls: a transaction-scoped Postgres advisory
     # lock means the second request blocks until the first commits, then sees
-    # count > 0 below. (sqlite dev runs single-writer, so the count check alone
-    # suffices there.) The IntegrityError catch is the final backstop — the
+    # count > 0 below. The IntegrityError catch is the final backstop — the
     # users (org_id, email) unique constraint rejects a duplicate first admin.
-    if not settings.database_url.startswith("sqlite"):
-        await db.execute(select(func.pg_advisory_xact_lock(0xC0110071)))
+    await db.execute(select(func.pg_advisory_xact_lock(0xC0110071)))
     count = (await db.execute(select(func.count()).select_from(User))).scalar_one()
     if count > 0:
         raise HTTPException(status_code=403, detail="Setup already completed")
@@ -280,7 +278,7 @@ async def _totp_verify(
     # attacker mints, independent of the IP they arrive from.
     user_keys = [f"totpuser:{user.id}"]
     reserved.append((user_keys, _reserve(user_keys)))
-    if not sess.pending_totp or as_utc(sess.expires_at) < utcnow():
+    if not sess.pending_totp or sess.expires_at < utcnow():
         # Not a guess at the code — nothing to count.
         for keys, stamp in reserved:
             _release(keys, stamp)

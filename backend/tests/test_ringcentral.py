@@ -123,9 +123,9 @@ async def test_synced_call_counts_for_everyone_sharing_the_number(world, db_sess
                 select(RingCentralIntegration).where(RingCentralIntegration.org_id == world.org.id)
             )
         ).scalar_one()
-        # Only `first` made it into the map, exactly as the last-match-wins build leaves it.
-        phone_map = {"+15551234567": ("person", first.id)}
-        await ringcentral._recompute_touched(db, cfg, phone_map, {"+15551234567"})
+        # The index keeps one owner per number; the recompute must still
+        # reach everyone who lists it.
+        await ringcentral._recompute_touched(db, cfg, {"+15551234567"})
         await db.commit()
         counts = dict(
             (await db.execute(select(Person.id, Person.interaction_count))).all()

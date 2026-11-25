@@ -27,6 +27,7 @@ from app.services.common import (
     log_activity,
     overdue_task_entity_ids,
 )
+from app.services.contacts import EMAIL_FIELDS, PHONE_FIELDS
 from app.services.crud import register_crud
 from app.services.interactions import update_person_aggregates
 
@@ -71,8 +72,8 @@ register_crud(
     enrich=enrich,
     fk_checks={"owner_id": User},
     merge_pool=[
-        ["email"],
-        ["work_phone", "mobile_phone"],
+        list(EMAIL_FIELDS["lead"]),
+        list(PHONE_FIELDS["lead"]),
         ["work_website", "personal_website"],
     ],
 )

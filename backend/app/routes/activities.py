@@ -7,12 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import Activity, User
-from app.services.common import display_name_map, row_to_dict
+from app.schemas import ActivityPageOut
+from app.services import timeline
 
 router = APIRouter()
 
 
-@router.get("")
+@router.get("", response_model=ActivityPageOut)
 async def list_activities(
     entity_type: str | None = None,
     entity_id: uuid.UUID | None = None,
@@ -35,10 +36,5 @@ async def list_activities(
         .limit(page_size)
     )
     items = (await db.execute(stmt)).scalars().all()
-    names = await display_name_map(db, {a.actor_id for a in items}, user.org_id)
-    dicts = []
-    for a in items:
-        d = row_to_dict(a)
-        d["actor_name"] = names.get(d.get("actor_id"))
-        dicts.append(d)
+    dicts = await timeline.activity_rows(db, user.org_id, list(items))
     return {"items": dicts, "total": total, "page": page, "page_size": page_size}

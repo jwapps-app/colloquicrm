@@ -5,7 +5,7 @@ only admins create, edit, delete, or run them — automations act org-wide
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -282,10 +282,7 @@ async def delete_rule(
     db: AsyncSession = Depends(get_db),
 ):
     rule = await _get_rule(db, user, rule_id)
-    # Explicit fire cleanup: the FK cascade covers Postgres, but SQLite dev
-    # runs without PRAGMA foreign_keys.
-    await db.execute(delete(AutomationFire).where(AutomationFire.rule_id == rule.id))
-    await db.delete(rule)
+    await db.delete(rule)  # its fire log goes with it (ON DELETE CASCADE)
     await db.commit()
 
 

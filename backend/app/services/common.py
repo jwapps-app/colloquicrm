@@ -3,16 +3,16 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import delete, distinct, exists, inspect as sa_inspect, select, update
+from sqlalchemy import delete, distinct, exists, inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services import entities
 
 from app.models import (
     Activity,
     CustomField,
     CustomFieldValue,
     EntityTag,
-    Person,
-    PhoneEvent,
     Tag,
     Task,
     User,
@@ -30,8 +30,15 @@ def entity_label(obj) -> str:
 
 
 def row_to_dict(obj) -> dict:
+    """A model instance as the JSON clients get: every column except org_id
+    and any declared `mapped_column(..., info={"private": True})`. A new
+    column is therefore public unless it says otherwise — tests/test_contract
+    pins the resulting key sets, so that is a decision made in review rather
+    than by accident."""
     out = {}
     for attr in sa_inspect(obj).mapper.column_attrs:
+        if attr.columns[0].info.get("private"):
+            continue
         v = getattr(obj, attr.key)
         if isinstance(v, uuid.UUID):
             v = str(v)
@@ -275,18 +282,6 @@ async def display_name_map(
     return {str(uid): name for uid, name in rows}
 
 
-ENTITY_MODELS = {
-    "person": "Person",
-    "company": "Company",
-    "opportunity": "Opportunity",
-    "lead": "Lead",
-}
-
-# Labels resolve for tasks too (the feed points activity rows at them);
-# validate_entity_ref keeps using ENTITY_MODELS — nothing hangs OFF a task.
-LABEL_MODELS = {**ENTITY_MODELS, "task": "Task"}
-
-
 async def entity_labels_map(
     db: AsyncSession, org_id: uuid.UUID, refs: set, unnamed: str | None = None
 ) -> dict:
@@ -299,8 +294,6 @@ async def entity_labels_map(
     callers fall back to the type. A record that exists but has no usable name
     labels as `unnamed` (default None). Bounded: at most one SELECT per entity
     type."""
-    import app.models as models
-
     out: dict = {}
     by_type: dict[str, list[uuid.UUID]] = {}
     for etype, eid in refs:
@@ -310,10 +303,9 @@ async def entity_labels_map(
             except ValueError:
                 continue
     for etype, ids in by_type.items():
-        name = LABEL_MODELS.get(etype)
-        if name is None:
+        model = entities.LABELLED_MODELS.get(etype)
+        if model is None:
             continue
-        model = getattr(models, name)
         rows = await db.execute(
             select(model).where(model.org_id == org_id, model.id.in_(ids))
         )
@@ -345,26 +337,6 @@ async def overdue_task_entity_ids(
     return {str(eid) for (eid,) in rows}
 
 
-async def company_people(db: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID):
-    """Non-deleted people linked to a company, with just the columns needed to
-    roll their correspondence (emails + phone events) up onto the company
-    timeline. One query; caller normalizes the emails/numbers it uses."""
-    rows = await db.execute(
-        select(
-            Person.id,
-            Person.work_email,
-            Person.personal_email,
-            Person.work_phone,
-            Person.mobile_phone,
-        ).where(
-            Person.org_id == org_id,
-            Person.company_id == company_id,
-            Person.deleted_at.is_(None),
-        )
-    )
-    return rows.all()
-
-
 async def validate_entity_ref(
     db: AsyncSession,
     org_id: uuid.UUID,
@@ -378,83 +350,8 @@ async def validate_entity_ref(
         return
     if entity_type is None or entity_id is None:
         raise HTTPException(status_code=422, detail="entity_type and entity_id go together")
-    import app.models as models
-
-    name = ENTITY_MODELS.get(entity_type)
-    if name is None:
+    if entity_type not in entities.RECORDS:
         raise HTTPException(status_code=422, detail=f"Unknown entity type: {entity_type}")
-    model = getattr(models, name)
-    conds = [model.id == entity_id, model.org_id == org_id]
-    if hasattr(model, "deleted_at"):
-        conds.append(model.deleted_at.is_(None))
-    exists = (await db.execute(select(model.id).where(*conds))).first()
-    if exists is None:
+    record = await entities.get_record(db, org_id, entity_type, entity_id, include_trashed=False)
+    if record is None:
         raise HTTPException(status_code=404, detail=f"{entity_type} not found")
-
-
-async def remove_entity_satellites(
-    db: AsyncSession, entity_type: str, entity_ids: list[uuid.UUID]
-) -> list[str]:
-    """Everything that hangs off records which are being PERMANENTLY deleted
-    (trash purge, hard delete, the discarded half of a hard merge). The
-    polymorphic (entity_type, entity_id) columns carry no foreign key, so
-    nothing cascades — each satellite gets an explicit decision here, and
-    every permanent-delete path goes through this one function:
-
-      tags, custom values, notes, attachment rows  -> deleted
-      manual phone events logged on the record     -> deleted
-      tasks linked to the record                   -> kept, link detached
-                                                      (both halves nulled)
-      activities                                   -> kept as the audit trail
-
-    Returns the stored_names of the deleted attachments — the caller unlinks
-    those files AFTER its commit (see services/attachments.py)."""
-    from app.models import Note
-    from app.services.attachments import collect_stored_names, delete_attachment_rows
-
-    if not entity_ids:
-        return []
-    await db.execute(
-        delete(EntityTag).where(
-            EntityTag.entity_type == entity_type, EntityTag.entity_id.in_(entity_ids)
-        )
-    )
-    await db.execute(
-        delete(CustomFieldValue).where(
-            CustomFieldValue.entity_type == entity_type,
-            CustomFieldValue.entity_id.in_(entity_ids),
-        )
-    )
-    await db.execute(
-        delete(Note).where(Note.entity_type == entity_type, Note.entity_id.in_(entity_ids))
-    )
-    # Notes elsewhere that documented one of these calls lose the link, not
-    # the note. Postgres does that through the FK's ON DELETE SET NULL; the
-    # SQLite dev database runs without foreign keys, so do it by hand.
-    doomed_events = select(PhoneEvent.id).where(
-        PhoneEvent.entity_type == entity_type, PhoneEvent.entity_id.in_(entity_ids)
-    )
-    await db.execute(
-        update(Note).where(Note.phone_event_id.in_(doomed_events)).values(phone_event_id=None)
-    )
-    await db.execute(
-        delete(PhoneEvent).where(
-            PhoneEvent.entity_type == entity_type, PhoneEvent.entity_id.in_(entity_ids)
-        )
-    )
-    # The task outlives the record; a dangling pointer must not. Clients label
-    # an unlinked task by itself, exactly as they do for a never-linked one.
-    await db.execute(
-        update(Task)
-        .where(Task.entity_type == entity_type, Task.entity_id.in_(entity_ids))
-        .values(entity_type=None, entity_id=None)
-    )
-    stored = await collect_stored_names(db, entity_type, entity_ids)
-    await delete_attachment_rows(db, entity_type, entity_ids)
-    return stored
-
-
-async def cleanup_entity(db: AsyncSession, entity_type: str, entity_id: uuid.UUID) -> list[str]:
-    """Single-record form of remove_entity_satellites (hard delete, hard
-    merge). Returns attachment stored_names to unlink after the commit."""
-    return await remove_entity_satellites(db, entity_type, [entity_id])

@@ -6,19 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import Company, Lead, Note, Person, PhoneEvent, User, utcnow
-from app.schemas import NoteAttachIn, NoteIn
+from app.models import Note, PhoneEvent, User, utcnow
+from app.schemas import NoteAttachIn, NoteIn, NoteListOut, NoteOut
+from app.services import contacts, entities, timeline
 from app.services.common import (
-    company_people,
-    display_name_map,
-    row_to_dict,
     validate_entity_ref,
 )
-from app.services.interactions import people_with_number, update_person_aggregates
-from app.services.ringcentral import normalize_phone
-
-
-_PHONE_TIMELINE_MODELS = {"person": Person, "lead": Lead, "company": Company}
+from app.services.contacts import people_with_number
+from app.services.interactions import update_person_aggregates
 
 
 async def _event_on_note_record(db, org_id, note: Note, event_id: uuid.UUID) -> None:
@@ -37,29 +32,12 @@ async def _event_on_note_record(db, org_id, note: Note, event_id: uuid.UUID) -> 
     mismatch = HTTPException(
         status_code=422, detail="That call or text belongs to a different record"
     )
-    model = _PHONE_TIMELINE_MODELS.get(note.entity_type)
-    if model is None:
-        raise mismatch  # opportunities and the like have no call timeline
-    if ev.entity_type == note.entity_type and ev.entity_id == note.entity_id:
-        return
-    if note.entity_type == "company":
-        holders = list(await company_people(db, org_id, note.entity_id))
-        if ev.entity_type == "person" and ev.entity_id in {p.id for p in holders}:
-            return
-    else:
-        record = (
-            await db.execute(
-                select(model).where(model.id == note.entity_id, model.org_id == org_id)
-            )
-        ).scalar_one_or_none()
-        holders = [record] if record is not None else []
-    numbers = {
-        n
-        for h in holders
-        for n in (normalize_phone(h.work_phone), normalize_phone(h.mobile_phone))
-        if n
-    }
-    if not ev.other_number or ev.other_number not in numbers:
+    try:
+        scope = await timeline.record_scope(db, org_id, note.entity_type, note.entity_id)
+    except KeyError:
+        scope = None
+    # Opportunities and the like have no call timeline (scope.points is None).
+    if scope is None or not timeline.phone_event_on_record(ev, scope):
         raise mismatch
 
 
@@ -67,16 +45,10 @@ router = APIRouter()
 
 
 async def _serialize(db, org_id, notes: list[Note]) -> list[dict]:
-    names = await display_name_map(db, {n.author_id for n in notes}, org_id)
-    out = []
-    for n in notes:
-        d = row_to_dict(n)
-        d["author_name"] = names.get(d.get("author_id"))
-        out.append(d)
-    return out
+    return await timeline.note_rows(db, org_id, notes)
 
 
-@router.get("")
+@router.get("", response_model=NoteListOut)
 async def list_notes(
     entity_type: str,
     entity_id: uuid.UUID,
@@ -104,7 +76,7 @@ async def list_notes(
     return {"items": await _serialize(db, user.org_id, list(notes))}
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=NoteOut)
 async def create_note(
     body: NoteIn, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
@@ -128,17 +100,14 @@ async def create_note(
     if body.log_call and phone_event_id is None:
         # Not every call goes through RingCentral — log one manually and hang
         # the note on it, so it counts and displays like any synced call.
-        if body.entity_type not in ("person", "lead"):
+        # A call is logged against a number, so only on a record type that
+        # has numbers of its own.
+        if body.entity_type not in contacts.PHONE_FIELDS:
             raise HTTPException(status_code=422, detail="Calls can be logged on people and leads")
-        model = Person if body.entity_type == "person" else Lead
-        record = (
-            await db.execute(
-                select(model).where(model.id == body.entity_id, model.org_id == user.org_id)
-            )
-        ).scalar_one_or_none()
+        record = await entities.get_record(db, user.org_id, body.entity_type, body.entity_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"{body.entity_type} not found")
-        number = normalize_phone(record.work_phone) or normalize_phone(record.mobile_phone) or ""
+        number = next(iter(contacts.record_numbers(body.entity_type, record)), "")
         direction = body.call_direction if body.call_direction in ("inbound", "outbound") else "outbound"
         event = PhoneEvent(
             org_id=user.org_id,
@@ -176,7 +145,7 @@ async def create_note(
     return result
 
 
-@router.patch("/{note_id}")
+@router.patch("/{note_id}", response_model=NoteOut)
 async def attach_note(
     note_id: uuid.UUID,
     body: NoteAttachIn,

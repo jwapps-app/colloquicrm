@@ -18,14 +18,34 @@ jobs:
         with:
           python-version: "3.13"
 
-      # Catches undefined names (e.g. a function lost in a refactor) before
-      # anything ships.
-      - run: pip install ruff==0.15.20 && ruff check backend/app --select E9,F821
+      # Catches undefined names (e.g. a function lost in a refactor), unused
+      # imports and the like before anything ships.
+      - run: pip install ruff==0.15.20 && ruff check backend/app
 
       - run: pip install -r backend/requirements.txt
       - name: App import smoke test
         working-directory: backend
-        run: DATABASE_URL="sqlite+aiosqlite:///./ci.db" python -c "from app.main import app; print('app loads')"
+        run: python -c "from app.main import app; print('app loads')"
+
+  # The web app has no test suite yet; lint (including the hooks rules the
+  # code is written to) and a production build are what stand guard.
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
 
   # The regression suite runs against a real PostgreSQL: the app depends on
   # Postgres-only behaviour (pg_trgm indexes, row locks, RETURNING), and the
@@ -62,6 +82,14 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/crm_smoke
         run: alembic upgrade head
 
+      # The models and the migrations must describe the same schema: a column
+      # or index added to one and not the other fails here.
+      - name: Schema drift check (alembic check)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/crm_smoke
+        run: alembic check
+
       # The suite creates (and migrates) its own crm_test database.
       - name: Tests
         working-directory: backend
@@ -70,7 +98,7 @@ jobs:
         run: python -m pytest
 
   image:
-    needs: [checks, test]
+    needs: [checks, web, test]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

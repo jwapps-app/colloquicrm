@@ -14,13 +14,25 @@ The display name is config (`APP_NAME`), not code — identifiers stay generic.
 
 ## Quick start (dev)
 
-Backend (SQLite, no services needed):
+Database — PostgreSQL is the only supported database. The dev stack's is
+published on `localhost:5495` (`DEV_PG_PORT` to move it):
+
+```
+docker compose up -d postgres
+```
+
+Backend:
 
 ```
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-DATABASE_URL="sqlite+aiosqlite:///./dev.db" .venv/bin/uvicorn app.main:app --port 8010
+export DATABASE_URL=postgresql+asyncpg://app:app@localhost:5495/app
+.venv/bin/alembic upgrade head
+.venv/bin/uvicorn app.main:app --port 8010
 ```
+
+Run `alembic upgrade head` again after pulling changes that add a migration;
+in the image the entrypoint does it for you.
 
 Frontend:
 
@@ -32,7 +44,8 @@ npm run dev        # http://localhost:5173, proxies /api to :8010
 
 First visit walks through creating the initial admin account.
 
-Postgres via compose instead: `docker compose up` (API on :8010).
+Or run everything in containers, built from source: `docker compose up`
+(API and web app on :8010).
 
 ## Running the tests
 
@@ -51,6 +64,14 @@ docker stop crm-test-pg
 Point it at another server with
 `TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host:port/dbname` — that
 database is dropped and recreated on every run.
+
+CI also runs `alembic check` against a freshly migrated database: a model
+change without a migration (or the reverse) fails the build. To run it
+locally, point `DATABASE_URL` at any migrated scratch database and run
+`.venv/bin/alembic check`.
+
+The web app has no test suite; `npm run lint` and `npm run build` in
+`frontend/` are its checks, and CI runs both.
 
 `requirements.txt` is the hand-edited list of what the app needs;
 `requirements.lock` pins the exact versions the suite was last run against,
@@ -179,7 +200,7 @@ file already sets the required ones.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DATABASE_URL` | local Postgres (`postgresql+asyncpg://app:app@localhost:5432/app`) | asyncpg format: `postgresql+asyncpg://user:pass@host:5432/db`. Percent-encode reserved characters in the password (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`). For a no-services dev run use SQLite: `sqlite+aiosqlite:///./dev.db` |
+| `DATABASE_URL` | local Postgres (`postgresql+asyncpg://app:app@localhost:5432/app`) | asyncpg format: `postgresql+asyncpg://user:pass@host:5432/db`. Percent-encode reserved characters in the password (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `%` → `%25`) |
 | `SECRET_KEY` | dev placeholder | production refuses to boot with a weak/placeholder value |
 | `ENVIRONMENT` | `development` | `production` arms the SECRET_KEY check |
 | `APP_NAME` | `Colloqui CRM` | display name everywhere, incl. the TOTP issuer |

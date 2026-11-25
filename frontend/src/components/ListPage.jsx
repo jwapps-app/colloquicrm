@@ -175,7 +175,6 @@ export default function ListPage({
     } catch {
       // storage unavailable — sorting still works, just doesn't persist
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefsKey, sort, order]);
 
   // Filter dropdown sources + saved filters.
@@ -192,7 +191,6 @@ export default function ListPage({
     get('/saved-filters', { entity_type: entityType })
       .then((d) => setSaved(Array.isArray(d) ? d : d?.items || []))
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, refresh, refreshToken]);
 
   const defs = filterDefs.map((d) => {

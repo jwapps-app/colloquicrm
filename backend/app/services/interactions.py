@@ -16,6 +16,7 @@ import uuid
 from sqlalchemy import String, Uuid, bindparam, column, func, select, union, update, values
 
 from app.models import EmailMessage, EmailParticipant, Person, PhoneEvent
+from app.services.contacts import address_fields, record_emails, record_numbers
 
 # People per round of grouped queries. Two addresses and two numbers each
 # keeps a round far inside asyncpg's 32767 bind-parameter ceiling.
@@ -90,9 +91,6 @@ async def _phone_aggregates(
 
 
 async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.UUID]) -> None:
-    from app.services.google import normalize_email
-    from app.services.ringcentral import normalize_phone
-
     if not person_ids:
         return
     await db.flush()  # pending rows must be visible (autoflush is off)
@@ -122,10 +120,7 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
             await db.execute(
                 select(
                     Person.id,
-                    Person.work_email,
-                    Person.personal_email,
-                    Person.work_phone,
-                    Person.mobile_phone,
+                    *[getattr(Person, f) for f in address_fields("person")],
                     Person.interaction_count,
                     Person.last_contacted_imported_at,
                 ).where(
@@ -140,12 +135,8 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
         email_pairs: set[tuple[uuid.UUID, str]] = set()
         phone_pairs: set[tuple[uuid.UUID, str]] = set()
         for p in people:
-            for e in (p.work_email, p.personal_email):
-                if e and (norm := normalize_email(e)):
-                    email_pairs.add((p.id, norm))
-            for raw in (p.work_phone, p.mobile_phone):
-                if n := normalize_phone(raw):
-                    phone_pairs.add((p.id, n))
+            email_pairs.update((p.id, e) for e in record_emails("person", p))
+            phone_pairs.update((p.id, n) for n in record_numbers("person", p))
         by_email = await _email_aggregates(db, org_id, sorted(email_pairs, key=str))
         by_phone = await _phone_aggregates(
             db, org_id, [p.id for p in people], sorted(phone_pairs, key=str)
@@ -195,32 +186,6 @@ async def update_person_aggregates(db, org_id: uuid.UUID, person_ids: set[uuid.U
             set_committed_value(obj, "interaction_count", row["n"])
             if "latest" in row:
                 set_committed_value(obj, "last_contacted_at", row["latest"])
-
-
-async def people_with_number(db, org_id: uuid.UUID, number: str | None) -> set[uuid.UUID]:
-    """Every live person who lists this (normalized) number. Two people can
-    share a line — a front desk, a couple — and an event on that number
-    counts for each of them, so each needs recomputing when one is logged.
-
-    Numbers are stored as typed, so matching means normalizing each one —
-    the same org-wide read the call sync's phone map makes."""
-    from app.services.ringcentral import normalize_phone
-
-    if not number:
-        return set()
-    await db.flush()
-    rows = await db.execute(
-        select(Person.id, Person.work_phone, Person.mobile_phone).where(
-            Person.org_id == org_id,
-            Person.deleted_at.is_(None),
-            Person.work_phone.is_not(None) | Person.mobile_phone.is_not(None),
-        )
-    )
-    return {
-        pid
-        for pid, work, mobile in rows
-        if number in (normalize_phone(work), normalize_phone(mobile))
-    }
 
 
 async def recompute_in_batches(org_id: uuid.UUID, person_ids, batch: int = 200) -> None:

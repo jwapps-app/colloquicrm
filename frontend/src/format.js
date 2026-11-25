@@ -1,3 +1,5 @@
+import { recordPath } from './constants/entities';
+
 /** Guard a server- or user-supplied URL before using it as an <a href>.
  * Returns the trimmed URL only when it uses the http/https scheme, so a
  * `javascript:` or `data:` URL can never execute in our origin. Returns
@@ -45,9 +47,9 @@ export function moneyTotals(rows, { empty = money0(0, 'USD') } = {}) {
   return sums.map(([cur, total]) => money0(total, cur)).join(' · ');
 }
 
-/** Parse a server timestamp. Naive datetimes (no zone suffix) are UTC —
- * SQLite dev returns them that way; Postgres sends +00:00. Date-only
- * strings are calendar dates and stay local. */
+/** Parse a server timestamp. The API sends an explicit offset (+00:00); a
+ * datetime that arrives without one is read as UTC rather than local time.
+ * Date-only strings are calendar dates and stay local. */
 export function parseWhen(iso) {
   if (!iso) return null;
   if (typeof iso === 'string') {
@@ -129,14 +131,7 @@ export function humanize(s) {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
-const ENTITY_ROUTES = {
-  person: 'people',
-  lead: 'leads',
-  company: 'companies',
-  opportunity: 'opportunities',
-};
-
 export function entityPath(entityType, entityId) {
-  const route = ENTITY_ROUTES[entityType];
-  return route && entityId ? `/${route}/${entityId}` : null;
+  const base = recordPath(entityType);
+  return base && entityId ? `${base}/${entityId}` : null;
 }

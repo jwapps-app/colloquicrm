@@ -6,6 +6,7 @@ import { useAuth } from '../auth';
 import { useToast } from '../components/Toast';
 import { Empty, Loading } from '../components/ui';
 import { entityPath, humanize, timeOfDay, parseWhen } from '../format';
+import { callMeta, callTitle, emailTitle, gmailUrl, smsTitle } from '../components/timelineText';
 
 const PAGE_SIZE = 40;
 const TABS = [
@@ -137,19 +138,10 @@ export default function Feed() {
                         <span className="phone-icon">{isCall ? '☎' : '💬'}</span>
                         <div className="feed-body">
                           <span>
-                            <strong>
-                              {isCall
-                                ? (it.direction === 'outbound' ? 'Outgoing call' : 'Incoming call')
-                                : (it.direction === 'outbound' ? 'Text sent' : 'Text received')}
-                              {isCall && it.result && it.result !== 'Call connected' && it.result !== 'Accepted' ? ` — ${it.result}` : ''}
-                            </strong>
+                            <strong>{isCall ? callTitle(it) : smsTitle(it)}</strong>
                             <RelatedChips related={it.related} />
                           </span>
-                          <div className="muted">
-                            {isCall
-                              ? `${it.duration_seconds ? `${Math.floor(it.duration_seconds / 60)}m ${it.duration_seconds % 60}s · ` : ''}${it.other_number}${it.recording_id ? ' · recorded' : ''}`
-                              : null}
-                          </div>
+                          <div className="muted">{isCall ? callMeta(it) : null}</div>
                           {!isCall && it.text && <div className="sms-body">{it.text}</div>}
                         </div>
                         <span className="muted feed-time">{timeOfDay(it.at)}</span>
@@ -177,9 +169,7 @@ export default function Feed() {
                               }
                             }}
                           >
-                            <strong>
-                              {it.is_outgoing ? 'Email sent' : `Email from ${it.from_name || it.from_email || 'unknown'}`}
-                            </strong>
+                            <strong>{emailTitle(it)}</strong>
                             {' — '}
                             <span className="feed-subject">{it.subject || '(no subject)'}</span>
                             <RelatedChips related={it.related} />
@@ -187,10 +177,10 @@ export default function Feed() {
                           {!open && it.snippet && <div className="muted email-snippet">{it.snippet}</div>}
                           {open && (
                             <EmailBody body={b} onRetry={() => retryEmail(it.id)}>
-                              {user?.id === it.owner_user_id && it.gmail_id && (
+                              {gmailUrl(it, user) && (
                                 <a
                                   className="muted email-open"
-                                  href={`https://mail.google.com/mail/u/0/#all/${it.gmail_id}`}
+                                  href={gmailUrl(it, user)}
                                   target="_blank"
                                   rel="noreferrer"
                                 >

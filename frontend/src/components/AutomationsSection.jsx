@@ -6,11 +6,15 @@ import ToggleListRow from './ToggleListRow';
 import { Loading } from './ui';
 import { fmtDateTime } from '../format';
 import { LEAD_STATUSES, OPPORTUNITY_STATUSES } from '../constants/options';
+import { recordType } from '../constants/entities';
 
+// What a rule can watch: three of the record types, and tasks.
 const ENTITY_OPTIONS = [
-  { value: 'lead', label: 'Lead', a: 'a lead' },
-  { value: 'person', label: 'Person', a: 'a person' },
-  { value: 'opportunity', label: 'Opportunity', a: 'an opportunity' },
+  ...['lead', 'person', 'opportunity'].map((t) => ({
+    value: t,
+    label: recordType(t).label,
+    a: recordType(t).article,
+  })),
   { value: 'task', label: 'Task', a: 'a task' },
 ];
 

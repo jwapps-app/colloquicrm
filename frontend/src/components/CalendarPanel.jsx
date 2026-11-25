@@ -1,37 +1,27 @@
-import { useEffect, useState } from 'react';
 import { get } from '../api';
+import { useLoad } from '../hooks';
 import { fmtAllDayDate, fmtDateTime, safeHref } from '../format';
 
 /** Google Calendar events matched to this record by attendee email.
  * Renders nothing when there are no events to show — but a failed fetch is
  * not "no events": it gets an inline error with Retry. */
 export default function CalendarPanel({ entityType, entityId }) {
-  // null = loading, 'error' = fetch failed, else the events.
-  const [items, setItems] = useState(null);
-  const [version, setVersion] = useState(0);
+  const { data: items, error, reload } = useLoad(
+    () => get('/calendar-events', { entity_type: entityType, entity_id: entityId }).then((d) => d?.items || []),
+    [entityType, entityId]
+  );
 
-  useEffect(() => {
-    let on = true;
-    setItems(null);
-    get('/calendar-events', { entity_type: entityType, entity_id: entityId })
-      .then((d) => on && setItems(d?.items || []))
-      .catch(() => on && setItems('error'));
-    return () => {
-      on = false;
-    };
-  }, [entityType, entityId, version]);
-
-  if (!items || items.length === 0) return null;
+  if (!error && (!items || items.length === 0)) return null;
 
   return (
     <div className="card">
       <div className="panel-head">
         <h4 className="panel-title">Calendar</h4>
       </div>
-      {items === 'error' ? (
+      {error ? (
         <div className="muted panel-empty">
           Couldn&apos;t load calendar events.{' '}
-          <button className="linklike" onClick={() => setVersion((v) => v + 1)}>
+          <button className="linklike" onClick={reload}>
             Retry
           </button>
         </div>

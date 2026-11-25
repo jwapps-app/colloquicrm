@@ -3,7 +3,7 @@
 from datetime import timedelta
 
 from app.models import Activity, Note, utcnow
-from app.routes.feed import _MAX_PAGE
+from app.services.timeline import MAX_PAGE as _MAX_PAGE
 
 from .conftest import add, make_person
 

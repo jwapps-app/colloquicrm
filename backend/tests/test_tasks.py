@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.models import Task, utcnow
 from app.routes import tasks as task_routes
-from app.services import background, colloqui
+from app.services import background, notifications
 from app.services.background import pending_after_commit
 
 from .conftest import add
@@ -100,7 +100,7 @@ async def test_postponing_a_task_rearms_its_fired_reminder(client, world, db_ses
 
 
 class _Notifier:
-    """Stands in for colloqui.notify_task_event; records what it was told and
+    """Stands in for notifications.notify_task_event; records what it was told and
     whether the task was already durable when it ran."""
 
     def __init__(self, session_factory):
@@ -117,7 +117,7 @@ async def test_assignment_notifies_once_and_only_after_the_commit(
     client, world, db_session, monkeypatch
 ):
     notifier = _Notifier(db_session)
-    monkeypatch.setattr(colloqui, "notify_task_event", notifier)
+    monkeypatch.setattr(notifications, "notify_task_event", notifier)
     resp = await client.post(
         "/api/v1/tasks",
         headers=world.admin_auth,
@@ -132,7 +132,7 @@ async def test_a_create_that_fails_validation_notifies_nobody(
     client, world, other_world, db_session, monkeypatch
 ):
     notifier = _Notifier(db_session)
-    monkeypatch.setattr(colloqui, "notify_task_event", notifier)
+    monkeypatch.setattr(notifications, "notify_task_event", notifier)
     resp = await client.post(
         "/api/v1/tasks",
         headers=world.admin_auth,
@@ -154,7 +154,7 @@ async def test_a_rolled_back_write_drops_its_queued_notification(
     world, db_session, monkeypatch
 ):
     notifier = _Notifier(db_session)
-    monkeypatch.setattr(colloqui, "notify_task_event", notifier)
+    monkeypatch.setattr(notifications, "notify_task_event", notifier)
 
     async with db_session() as db:
         task = Task(org_id=world.org.id, name="Doomed", assignee_id=world.member.id)

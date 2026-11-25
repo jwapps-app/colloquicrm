@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 
 from app.config import settings
-from app.db import Base, SessionLocal, engine
+from app.db import SessionLocal, engine
 from app.deps import get_session_and_user
 from app.models import Org, Pipeline, Stage
 from app.routes import (
@@ -18,7 +18,9 @@ from app.routes import (
     attachments,
     auth,
     automations,
+    calendar,
     duplicates,
+    emails,
     feed,
     ringcentral as ringcentral_routes,
     colloqui as colloqui_routes,
@@ -47,7 +49,7 @@ from app.services import (
 )
 from app.services.attachments import reconcile_loop as attachment_reconcile_loop
 from app.services.automations import automations_loop
-from app.services.colloqui import reminder_loop
+from app.services.notifications import reminder_loop
 from app.services.google import sync_loop as google_sync_loop
 from app.services.maintenance import purge_loop
 from app.services.ringcentral import sync_loop as ringcentral_sync_loop
@@ -88,11 +90,8 @@ async def _seed() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _require_strong_secret()
-    if settings.database_url.startswith("sqlite"):
-        # Dev convenience only; real deployments run `alembic upgrade head`
-        # at container start so schema state is tracked.
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+    # The schema is Alembic's: `alembic upgrade head` runs before the server
+    # starts (entrypoint.sh in the image, by hand in development).
     await _seed()
     from app.services.importer import resume_interrupted_imports
 
@@ -382,11 +381,10 @@ app.include_router(
 app.include_router(
     google_routes.router, prefix=f"{API}/integrations/google", tags=["integrations"]
 )
-app.include_router(
-    google_routes.calendar_router, prefix=f"{API}/calendar-events", tags=["integrations"]
-)
-app.include_router(google_routes.emails_router, prefix=f"{API}/emails", tags=["integrations"])
+app.include_router(calendar.router, prefix=f"{API}/calendar-events", tags=["integrations"])
+app.include_router(emails.router, prefix=f"{API}/emails", tags=["integrations"])
 app.include_router(feed.router, prefix=f"{API}/feed", tags=["feed"])
+app.include_router(feed.timeline_router, prefix=f"{API}/timeline", tags=["feed"])
 app.include_router(
     ringcentral_routes.router, prefix=f"{API}/integrations/ringcentral", tags=["integrations"]
 )

@@ -13,27 +13,15 @@ from sqlalchemy import delete, select
 from app.config import settings
 from app.db import SessionLocal
 from app.services.attachments import unlink_stored
-from app.services.common import prune_orphan_tags, remove_entity_satellites
+from app.services.common import prune_orphan_tags
+from app.services.entities import RECORDS, purge_satellites
 from app.models import (
-    Company,
-    Lead,
-    Opportunity,
-    Person,
     utcnow,
 )
 
 log = logging.getLogger("maintenance")
 
 PURGE_INTERVAL_SECONDS = 86400  # daily
-
-# (model, entity_type used by the polymorphic satellites)
-_TRASH_MODELS = [
-    (Person, "person"),
-    (Lead, "lead"),
-    (Company, "company"),
-    (Opportunity, "opportunity"),
-]
-
 
 async def purge_expired_trash(
     _after_select: Callable[[str, list], Awaitable[None]] | None = None,
@@ -55,7 +43,7 @@ async def purge_expired_trash(
     cutoff = utcnow() - timedelta(days=settings.trash_retention_days)
     purged = 0
     async with SessionLocal() as db:
-        for model, entity_type in _TRASH_MODELS:
+        for entity_type, model in ((r.name, r.model) for r in RECORDS.values()):
             ids = [
                 rid
                 for (rid,) in await db.execute(
@@ -88,7 +76,7 @@ async def purge_expired_trash(
                 ]
                 # Attachment rows go with the purge; the files are unlinked
                 # only after the commit lands (missing files tolerated).
-                stored = await remove_entity_satellites(db, entity_type, gone)
+                stored = await purge_satellites(db, entity_type, gone)
                 await db.commit()
                 unlink_stored(stored)
                 gone_total += len(gone)

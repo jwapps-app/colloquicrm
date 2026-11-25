@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select, union_all
+from sqlalchemy import func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -14,13 +14,14 @@ from app.schemas import (
     SavedFilterUpdateIn,
 )
 from app.services.common import canonical_checkbox, row_to_dict
+from app.services.contacts import PHONE_FIELDS
+from app.services.entities import RECORD_TYPES, RECORDS
 
 tags_router = APIRouter()
 custom_fields_router = APIRouter()
 saved_filters_router = APIRouter()
 options_router = APIRouter()
 
-ENTITY_TYPES = {"person", "lead", "company", "opportunity"}
 # Every type some client knows how to edit, and every type the importer can
 # create (text, date, select). The web app's list is text/number/date/select/
 # checkbox/url/currency; the iOS form switches on checkbox/date/dropdown/number
@@ -40,6 +41,23 @@ DEFAULT_CONTACT_TYPES = [
     "Uncategorized",
     "Other",
 ]
+
+
+@options_router.get("/record-types")
+async def record_types(user: User = Depends(get_current_user)):
+    """The record types this server knows, for clients that would otherwise
+    keep their own list: `type` is the entity_type used across the API,
+    `plural` the URL segment, `correspondent` whether the type has an email /
+    call / calendar timeline, `logs_calls` whether a call can be logged on it."""
+    return [
+        {
+            "type": rec.name,
+            "plural": rec.plural,
+            "correspondent": rec.correspondent,
+            "logs_calls": rec.name in PHONE_FIELDS,
+        }
+        for rec in RECORDS.values()
+    ]
 
 
 @options_router.get("/contact-types")
@@ -104,9 +122,9 @@ async def list_tags(
 
 
 def _check_entity_type(entity_type: str) -> None:
-    if entity_type not in ENTITY_TYPES:
+    if entity_type not in RECORD_TYPES:
         raise HTTPException(
-            status_code=422, detail=f"entity_type must be one of {sorted(ENTITY_TYPES)}"
+            status_code=422, detail=f"entity_type must be one of {sorted(RECORD_TYPES)}"
         )
 
 
@@ -241,10 +259,7 @@ async def delete_custom_field(
     db: AsyncSession = Depends(get_db),
 ):
     field = await _get_field(db, user, field_id)
-    # Explicit value cleanup: the FK cascade covers Postgres, but SQLite dev
-    # runs without PRAGMA foreign_keys.
-    await db.execute(delete(CustomFieldValue).where(CustomFieldValue.field_id == field.id))
-    await db.delete(field)
+    await db.delete(field)  # its values go with it (ON DELETE CASCADE)
     await db.commit()  # visible before the client refetches
 
 

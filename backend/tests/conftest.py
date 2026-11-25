@@ -125,16 +125,16 @@ async def _clean_state(_migrated_database):
 
 
 def _reset_in_process_state() -> None:
-    from app.routes import attachments, auth, feed, public_forms
-    from app.services import google
+    from app.routes import attachments, auth, public_forms
+    from app.services import contacts, google
 
     for limiter in (auth._failures, attachments._uploads, public_forms._submissions):
         limiter._events.clear()
     attachments._reserved_bytes.clear()
     auth._verify_slots = None
-    feed._maps_cache.clear()
+    contacts.clear_cache()
     public_forms._form_day_counts.clear()
-    google._syncing.clear()
+    google.sync._syncing.clear()
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)

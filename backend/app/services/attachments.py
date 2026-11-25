@@ -17,8 +17,7 @@ import uuid
 from pathlib import Path
 
 import anyio
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
@@ -78,33 +77,6 @@ def unlink_stored(stored_names: list[str]) -> None:
             attachment_path(name).unlink(missing_ok=True)
         except OSError:
             log.warning("could not remove attachment file %s", name)
-
-
-async def collect_stored_names(
-    db: AsyncSession, entity_type: str, entity_ids: list[uuid.UUID]
-) -> list[str]:
-    """stored_names of every attachment on the given records — grab these
-    BEFORE deleting the rows, unlink them after the commit."""
-    if not entity_ids:
-        return []
-    rows = await db.execute(
-        select(Attachment.stored_name).where(
-            Attachment.entity_type == entity_type, Attachment.entity_id.in_(entity_ids)
-        )
-    )
-    return [name for (name,) in rows]
-
-
-async def delete_attachment_rows(
-    db: AsyncSession, entity_type: str, entity_ids: list[uuid.UUID]
-) -> None:
-    if not entity_ids:
-        return
-    await db.execute(
-        delete(Attachment).where(
-            Attachment.entity_type == entity_type, Attachment.entity_id.in_(entity_ids)
-        )
-    )
 
 
 def _old_stored_files(min_age_seconds: int) -> list[str]:
